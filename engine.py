@@ -144,8 +144,81 @@ class HotkeyManager:
 
 
 # ─────────────────────────────────────────────
+#  TTSEngine
+# ─────────────────────────────────────────────
+class TTSEngine:
+    """
+    Lit du texte à haute voix via pyttsx3 (SAPI5 Windows).
+    speak() arrête la lecture précédente avant d'en démarrer une nouvelle.
+    Thread-safe : peut être appelé depuis n'importe quel thread.
+
+    Usage :
+        tts.speak("Bonjour", on_done=ma_callback)
+        tts.stop()
+    """
+
+    def __init__(self, logger: Logger):
+        self._logger = logger
+        self._stop_evt = threading.Event()
+        self._engine_ref = None
+        self._thread: threading.Thread | None = None
+
+    def speak(self, text: str, on_done=None):
+        """Lit text à haute voix. Arrête toute lecture en cours d'abord."""
+        self.stop()
+        if not text.strip():
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+            return
+        self._stop_evt.clear()
+        self._thread = threading.Thread(
+            target=self._run, args=(text.strip(), on_done), daemon=True)
+        self._thread.start()
+
+    def _run(self, text: str, on_done):
+        try:
+            import pyttsx3
+            engine = pyttsx3.init()
+            self._engine_ref = engine
+            engine.setProperty("rate", 175)
+            engine.say(text)
+            if not self._stop_evt.is_set():
+                engine.runAndWait()
+        except Exception as e:
+            self._logger.log(f"TTS erreur : {e}")
+        finally:
+            self._engine_ref = None
+            if on_done:
+                try:
+                    on_done()
+                except Exception:
+                    pass
+
+    def stop(self):
+        """Arrête la lecture en cours."""
+        self._stop_evt.set()
+        engine = self._engine_ref
+        if engine:
+            try:
+                engine.stop()
+                engine.endLoop()
+            except Exception:
+                pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=0.5)
+
+    @property
+    def speaking(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+
+# ─────────────────────────────────────────────
 #  Singletons partagés entre tous les modules
 # ─────────────────────────────────────────────
 logger = Logger()
 task_manager = TaskManager(logger)
 hotkey_manager = HotkeyManager(logger)
+tts = TTSEngine(logger)
