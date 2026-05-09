@@ -1,0 +1,7 @@
+pystray==0.19.5
+Pillow>=10.0.0
+schedule>=1.2.0
+keyboard>=0.13.5
+ollama>=0.2.0
+tkinterdnd2>=0.3.0
+platformdirs>=4.0.0
