@@ -46,6 +46,7 @@ _DEFAULTS = {
     "last_model":           "",
     "window_geometry":      "720x580",
     "always_on_top":        True,
+    "system_prompt":        "",
 }
 
 
