@@ -25,7 +25,7 @@ try:
 except ImportError:
     DND_OK = False
 
-from engine import create_tray_icon, logger, task_manager, hotkey_manager
+from engine import create_tray_icon, logger, task_manager, hotkey_manager, tts
 from storage import settings, conversations, clear_cache, CACHE_DIR, DATA_DIR
 import tasks
 import bindings
@@ -48,6 +48,20 @@ FG_LOG    = "#AAAAAA"
 FG_HEAD   = "#BBBBBB"
 ACCENT    = "#EEEEEE"
 GREEN     = "#6AAF6A"
+
+
+# ── Utilitaire TTS (module-level) ─────────────────────────────────────────────
+def _strip_markdown(text: str) -> str:
+    """Supprime les balises markdown avant la lecture TTS."""
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(r'`[^`]+`', '', text)
+    text = re.sub(r'\*\*\*([^*]+)\*\*\*', r'\1', text)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\*([^*]+)\*', r'\1', text)
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^[-*+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'─+', '', text)
+    return text.strip()
 
 
 # ── Utilitaire DnD (module-level) ─────────────────────────────────────────────
@@ -85,6 +99,7 @@ class ConversationTab:
         self._user_scrolled = False
         self._model_var = tk.StringVar()
         self._models_list: list[str] = []
+        self._tts_active = False
 
         self.frame = ttk.Frame(inner_notebook)
         inner_notebook.add(self.frame, text="  ·  ")   # Pas de titre par défaut
@@ -193,6 +208,12 @@ class ConversationTab:
                   bg=BG2, fg=FG, activebackground=BG2,
                   relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
                   font=("Segoe UI", 13)).pack(side="left", padx=(0, 4))
+
+        self._tts_btn = tk.Button(input_frame, text="🔊", command=self._tts_toggle,
+                                   bg=BG2, fg=FG, activebackground=BG2,
+                                   relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
+                                   font=("Segoe UI", 13))
+        self._tts_btn.pack(side="left", padx=(0, 4))
 
         self._chat_input = tk.Text(input_frame, height=3,
                                     bg=BG3, fg=FG, font=("Segoe UI", 9),
@@ -540,6 +561,34 @@ class ConversationTab:
         return "break"
 
     # ─────────────────────────────────────────
+    #  Lecture TTS
+    # ─────────────────────────────────────────
+    def _tts_toggle(self):
+        if self._tts_active:
+            tts.stop()
+            self._tts_reset()
+        else:
+            text = self._get_tts_text()
+            if not text:
+                return
+            self._tts_active = True
+            self._tts_btn.configure(text="⏹", fg="#E07070")
+            tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
+
+    def _tts_reset(self):
+        self._tts_active = False
+        try:
+            self._tts_btn.configure(text="🔊", fg=FG)
+        except Exception:
+            pass
+
+    def _get_tts_text(self) -> str:
+        for msg in reversed(self._chat_history):
+            if msg.get("role") == "assistant":
+                return _strip_markdown(msg.get("content", ""))
+        return ""
+
+    # ─────────────────────────────────────────
     #  Fichiers attachés
     # ─────────────────────────────────────────
     def _rebuild_file_bar(self):
@@ -758,6 +807,7 @@ class ConsoleTab:
         self._history:  list[str] = []
         self._hist_idx: int       = -1      # -1 = pas en navigation
         self._label: str = ""               # Label personnalisé
+        self._tts_active = False
 
         self.frame = ttk.Frame(inner_notebook)
         inner_notebook.add(self.frame, text="  ·  ")   # Pas de titre par défaut
@@ -861,6 +911,12 @@ class ConsoleTab:
                                    relief="flat", cursor="hand2", bd=0,
                                    font=("Segoe UI", 18), padx=6)
         self._run_btn.pack(side="right", padx=(4, 0))
+
+        self._tts_btn = tk.Button(in_row, text="🔊", command=self._tts_toggle,
+                                   bg=BG2, fg=FG, activebackground=BG2,
+                                   relief="flat", cursor="hand2", bd=0,
+                                   font=("Segoe UI", 13), padx=4)
+        self._tts_btn.pack(side="right", padx=(0, 4))
 
         # ── DnD ───────────────────────────────
         self.root.after(150, self._setup_dnd)
@@ -1181,6 +1237,28 @@ class ConsoleTab:
         self._out_box.configure(state="normal")
         self._out_box.delete("1.0", "end")
         self._out_box.configure(state="disabled")
+
+    # ─────────────────────────────────────────
+    #  Lecture TTS
+    # ─────────────────────────────────────────
+    def _tts_toggle(self):
+        if self._tts_active:
+            tts.stop()
+            self._tts_reset()
+        else:
+            text = self._out_box.get("1.0", "end").strip()
+            if not text:
+                return
+            self._tts_active = True
+            self._tts_btn.configure(text="⏹", fg="#E07070")
+            tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
+
+    def _tts_reset(self):
+        self._tts_active = False
+        try:
+            self._tts_btn.configure(text="🔊", fg=FG)
+        except Exception:
+            pass
 
     # ─────────────────────────────────────────
     #  Écriture dans la zone de sortie
