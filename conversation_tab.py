@@ -165,6 +165,7 @@ class ConversationTab:
                                    relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
                                    font=("Segoe UI", 13))
         self._tts_btn.pack(side="left", padx=(0, 4))
+        self._tts_btn.bind("<Button-3>", self._tts_btn_menu)
 
         self._chat_input = tk.Text(input_frame, height=3,
                                     bg=BG3, fg=FG, font=("Segoe UI", 9),
@@ -263,14 +264,24 @@ class ConversationTab:
                                    command=lambda m=m: self._model_var.set(m))
         if not self._models_list:
             model_menu.add_command(label="(aucun modèle)", state="disabled")
+        model_menu.add_separator()
+        model_menu.add_command(label="Rafraîchir les modèles",
+                               command=self.dashboard._refresh_models)
 
         menu.add_cascade(label=f"Modèle : {current or '—'}", menu=model_menu)
-        menu.add_command(label="Rafraîchir les modèles",
-                         command=self.dashboard._refresh_models)
         menu.add_separator()
         menu.add_command(label="Copier la sélection",
                          command=lambda: self._chat_copy_selection(None))
         menu.add_command(label="Copier tout", command=self._chat_copy_all)
+        menu.add_separator()
+        has_sel = self._has_selection()
+        menu.add_command(label="Lire la sélection",
+                         command=self._tts_speak_selection,
+                         state=("normal" if has_sel else "disabled"))
+        menu.add_command(label="Lire la dernière réponse",
+                         command=lambda: self._tts_speak_mode("last"))
+        menu.add_command(label="Tout lire",
+                         command=lambda: self._tts_speak_mode("all"))
         try:
             menu.tk_popup(event.x_root, event.y_root)
         finally:
@@ -599,16 +610,32 @@ class ConversationTab:
     #  Lecture TTS
     # ─────────────────────────────────────────
     def _tts_toggle(self):
+        """Bouton 🔊 : utilise le mode actif (last / all)."""
         if self._tts_active:
             tts.stop()
             self._tts_reset()
         else:
-            text = self._get_tts_text()
-            if not text:
-                return
-            self._tts_active = True
-            self._tts_btn.configure(text="⏹", fg="#E07070")
-            tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
+            mode = settings.get("tts_mode_chat", "last")
+            self._tts_speak_mode(mode)
+
+    def _tts_speak_mode(self, mode: str):
+        text = self._get_tts_text(mode)
+        if not text:
+            return
+        self._tts_start(text)
+
+    def _tts_speak_selection(self):
+        text = self._get_selection_text()
+        if not text:
+            return
+        self._tts_start(text)
+
+    def _tts_start(self, text: str):
+        if self._tts_active:
+            tts.stop()
+        self._tts_active = True
+        self._tts_btn.configure(text="⏹", fg="#E07070")
+        tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
 
     def _tts_reset(self):
         self._tts_active = False
@@ -617,11 +644,50 @@ class ConversationTab:
         except Exception:
             pass
 
-    def _get_tts_text(self) -> str:
+    def _get_tts_text(self, mode: str = "last") -> str:
+        if mode == "all":
+            parts = []
+            for msg in self._chat_history:
+                role = msg.get("role")
+                if role in ("user", "assistant"):
+                    parts.append(strip_markdown(msg.get("content", "")))
+            return "\n\n".join(p for p in parts if p)
+        # mode "last" par défaut
         for msg in reversed(self._chat_history):
             if msg.get("role") == "assistant":
                 return strip_markdown(msg.get("content", ""))
         return ""
+
+    def _has_selection(self) -> bool:
+        try:
+            self._chat_box.index(tk.SEL_FIRST)
+            return True
+        except tk.TclError:
+            return False
+
+    def _get_selection_text(self) -> str:
+        try:
+            return self._chat_box.get(tk.SEL_FIRST, tk.SEL_LAST).strip()
+        except tk.TclError:
+            return ""
+
+    def _tts_btn_menu(self, event):
+        """Right-click sur le bouton 🔊 : choisir le mode par défaut."""
+        current = settings.get("tts_mode_chat", "last")
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=BG3, fg=FG, activebackground=BG4,
+                       activeforeground=ACCENT, relief="flat", bd=0,
+                       font=("Segoe UI", 9))
+        menu.add_command(
+            label=("✓  " if current == "last" else "    ") + "Lire la dernière réponse",
+            command=lambda: settings.set("tts_mode_chat", "last"))
+        menu.add_command(
+            label=("✓  " if current == "all" else "    ") + "Tout lire",
+            command=lambda: settings.set("tts_mode_chat", "all"))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
 
     # ─────────────────────────────────────────
     #  Fichiers attachés

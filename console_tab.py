@@ -10,7 +10,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 from engine import logger, tts
-from storage import DATA_DIR
+from storage import DATA_DIR, settings
 from theme import (
     BG2, BG3, BG4, BG_CHAT, BORDER, FG, FG_DIM, ACCENT,
 )
@@ -39,6 +39,7 @@ class ConsoleTab:
         self._hist_idx: int       = -1      # -1 = pas en navigation
         self._label: str = ""               # Label personnalisé
         self._tts_active = False
+        self._progress_active = False       # Ligne de progression \r en cours
 
         self.frame = ttk.Frame(inner_notebook)
         inner_notebook.add(self.frame, text="  ·  ")   # Pas de titre par défaut
@@ -148,6 +149,7 @@ class ConsoleTab:
                                    relief="flat", cursor="hand2", bd=0,
                                    font=("Segoe UI", 13), padx=4)
         self._tts_btn.pack(side="right", padx=(0, 4))
+        self._tts_btn.bind("<Button-3>", self._tts_btn_menu)
 
         # ── DnD ───────────────────────────────
         self.root.after(150, self._setup_dnd)
@@ -280,7 +282,8 @@ class ConsoleTab:
         # ── Process en attente d'input → envoyer sur stdin ──
         if self._proc is not None:
             try:
-                self._proc.stdin.write(text + "\n")
+                # stdin est en mode binaire (Popen sans text=True)
+                self._proc.stdin.write((text + "\n").encode("utf-8", errors="replace"))
                 self._proc.stdin.flush()
                 self._write_out(text, "stdin_tag")
             except Exception as e:
@@ -327,36 +330,88 @@ class ConsoleTab:
 
     def _exec(self, cmd: str):
         import subprocess
+        import codecs
         # Regex pour supprimer toutes les séquences d'échappement ANSI/VT100
         _ANSI = re.compile(r'\x1b(?:[@-Z\\-_]|\[[0-9;?]*[A-Za-z]|\][^\x07]*\x07)')
 
         try:
-            self._proc = subprocess.Popen(
+            # Mode binaire (bufsize=0) : sinon Python convertit \r en \n
+            # (universal newlines) et le TextIOWrapper bufferise tout.
+            proc = subprocess.Popen(
                 cmd, shell=True, cwd=self._cwd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace",
-                bufsize=1)
+                bufsize=0)
+            self._proc = proc
+
+            def emit(line: str, tag: str, commit: bool):
+                clean = _ANSI.sub("", line)
+                if not clean and not commit:
+                    return
+                if self.root:
+                    t, l, c = tag, clean, commit
+                    self.root.after(0, lambda t=t, l=l, c=c:
+                                    self._write_progress(l, t, commit=c))
 
             def read_stream(stream, tag):
-                for line in stream:
-                    line = _ANSI.sub("", line).rstrip("\n")
-                    if not line:
-                        continue
-                    if self.root:
-                        t, l = tag, line
-                        self.root.after(0, lambda t=t, l=l: self._write_out(l, t))
-                stream.close()
+                """Lit en chunks bruts et découpe sur \\r et \\n.
+                \\n  → ligne committée
+                \\r  → ligne réécrite (barres de progression)"""
+                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                buffer = ""
+                while True:
+                    try:
+                        chunk = stream.read(256)   # bytes
+                    except Exception:
+                        break
+                    if not chunk:
+                        buffer += decoder.decode(b"", final=True)
+                        break
+                    buffer += decoder.decode(chunk)
+                    while True:
+                        idx_r = buffer.find("\r")
+                        idx_n = buffer.find("\n")
+                        if idx_r == -1 and idx_n == -1:
+                            break
+                        if idx_n == -1 or (idx_r != -1 and idx_r < idx_n):
+                            # \r en premier : peut-être \r\n, attendre si en bout
+                            if idx_r == len(buffer) - 1:
+                                break
+                            line = buffer[:idx_r]
+                            if buffer[idx_r + 1] == "\n":
+                                emit(line, tag, commit=True)
+                                buffer = buffer[idx_r + 2:]
+                            else:
+                                emit(line, tag, commit=False)
+                                buffer = buffer[idx_r + 1:]
+                        else:
+                            # \n en premier
+                            line = buffer[:idx_n]
+                            emit(line, tag, commit=True)
+                            buffer = buffer[idx_n + 1:]
+                # EOF : flush ce qui reste
+                if buffer:
+                    if buffer.endswith("\r"):
+                        emit(buffer[:-1], tag, commit=False)
+                    else:
+                        emit(buffer, tag, commit=True)
+                try:
+                    stream.close()
+                except Exception:
+                    pass
 
             t1 = threading.Thread(target=read_stream,
-                                   args=(self._proc.stdout, "out_tag"), daemon=True)
+                                   args=(proc.stdout, "out_tag"), daemon=True)
             t2 = threading.Thread(target=read_stream,
-                                   args=(self._proc.stderr, "err_tag"), daemon=True)
+                                   args=(proc.stderr, "err_tag"), daemon=True)
             t1.start(); t2.start()
             t1.join();  t2.join()
-            rc = self._proc.wait()
-            self._proc = None
+            rc = proc.wait()
+            # _proc peut avoir été mis à None par _interrupt — c'est ok
+            if self._proc is proc:
+                self._proc = None
             if self.root:
+                self.root.after(0, self._progress_finalize)
                 if rc != 0:
                     self.root.after(0, lambda: self._write_sys(f"← code {rc}"))
                 self.root.after(0, self._persist)
@@ -364,10 +419,12 @@ class ConsoleTab:
         except Exception as e:
             if self.root:
                 err = str(e)
+                self.root.after(0, self._progress_finalize)
                 self.root.after(0, lambda: self._write_err(err))
                 self.root.after(0, self._persist)
                 self.root.after(0, lambda: self._set_running(False))
-            self._proc = None
+            if self._proc is locals().get("proc"):
+                self._proc = None
 
     def _run_in_external_terminal(self, cmd: str):
         """Lance dans un vrai terminal Windows (ConPTY complet, flèches, TUI…)."""
@@ -440,6 +497,15 @@ class ConsoleTab:
                          command=lambda: self._copy_selection(None))
         menu.add_command(label="Copier tout", command=self._copy_all)
         menu.add_separator()
+        has_sel = self._has_selection()
+        menu.add_command(label="Lire la sélection",
+                         command=self._tts_speak_selection,
+                         state=("normal" if has_sel else "disabled"))
+        menu.add_command(label="Lire la dernière sortie",
+                         command=lambda: self._tts_speak_mode("last"))
+        menu.add_command(label="Tout lire",
+                         command=lambda: self._tts_speak_mode("all"))
+        menu.add_separator()
         menu.add_command(label="Effacer", command=self._clear)
         try:
             menu.tk_popup(event.x_root, event.y_root)
@@ -465,21 +531,38 @@ class ConsoleTab:
         self._out_box.configure(state="normal")
         self._out_box.delete("1.0", "end")
         self._out_box.configure(state="disabled")
+        self._progress_active = False
 
     # ─────────────────────────────────────────
     #  Lecture TTS
     # ─────────────────────────────────────────
     def _tts_toggle(self):
+        """Bouton 🔊 : utilise le mode actif (last / all)."""
         if self._tts_active:
             tts.stop()
             self._tts_reset()
         else:
-            text = self._out_box.get("1.0", "end").strip()
-            if not text:
-                return
-            self._tts_active = True
-            self._tts_btn.configure(text="⏹", fg="#E07070")
-            tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
+            mode = settings.get("tts_mode_console", "last")
+            self._tts_speak_mode(mode)
+
+    def _tts_speak_mode(self, mode: str):
+        text = self._get_tts_text(mode)
+        if not text:
+            return
+        self._tts_start(text)
+
+    def _tts_speak_selection(self):
+        text = self._get_selection_text()
+        if not text:
+            return
+        self._tts_start(text)
+
+    def _tts_start(self, text: str):
+        if self._tts_active:
+            tts.stop()
+        self._tts_active = True
+        self._tts_btn.configure(text="⏹", fg="#E07070")
+        tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
 
     def _tts_reset(self):
         self._tts_active = False
@@ -488,14 +571,90 @@ class ConsoleTab:
         except Exception:
             pass
 
+    def _get_tts_text(self, mode: str = "last") -> str:
+        """En mode 'all' : retourne tout le contenu.
+        En mode 'last' : retourne la sortie de la dernière commande
+        (texte après le dernier 'cmd_tag')."""
+        if mode == "all":
+            return self._out_box.get("1.0", "end").strip()
+        # mode "last" : trouver la dernière plage taggée 'cmd_tag'
+        try:
+            ranges = self._out_box.tag_ranges("cmd_tag")
+            if not ranges:
+                return self._out_box.get("1.0", "end").strip()
+            last_cmd_end = str(ranges[-1])  # fin de la dernière commande
+            return self._out_box.get(last_cmd_end, "end").strip()
+        except tk.TclError:
+            return self._out_box.get("1.0", "end").strip()
+
+    def _has_selection(self) -> bool:
+        try:
+            self._out_box.index(tk.SEL_FIRST)
+            return True
+        except tk.TclError:
+            return False
+
+    def _get_selection_text(self) -> str:
+        try:
+            return self._out_box.get(tk.SEL_FIRST, tk.SEL_LAST).strip()
+        except tk.TclError:
+            return ""
+
+    def _tts_btn_menu(self, event):
+        """Right-click sur le bouton 🔊 : choisir le mode par défaut."""
+        current = settings.get("tts_mode_console", "last")
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=BG3, fg=FG, activebackground=BG4,
+                       activeforeground=ACCENT, relief="flat", bd=0,
+                       font=("Segoe UI", 9))
+        menu.add_command(
+            label=("✓  " if current == "last" else "    ") + "Lire la dernière sortie",
+            command=lambda: settings.set("tts_mode_console", "last"))
+        menu.add_command(
+            label=("✓  " if current == "all" else "    ") + "Tout lire",
+            command=lambda: settings.set("tts_mode_console", "all"))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
     # ─────────────────────────────────────────
     #  Écriture dans la zone de sortie
     # ─────────────────────────────────────────
     def _write_out(self, text: str, tag: str = "out_tag"):
         self._out_box.configure(state="normal")
+        if self._progress_active:
+            # Termine la ligne de progression en cours avant d'écrire la nouvelle
+            self._out_box.insert("end-1c", "\n")
+            self._progress_active = False
         self._out_box.insert("end", text + "\n", tag)
         self._out_box.see("end")
         self._out_box.configure(state="disabled")
+
+    def _write_progress(self, text: str, tag: str = "out_tag", commit: bool = True):
+        """Écrit une ligne en gérant les barres de progression (\\r).
+        Si commit=False, la ligne pourra être réécrite par le prochain appel."""
+        self._out_box.configure(state="normal")
+        if self._progress_active:
+            # Supprimer la ligne de progression précédente (sans \n final)
+            self._out_box.delete("end-1c linestart", "end-1c")
+        self._out_box.insert("end-1c", text, tag)
+        if commit:
+            self._out_box.insert("end-1c", "\n", tag)
+            self._progress_active = False
+        else:
+            self._progress_active = True
+        self._out_box.see("end")
+        self._out_box.configure(state="disabled")
+
+    def _progress_finalize(self):
+        """Ajoute un \\n à une éventuelle ligne de progression non terminée."""
+        if self._progress_active:
+            self._out_box.configure(state="normal")
+            self._out_box.insert("end-1c", "\n")
+            self._out_box.see("end")
+            self._out_box.configure(state="disabled")
+            self._progress_active = False
 
     def _write_sys(self, text: str):
         self._write_out(text, "sys_tag")

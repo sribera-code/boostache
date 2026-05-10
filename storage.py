@@ -47,6 +47,8 @@ _DEFAULTS = {
     "window_geometry":      "720x580",
     "always_on_top":        True,
     "system_prompt":        "",
+    "tts_mode_chat":        "last",   # "last" | "all"
+    "tts_mode_console":     "last",   # "last" | "all"
 }
 
 
