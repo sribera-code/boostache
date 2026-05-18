@@ -9,10 +9,12 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog
 
+import customtkinter as ctk
+
 from engine import logger, tts
 from storage import settings, conversations, CACHE_DIR
 from theme import (
-    BG2, BG3, BG4, BG_CHAT, FG, FG_DIM, ACCENT, GREEN,
+    BG2, BG3, BG4, BG_CHAT, FG, FG_DIM, ACCENT, ACCENT_HOVER, RED,
 )
 from ui_utils import (
     OLLAMA_OK, _ollama,
@@ -139,51 +141,57 @@ class ConversationTab:
         self._chat_box.bind("<Button-3>", self._chat_context_menu)
 
         # Barre fichiers attachés (initialement cachée)
-        self._file_bar = tk.Frame(self.frame, bg=BG2)
+        self._file_bar = ctk.CTkFrame(self.frame, fg_color=BG2, corner_radius=0,
+                                        height=36)
 
         # Zone de saisie — packée en side="bottom" avant msg_frame
-        input_frame = tk.Frame(self.frame, bg=BG2, pady=6)
-        input_frame.pack(side="bottom", fill="x")
+        self._input_frame = ctk.CTkFrame(self.frame, fg_color=BG2, corner_radius=0,
+                                           height=70)
+        self._input_frame.pack(side="bottom", fill="x")
+        self._input_frame.pack_propagate(False)
+        input_frame = self._input_frame
 
-        tk.Button(input_frame, text="🔗", command=self._chat_attach_file,
-                  bg=BG2, fg=FG, activebackground=BG2,
-                  relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
-                  font=("Segoe UI", 13)).pack(side="left", padx=(8, 4))
+        icon_font = ctk.CTkFont(family="Segoe UI Emoji", size=15)
 
-        tk.Button(input_frame, text="🎤", command=self._chat_dictate,
-                  bg=BG2, fg=FG, activebackground=BG2,
-                  relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
-                  font=("Segoe UI", 13)).pack(side="left", padx=(0, 4))
+        def _icon_btn(text, cmd):
+            return ctk.CTkButton(
+                input_frame, text=text, command=cmd,
+                width=36, height=36, corner_radius=8,
+                fg_color="transparent", hover_color=BG3,
+                text_color=FG_DIM, font=icon_font)
 
-        tk.Button(input_frame, text="📷", command=self._chat_screenshot,
-                  bg=BG2, fg=FG, activebackground=BG2,
-                  relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
-                  font=("Segoe UI", 13)).pack(side="left", padx=(0, 4))
+        _icon_btn("🔗", self._chat_attach_file).pack(side="left", padx=(10, 2), pady=8)
+        _icon_btn("🎤", self._chat_dictate     ).pack(side="left", padx=2,       pady=8)
+        _icon_btn("📷", self._chat_screenshot  ).pack(side="left", padx=2,       pady=8)
 
-        self._tts_btn = tk.Button(input_frame, text="🔊", command=self._tts_toggle,
-                                   bg=BG2, fg=FG, activebackground=BG2,
-                                   relief="flat", cursor="hand2", padx=4, pady=2, bd=0,
-                                   font=("Segoe UI", 13))
-        self._tts_btn.pack(side="left", padx=(0, 4))
+        self._tts_btn = _icon_btn("🔊", self._tts_toggle)
+        self._tts_btn.pack(side="left", padx=(2, 6), pady=8)
         self._tts_btn.bind("<Button-3>", self._tts_btn_menu)
 
-        self._chat_input = tk.Text(input_frame, height=3,
-                                    bg=BG3, fg=FG, font=("Segoe UI", 9),
+        # Champ texte (encadré pour effet "card" arrondie)
+        input_card = ctk.CTkFrame(input_frame, fg_color=BG3, corner_radius=10)
+        input_card.pack(side="left", fill="both", expand=True, padx=2, pady=8)
+
+        self._chat_input = tk.Text(input_card, height=2,
+                                    bg=BG3, fg=FG, font=("Segoe UI", 10),
                                     relief="flat", borderwidth=0,
-                                    insertbackground=FG, selectbackground=BG4,
-                                    wrap="word", padx=8, pady=6)
-        self._chat_input.pack(side="left", fill="x", expand=True, padx=4)
+                                    insertbackground=FG,
+                                    selectbackground=BG4, selectforeground=ACCENT,
+                                    wrap="word", padx=10, pady=8,
+                                    highlightthickness=0)
+        self._chat_input.pack(fill="both", expand=True, padx=2, pady=2)
         self._chat_input.bind("<Return>", self._chat_on_enter)
         self._chat_input.bind("<Shift-Return>", lambda e: None)
         self._chat_input.bind("<Control-v>", self._chat_paste)
         self._chat_input.bind("<Control-V>", self._chat_paste)
 
-        self._chat_send_btn = tk.Button(
+        self._chat_send_btn = ctk.CTkButton(
             input_frame, text="➤", command=self._chat_send,
-            bg=BG2, fg=GREEN, activebackground=BG2, activeforeground=GREEN,
-            relief="flat", cursor="hand2", padx=4, pady=0, bd=0,
-            font=("Segoe UI", 24))
-        self._chat_send_btn.pack(side="right", padx=(4, 8))
+            width=44, height=44, corner_radius=10,
+            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            text_color="#FFFFFF",
+            font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"))
+        self._chat_send_btn.pack(side="right", padx=(6, 10), pady=8)
 
         msg_frame.pack(fill="both", expand=True)
         self.root.after(150, self._setup_dnd)
@@ -308,7 +316,7 @@ class ConversationTab:
 
         self._chat_input.delete("1.0", "end")
         self._chat_streaming = True
-        self._chat_send_btn.config(state="disabled", text="…")
+        self._chat_send_btn.configure(state="disabled", text="…")
         settings.set("last_model", model)
 
         user_display = text or ""
@@ -391,7 +399,7 @@ class ConversationTab:
             self._chat_streaming = False
             self._user_scrolled = False
             if self.root:
-                self.root.after(0, lambda: self._chat_send_btn.config(
+                self.root.after(0, lambda: self._chat_send_btn.configure(
                     state="normal", text="➤"))
 
     # ─────────────────────────────────────────
@@ -634,13 +642,13 @@ class ConversationTab:
         if self._tts_active:
             tts.stop()
         self._tts_active = True
-        self._tts_btn.configure(text="⏹", fg="#E07070")
+        self._tts_btn.configure(text="⏹", text_color=RED)
         tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
 
     def _tts_reset(self):
         self._tts_active = False
         try:
-            self._tts_btn.configure(text="🔊", fg=FG)
+            self._tts_btn.configure(text="🔊", text_color=FG_DIM)
         except Exception:
             pass
 
@@ -699,22 +707,25 @@ class ConversationTab:
             self._file_bar.pack_forget()
             return
         for i, f in enumerate(self._attached_files):
-            chip = tk.Frame(self._file_bar, bg=BG3, padx=4, pady=2)
-            chip.pack(side="left", padx=(6, 0), pady=3)
+            chip = ctk.CTkFrame(self._file_bar, fg_color=BG3, corner_radius=12)
+            chip.pack(side="left", padx=(8, 0), pady=6)
             icon = "🖼" if f["type"] == "image" else "🔗"
-            lbl = tk.Label(chip, text=f"{icon} {f['name']}", bg=BG3, fg=FG,
-                           font=("Segoe UI", 8), cursor="hand2")
-            lbl.pack(side="left")
+            lbl = ctk.CTkLabel(chip, text=f"{icon}  {f['name']}",
+                                text_color=FG, cursor="hand2",
+                                font=ctk.CTkFont(family="Segoe UI", size=10))
+            lbl.pack(side="left", padx=(10, 4), pady=2)
             # Right-click → ouvrir le répertoire ou détacher
             path = f.get("path", "")
             lbl.bind("<Button-3>", lambda e, p=path, idx=i: self._file_chip_menu(e, p, idx))
             chip.bind("<Button-3>", lambda e, p=path, idx=i: self._file_chip_menu(e, p, idx))
-            tk.Button(chip, text="✕",
-                      command=lambda idx=i: self._detach_one(idx),
-                      bg=BG3, fg=FG_DIM, activebackground=BG4,
-                      relief="flat", cursor="hand2", bd=0,
-                      font=("Segoe UI", 8)).pack(side="left", padx=(4, 0))
-        self._file_bar.pack(side="bottom", fill="x", after=self._chat_input.master)
+            ctk.CTkButton(chip, text="✕",
+                           command=lambda idx=i: self._detach_one(idx),
+                           width=18, height=18, corner_radius=9,
+                           fg_color="transparent", hover_color=BG4,
+                           text_color=FG_DIM,
+                           font=ctk.CTkFont(family="Segoe UI", size=10)
+                           ).pack(side="left", padx=(0, 6), pady=2)
+        self._file_bar.pack(side="bottom", fill="x", after=self._input_frame)
 
     def _open_file_location(self, path: str):
         try:

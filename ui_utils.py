@@ -1,9 +1,12 @@
 """
 ui_utils.py – Helpers UI partagés
-Détection des dépendances optionnelles et utilitaires de parsing.
+Détection des dépendances optionnelles, classe racine CTk+DnD,
+et utilitaires de parsing.
 """
 
 import re
+
+import customtkinter as ctk
 
 # ── Dépendances optionnelles ──────────────────────────────────────────────────
 try:
@@ -16,10 +19,22 @@ except ImportError:
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
     DND_OK = True
+
+    class CTkRoot(ctk.CTk, TkinterDnD.DnDWrapper):
+        """Fenêtre racine CustomTkinter avec support drag & drop."""
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.TkdndVersion = TkinterDnD._require(self)
 except ImportError:
     DND_FILES = None
     TkinterDnD = None
     DND_OK = False
+    CTkRoot = ctk.CTk
+
+
+# ── Apparence globale CustomTkinter ──────────────────────────────────────────
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

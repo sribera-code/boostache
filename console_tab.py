@@ -9,10 +9,13 @@ import threading
 import tkinter as tk
 from tkinter import ttk, filedialog
 
+import customtkinter as ctk
+
 from engine import logger, tts
 from storage import DATA_DIR, settings
 from theme import (
     BG2, BG3, BG4, BG_CHAT, BORDER, FG, FG_DIM, ACCENT,
+    GREEN, RED,
 )
 from ui_utils import DND_OK, DND_FILES, parse_drop_data
 
@@ -95,41 +98,49 @@ class ConsoleTab:
         tk.Frame(self.frame, bg=BORDER, height=1).pack(fill="x")
 
         # ── Bloc bas : CWD + input ─────────────
-        bottom = tk.Frame(self.frame, bg=BG2, pady=4)
+        bottom = ctk.CTkFrame(self.frame, fg_color=BG2, corner_radius=0)
         bottom.pack(fill="x")
 
         # Ligne 1 : répertoire courant
-        cwd_row = tk.Frame(bottom, bg=BG2)
-        cwd_row.pack(fill="x", padx=8, pady=(2, 1))
+        cwd_row = ctk.CTkFrame(bottom, fg_color="transparent")
+        cwd_row.pack(fill="x", padx=10, pady=(8, 2))
 
-        tk.Label(cwd_row, text="dir ›", bg=BG2, fg=FG_DIM,
-                 font=("Consolas", 8)).pack(side="left", padx=(0, 4))
+        ctk.CTkLabel(cwd_row, text="dir ›", text_color=FG_DIM,
+                     font=ctk.CTkFont(family="Consolas", size=11)
+                     ).pack(side="left", padx=(0, 6))
 
         self._cwd_var   = tk.StringVar(value=self._cwd)
-        self._cwd_entry = tk.Entry(cwd_row, textvariable=self._cwd_var,
-                                   bg=BG3, fg=FG_DIM, insertbackground=FG,
-                                   relief="flat", font=("Consolas", 8),
-                                   bd=3, selectbackground=BG4)
-        self._cwd_entry.pack(side="left", fill="x", expand=True, padx=(0, 4))
+        self._cwd_entry = ctk.CTkEntry(cwd_row, textvariable=self._cwd_var,
+                                        height=28, corner_radius=8,
+                                        fg_color=BG3, border_color=BG4, border_width=1,
+                                        text_color=FG_DIM,
+                                        font=ctk.CTkFont(family="Consolas", size=11))
+        self._cwd_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
         self._cwd_entry.bind("<Return>",   lambda e: self._apply_cwd())
         self._cwd_entry.bind("<FocusOut>", lambda e: self._apply_cwd())
 
-        tk.Button(cwd_row, text="📁", command=self._browse_cwd,
-                  bg=BG2, fg=FG_DIM, activebackground=BG3,
-                  relief="flat", cursor="hand2", bd=0,
-                  font=("Segoe UI", 9), padx=2).pack(side="right")
+        ctk.CTkButton(cwd_row, text="📁", command=self._browse_cwd,
+                       width=32, height=28, corner_radius=8,
+                       fg_color="transparent", hover_color=BG3,
+                       text_color=FG_DIM,
+                       font=ctk.CTkFont(family="Segoe UI Emoji", size=13)
+                       ).pack(side="right")
 
         # Ligne 2 : input commande
-        in_row = tk.Frame(bottom, bg=BG2)
-        in_row.pack(fill="x", padx=8, pady=(1, 4))
+        in_row = ctk.CTkFrame(bottom, fg_color="transparent")
+        in_row.pack(fill="x", padx=10, pady=(2, 10))
 
-        self._input = tk.Text(in_row, height=2,
-                               bg=BG3, fg=FG, font=("Consolas", 9),
+        input_card = ctk.CTkFrame(in_row, fg_color=BG3, corner_radius=10)
+        input_card.pack(side="left", fill="both", expand=True)
+
+        self._input = tk.Text(input_card, height=2,
+                               bg=BG3, fg=FG, font=("Consolas", 10),
                                relief="flat", borderwidth=0,
                                insertbackground=FG,
-                               selectbackground=BG4,
-                               wrap="word", padx=8, pady=5)
-        self._input.pack(side="left", fill="x", expand=True)
+                               selectbackground=BG4, selectforeground=ACCENT,
+                               wrap="word", padx=10, pady=8,
+                               highlightthickness=0)
+        self._input.pack(fill="both", expand=True, padx=2, pady=2)
         self._input.bind("<Return>",       self._on_enter)
         self._input.bind("<Shift-Return>", lambda e: None)
         self._input.bind("<Control-c>",    self._interrupt)
@@ -138,17 +149,19 @@ class ConsoleTab:
         self._input.bind("<Control-t>",    self._on_ctrl_t)
         self._input.bind("<Control-T>",    self._on_ctrl_t)
 
-        self._run_btn = tk.Button(in_row, text="▶", command=self._run_cmd,
-                                   bg=BG2, fg=FG, activebackground=BG2,
-                                   relief="flat", cursor="hand2", bd=0,
-                                   font=("Segoe UI", 18), padx=6)
-        self._run_btn.pack(side="right", padx=(4, 0))
+        self._run_btn = ctk.CTkButton(in_row, text="▶", command=self._run_cmd,
+                                       width=44, height=44, corner_radius=10,
+                                       fg_color=GREEN, hover_color="#7FAF4C",
+                                       text_color="#0F1117",
+                                       font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"))
+        self._run_btn.pack(side="right", padx=(6, 0))
 
-        self._tts_btn = tk.Button(in_row, text="🔊", command=self._tts_toggle,
-                                   bg=BG2, fg=FG, activebackground=BG2,
-                                   relief="flat", cursor="hand2", bd=0,
-                                   font=("Segoe UI", 13), padx=4)
-        self._tts_btn.pack(side="right", padx=(0, 4))
+        self._tts_btn = ctk.CTkButton(in_row, text="🔊", command=self._tts_toggle,
+                                       width=36, height=36, corner_radius=8,
+                                       fg_color="transparent", hover_color=BG3,
+                                       text_color=FG_DIM,
+                                       font=ctk.CTkFont(family="Segoe UI Emoji", size=15))
+        self._tts_btn.pack(side="right", padx=(6, 0))
         self._tts_btn.bind("<Button-3>", self._tts_btn_menu)
 
         # ── DnD ───────────────────────────────
@@ -443,13 +456,17 @@ class ConsoleTab:
     def _set_running(self, running: bool):
         """Met à jour l'apparence pour indiquer qu'un process est en cours."""
         if running:
-            self._input.configure(bg="#2A2A3A")
-            self._run_btn.configure(text="■", fg="#E07070",
+            self._input.configure(bg="#1F2235")
+            self._run_btn.configure(text="■", fg_color=RED,
+                                    hover_color="#D45B73",
+                                    text_color="#FFFFFF",
                                     command=self._interrupt)
             self._write_sys("⏳ process en cours — Entrée envoie sur stdin, Ctrl+C interrompt")
         else:
             self._input.configure(bg=BG3)
-            self._run_btn.configure(text="▶", fg=FG,
+            self._run_btn.configure(text="▶", fg_color=GREEN,
+                                    hover_color="#7FAF4C",
+                                    text_color="#0F1117",
                                     command=self._run_cmd)
 
     def _interrupt(self, event=None):
@@ -561,13 +578,13 @@ class ConsoleTab:
         if self._tts_active:
             tts.stop()
         self._tts_active = True
-        self._tts_btn.configure(text="⏹", fg="#E07070")
+        self._tts_btn.configure(text="⏹", text_color=RED)
         tts.speak(text, on_done=lambda: self.root.after(0, self._tts_reset))
 
     def _tts_reset(self):
         self._tts_active = False
         try:
-            self._tts_btn.configure(text="🔊", fg=FG)
+            self._tts_btn.configure(text="🔊", text_color=FG_DIM)
         except Exception:
             pass
 

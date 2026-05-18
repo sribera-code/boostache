@@ -10,13 +10,15 @@ import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 
+import customtkinter as ctk
+
 from engine import logger, task_manager, hotkey_manager
 from storage import settings, conversations, DATA_DIR
 from theme import (
     BG, BG2, BG3, BG4, BG_LOG, BG_CHAT, BORDER,
-    FG, FG_DIM, FG_LOG, FG_HEAD, ACCENT, GREEN,
+    FG, FG_DIM, FG_LOG, FG_HEAD, ACCENT, ACCENT_HOVER, GREEN,
 )
-from ui_utils import OLLAMA_OK, _ollama, DND_OK, TkinterDnD
+from ui_utils import OLLAMA_OK, _ollama, CTkRoot
 from conversation_tab import ConversationTab
 from console_tab import ConsoleTab, CONSOLES_DIR
 
@@ -38,19 +40,20 @@ class DashboardWindow:
         self._restoring_consoles: bool = False
 
     def build(self):
-        if DND_OK:
-            self.root = TkinterDnD.Tk()
-        else:
-            self.root = tk.Tk()
+        self.root = CTkRoot()
 
         self.root.title("Boostache")
-        self.root.geometry("860x580")
+        self.root.geometry("900x620")
+        self.root.minsize(720, 480)
         self.root.resizable(True, True)
-        self.root.configure(bg=BG2)
+        self.root.configure(fg_color=BG2)
         self.root.attributes("-topmost", True)
         self.root.protocol("WM_DELETE_WINDOW", self.hide)
         self.root.bind("<Unmap>", self._on_unmap)
-        self.root.iconbitmap("boostache.ico")
+        try:
+            self.root.iconbitmap("boostache.ico")
+        except Exception:
+            pass
         self._set_dark_titlebar()
         self._style()
         self._build_notebook()
@@ -80,36 +83,46 @@ class DashboardWindow:
         style.theme_use("clam")
 
         # Notebook principal (onglets Conversation / Historique / …)
-        style.configure("TNotebook", background=BG2, borderwidth=1, relief="flat")
-        style.configure("TNotebook.Tab", background=BG3, foreground=FG_DIM,
-                        padding=[16, 7], font=("Segoe UI", 9), borderwidth=0)
+        style.configure("TNotebook", background=BG2, borderwidth=0, relief="flat",
+                        tabmargins=[8, 6, 8, 0])
+        style.configure("TNotebook.Tab", background=BG2, foreground=FG_DIM,
+                        padding=[18, 9], font=("Segoe UI", 9), borderwidth=0,
+                        focuscolor=BG2)
         style.map("TNotebook.Tab",
-                  background=[("selected", BG4), ("active", BG3)],
+                  background=[("selected", BG), ("active", BG3)],
                   foreground=[("selected", ACCENT), ("active", FG)])
 
         # Notebook interne (onglets de conversation)
-        style.configure("Inner.TNotebook", background=BG2, borderwidth=0, relief="flat")
-        style.configure("Inner.TNotebook.Tab", background=BG2, foreground=FG_DIM,
-                        padding=[10, 4], font=("Segoe UI", 8), borderwidth=0)
+        style.configure("Inner.TNotebook", background=BG, borderwidth=0, relief="flat",
+                        tabmargins=[4, 4, 4, 0])
+        style.configure("Inner.TNotebook.Tab", background=BG, foreground=FG_DIM,
+                        padding=[12, 5], font=("Segoe UI", 8), borderwidth=0,
+                        focuscolor=BG)
         style.map("Inner.TNotebook.Tab",
                   background=[("selected", BG_CHAT), ("active", BG3)],
                   foreground=[("selected", FG), ("active", FG)])
 
         style.configure("TFrame", background=BG)
         style.configure("Treeview", background=BG3, foreground=FG,
-                        fieldbackground=BG3, rowheight=28,
-                        font=("Segoe UI", 9), borderwidth=1, relief="flat")
+                        fieldbackground=BG3, rowheight=30,
+                        font=("Segoe UI", 9), borderwidth=0, relief="flat")
         style.configure("Treeview.Heading", background=BG2, foreground=FG_HEAD,
-                        font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0)
+                        font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0,
+                        padding=[8, 6])
+        style.map("Treeview.Heading",
+                  background=[("active", BG3)])
         style.map("Treeview",
                   background=[("selected", BG4)],
                   foreground=[("selected", ACCENT)])
         style.configure("Vertical.TScrollbar", background=BG3, troughcolor=BG2,
-                        borderwidth=1, arrowcolor=FG_DIM, relief="flat",
-                        darkcolor=BG2, lightcolor=BG4)
+                        borderwidth=0, arrowcolor=FG_DIM, relief="flat",
+                        darkcolor=BG2, lightcolor=BG4, gripcount=0, arrowsize=12)
+        style.map("Vertical.TScrollbar",
+                  background=[("active", BG4)],
+                  arrowcolor=[("active", FG)])
         style.configure("Chat.TCombobox", fieldbackground=BG3, background=BG3,
                         foreground=FG, selectbackground=BG4, selectforeground=ACCENT,
-                        borderwidth=0)
+                        borderwidth=0, arrowcolor=FG_DIM)
         style.map("Chat.TCombobox", fieldbackground=[("readonly", BG3)],
                   foreground=[("readonly", FG)])
 
@@ -117,10 +130,10 @@ class DashboardWindow:
     #  Notebook principal
     # ─────────────────────────────────────────
     def _build_notebook(self):
-        border = tk.Frame(self.root, bg="#0a0a0a", padx=1, pady=1)
-        border.pack(fill="both", expand=True)
-        nb = ttk.Notebook(border)
-        nb.pack(fill="both", expand=True)
+        container = ctk.CTkFrame(self.root, fg_color=BG2, corner_radius=0)
+        container.pack(fill="both", expand=True, padx=0, pady=0)
+        nb = ttk.Notebook(container)
+        nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
 
         # ── Conversation ──────────────────────
         chat_frame = ttk.Frame(nb)
@@ -137,10 +150,11 @@ class DashboardWindow:
         nb.add(log_frame, text="  Historique  ")
         self._log_box = scrolledtext.ScrolledText(
             log_frame, state="disabled",
-            bg=BG_LOG, fg=FG_LOG, font=("Consolas", 9),
+            bg=BG_LOG, fg=FG_LOG, font=("Consolas", 10),
             insertbackground=FG, relief="flat", borderwidth=0,
-            selectbackground=BG4, selectforeground=ACCENT, padx=8, pady=6)
-        self._log_box.pack(fill="both", expand=True)
+            selectbackground=BG4, selectforeground=ACCENT,
+            padx=12, pady=10, highlightthickness=0)
+        self._log_box.pack(fill="both", expand=True, padx=2, pady=2)
         self._log_box.bind("<Button-3>", self._log_context_menu)
         self._log_box.bind("<Control-c>", lambda e: self._log_copy_selection())
         self._log_box.bind("<Control-C>", lambda e: self._log_copy_selection())
@@ -190,45 +204,57 @@ class DashboardWindow:
     #  Tab Paramètres
     # ─────────────────────────────────────────
     def _build_settings_tab(self, parent):
-        outer = tk.Frame(parent, bg=BG2)
-        outer.pack(fill="both", expand=True, padx=16, pady=16)
+        outer = ctk.CTkFrame(parent, fg_color=BG2, corner_radius=0)
+        outer.pack(fill="both", expand=True, padx=20, pady=20)
 
-        tk.Label(outer, text="Pré-prompt système", bg=BG2, fg=FG_HEAD,
-                 font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x", pady=(0, 4))
-        tk.Label(outer,
-                 text="Ce texte est envoyé au LLM comme message système avant chaque conversation.",
-                 bg=BG2, fg=FG_DIM, font=("Segoe UI", 8), anchor="w",
-                 wraplength=600, justify="left").pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(outer, text="Pré-prompt système",
+                     text_color=FG_HEAD, anchor="w",
+                     font=ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
+                     ).pack(fill="x", pady=(0, 4))
+        ctk.CTkLabel(outer,
+                     text="Ce texte est envoyé au LLM comme message système avant chaque conversation.",
+                     text_color=FG_DIM, anchor="w", justify="left",
+                     wraplength=600,
+                     font=ctk.CTkFont(family="Segoe UI", size=11)
+                     ).pack(fill="x", pady=(0, 10))
+
+        prompt_card = ctk.CTkFrame(outer, fg_color=BG3, corner_radius=8)
+        prompt_card.pack(fill="both", expand=True)
 
         self._system_prompt_box = tk.Text(
-            outer, height=12,
-            bg=BG3, fg=FG, font=("Segoe UI", 9),
+            prompt_card, height=12,
+            bg=BG3, fg=FG, font=("Segoe UI", 10),
             relief="flat", borderwidth=0, wrap="word",
-            padx=8, pady=6, insertbackground=FG,
-            selectbackground="#4A7EBB", selectforeground="#FFFFFF")
-        self._system_prompt_box.pack(fill="both", expand=True)
+            padx=12, pady=10, insertbackground=FG,
+            selectbackground=BG4, selectforeground=ACCENT,
+            highlightthickness=0)
+        self._system_prompt_box.pack(fill="both", expand=True, padx=2, pady=2)
 
         saved = settings.get("system_prompt", "")
         if saved:
             self._system_prompt_box.insert("1.0", saved)
 
-        btn_row = tk.Frame(outer, bg=BG2)
-        btn_row.pack(fill="x", pady=(10, 0))
+        btn_row = ctk.CTkFrame(outer, fg_color="transparent")
+        btn_row.pack(fill="x", pady=(14, 0))
 
-        self._settings_status = tk.Label(btn_row, text="", bg=BG2,
-                                          fg=GREEN, font=("Segoe UI", 8))
+        self._settings_status = ctk.CTkLabel(btn_row, text="",
+                                              text_color=GREEN,
+                                              font=ctk.CTkFont(family="Segoe UI", size=11))
         self._settings_status.pack(side="left")
 
-        tk.Button(btn_row, text="Sauvegarder", command=self._save_system_prompt,
-                  bg=BG4, fg=FG, activebackground=BG3, activeforeground=ACCENT,
-                  relief="flat", cursor="hand2", padx=12, pady=4, bd=0,
-                  font=("Segoe UI", 9)).pack(side="right")
+        ctk.CTkButton(btn_row, text="Sauvegarder",
+                       command=self._save_system_prompt,
+                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                       text_color="#FFFFFF",
+                       corner_radius=8, width=120, height=32,
+                       font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+                       ).pack(side="right")
 
     def _save_system_prompt(self):
         prompt = self._system_prompt_box.get("1.0", "end").strip()
         settings.set("system_prompt", prompt)
-        self._settings_status.config(text="✓ Sauvegardé")
-        self.root.after(2000, lambda: self._settings_status.config(text=""))
+        self._settings_status.configure(text="✓ Sauvegardé")
+        self.root.after(2000, lambda: self._settings_status.configure(text=""))
 
     # ─────────────────────────────────────────
     #  Tab Conversation (inner notebook multi-onglets)
@@ -422,13 +448,15 @@ class DashboardWindow:
         popup = tk.Toplevel(self.root)
         popup.overrideredirect(True)
         popup.attributes("-topmost", True)
-        popup.configure(bg=FG_DIM)
+        popup.configure(bg=ACCENT)
         popup.geometry(f"{entry_w}x{entry_h}+{sx}+{sy}")
         self._rename_popup = popup
         entry = tk.Entry(popup, textvariable=var, bg=BG3, fg=FG,
                          insertbackground=FG, relief="flat",
-                         font=("Segoe UI", 9), bd=0)
-        entry.pack(fill="both", expand=True, padx=3, pady=3)
+                         font=("Segoe UI", 9), bd=0,
+                         selectbackground=BG4, selectforeground=ACCENT,
+                         highlightthickness=0)
+        entry.pack(fill="both", expand=True, padx=2, pady=2)
         entry.select_range(0, "end")
         entry.focus_set()
         _done = [False]
@@ -822,13 +850,17 @@ class DashboardWindow:
     def _build_status_bar(self):
         sep = tk.Frame(self.root, bg=BORDER, height=1)
         sep.pack(fill="x")
-        bar = tk.Frame(self.root, bg=BG2, pady=5)
+        bar = ctk.CTkFrame(self.root, fg_color=BG2, corner_radius=0, height=28)
         bar.pack(fill="x")
-        tk.Label(bar, text="● actif", font=("Segoe UI", 8),
-                 bg=BG2, fg=GREEN).pack(side="left", padx=14)
-        self._clock_lbl = tk.Label(bar, text="", font=("Consolas", 8),
-                                    bg=BG2, fg=FG_DIM)
-        self._clock_lbl.pack(side="right", padx=14)
+        bar.pack_propagate(False)
+        ctk.CTkLabel(bar, text="● actif",
+                     text_color=GREEN,
+                     font=ctk.CTkFont(family="Segoe UI", size=11)
+                     ).pack(side="left", padx=16)
+        self._clock_lbl = ctk.CTkLabel(bar, text="",
+                                        text_color=FG_DIM,
+                                        font=ctk.CTkFont(family="Consolas", size=11))
+        self._clock_lbl.pack(side="right", padx=16)
         self._tick_clock()
 
     # ─────────────────────────────────────────
@@ -1025,63 +1057,78 @@ class DashboardWindow:
         editing = edit_idx is not None
         existing = task_manager.registered[edit_idx] if editing else {}
 
-        dlg = tk.Toplevel(self.root)
+        dlg = ctk.CTkToplevel(self.root)
         dlg.title("Modifier la tâche" if editing else "Nouvelle tâche planifiée")
-        dlg.configure(bg=BG2)
+        dlg.configure(fg_color=BG2)
         dlg.resizable(False, False)
-        dlg.grab_set()
         dlg.attributes("-topmost", True)
+        dlg.after(50, dlg.grab_set)
 
-        pad = {"padx": 14, "pady": 5}
+        body = ctk.CTkFrame(dlg, fg_color=BG2, corner_radius=0)
+        body.pack(fill="both", expand=True, padx=18, pady=16)
+
+        small_font = ctk.CTkFont(family="Segoe UI", size=10)
+        regular_font = ctk.CTkFont(family="Segoe UI", size=11)
 
         # ── Titre ──
-        tk.Label(dlg, text="Titre", bg=BG2, fg=FG_DIM,
-                 font=("Segoe UI", 8)).grid(row=0, column=0, sticky="w", **pad)
+        ctk.CTkLabel(body, text="Titre", text_color=FG_DIM, anchor="w",
+                     font=small_font
+                     ).grid(row=0, column=0, sticky="w", pady=(0, 2))
         lbl_var = tk.StringVar(value=existing.get("label", "Ma tâche"))
-        tk.Entry(dlg, textvariable=lbl_var, bg=BG3, fg=FG, insertbackground=FG,
-                 relief="flat", font=("Segoe UI", 9), width=36,
-                 bd=4).grid(row=0, column=1, columnspan=3, sticky="we", **pad)
+        ctk.CTkEntry(body, textvariable=lbl_var, width=320, height=32,
+                     fg_color=BG3, border_color=BG4, border_width=1,
+                     text_color=FG, corner_radius=8,
+                     font=regular_font
+                     ).grid(row=1, column=0, columnspan=4, sticky="we", pady=(0, 12))
 
         # ── Type de périodicité ──
-        tk.Label(dlg, text="Périodicité", bg=BG2, fg=FG_DIM,
-                 font=("Segoe UI", 8)).grid(row=1, column=0, sticky="w", **pad)
+        ctk.CTkLabel(body, text="Périodicité", text_color=FG_DIM, anchor="w",
+                     font=small_font
+                     ).grid(row=2, column=0, sticky="w", pady=(0, 2))
         sched_var = tk.StringVar(value=existing.get("sched_type", "interval"))
 
-        rb_frame = tk.Frame(dlg, bg=BG2)
-        rb_frame.grid(row=1, column=1, columnspan=3, sticky="w", padx=14, pady=2)
-        tk.Radiobutton(rb_frame, text="Intervalle", variable=sched_var,
-                       value="interval", bg=BG2, fg=FG, selectcolor=BG3,
-                       activebackground=BG2, font=("Segoe UI", 9),
-                       command=lambda: _toggle()).pack(side="left")
-        tk.Radiobutton(rb_frame, text="Heure fixe", variable=sched_var,
-                       value="fixed", bg=BG2, fg=FG, selectcolor=BG3,
-                       activebackground=BG2, font=("Segoe UI", 9),
-                       command=lambda: _toggle()).pack(side="left", padx=(16, 0))
+        rb_frame = ctk.CTkFrame(body, fg_color="transparent")
+        rb_frame.grid(row=3, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        ctk.CTkRadioButton(rb_frame, text="Intervalle", variable=sched_var,
+                            value="interval", text_color=FG,
+                            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                            border_color=BG4, font=regular_font,
+                            command=lambda: _toggle()).pack(side="left")
+        ctk.CTkRadioButton(rb_frame, text="Heure fixe", variable=sched_var,
+                            value="fixed", text_color=FG,
+                            fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                            border_color=BG4, font=regular_font,
+                            command=lambda: _toggle()).pack(side="left", padx=(20, 0))
 
         # ── Sous-panneau Intervalle ──
-        iv_frame = tk.Frame(dlg, bg=BG2)
-        iv_frame.grid(row=2, column=1, columnspan=3, sticky="w", padx=14, pady=2)
-        tk.Label(iv_frame, text="Toutes les", bg=BG2, fg=FG,
-                 font=("Segoe UI", 9)).pack(side="left")
+        iv_frame = ctk.CTkFrame(body, fg_color="transparent")
+        iv_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 8))
+        ctk.CTkLabel(iv_frame, text="Toutes les", text_color=FG,
+                     font=regular_font).pack(side="left")
         iv_val = tk.StringVar(value=str(existing.get("interval_value", "30")))
-        tk.Spinbox(iv_frame, from_=1, to=9999, textvariable=iv_val, width=6,
-                   bg=BG3, fg=FG, buttonbackground=BG4, relief="flat",
-                   insertbackground=FG, font=("Segoe UI", 9)).pack(side="left", padx=6)
+        ctk.CTkEntry(iv_frame, textvariable=iv_val, width=70, height=30,
+                     fg_color=BG3, border_color=BG4, border_width=1,
+                     text_color=FG, corner_radius=8,
+                     font=regular_font).pack(side="left", padx=8)
         iv_unit = tk.StringVar(value=existing.get("interval_unit", "minutes"))
-        ttk.Combobox(iv_frame, textvariable=iv_unit, width=10,
-                     values=["secondes", "minutes", "heures"],
-                     state="readonly", style="Chat.TCombobox").pack(side="left")
+        ctk.CTkOptionMenu(iv_frame, variable=iv_unit, width=110, height=30,
+                          values=["secondes", "minutes", "heures"],
+                          fg_color=BG3, button_color=BG4, button_hover_color=ACCENT,
+                          text_color=FG, dropdown_fg_color=BG3,
+                          dropdown_text_color=FG, dropdown_hover_color=BG4,
+                          corner_radius=8, font=regular_font).pack(side="left")
 
         # ── Sous-panneau Heure fixe ──
-        fx_frame = tk.Frame(dlg, bg=BG2)
-        fx_frame.grid(row=2, column=1, columnspan=3, sticky="w", padx=14, pady=2)
+        fx_frame = ctk.CTkFrame(body, fg_color="transparent")
+        fx_frame.grid(row=4, column=0, columnspan=4, sticky="w", pady=(0, 8))
         fx_frame.grid_remove()
-        tk.Label(fx_frame, text="Heure (HH:MM)", bg=BG2, fg=FG,
-                 font=("Segoe UI", 9)).pack(side="left")
+        ctk.CTkLabel(fx_frame, text="Heure (HH:MM)", text_color=FG,
+                     font=regular_font).pack(side="left")
         fx_time = tk.StringVar(value=existing.get("at_time", "09:00"))
-        tk.Entry(fx_frame, textvariable=fx_time, width=8, bg=BG3, fg=FG,
-                 insertbackground=FG, relief="flat", font=("Segoe UI", 9),
-                 bd=4).pack(side="left", padx=8)
+        ctk.CTkEntry(fx_frame, textvariable=fx_time, width=80, height=30,
+                     fg_color=BG3, border_color=BG4, border_width=1,
+                     text_color=FG, corner_radius=8,
+                     font=regular_font).pack(side="left", padx=10)
 
         def _toggle():
             if sched_var.get() == "interval":
@@ -1095,20 +1142,25 @@ class DashboardWindow:
         _toggle()
 
         # ── Action (code Python) ──
-        tk.Label(dlg, text="Action (Python)", bg=BG2, fg=FG_DIM,
-                 font=("Segoe UI", 8)).grid(row=3, column=0, sticky="nw",
-                                             padx=14, pady=(8, 2))
-        code_box = tk.Text(dlg, height=6, width=44, bg=BG3, fg=FG,
+        ctk.CTkLabel(body, text="Action (Python)", text_color=FG_DIM, anchor="w",
+                     font=small_font
+                     ).grid(row=5, column=0, sticky="nw", pady=(4, 2))
+        code_card = ctk.CTkFrame(body, fg_color=BG3, corner_radius=8)
+        code_card.grid(row=6, column=0, columnspan=4, sticky="we", pady=(0, 12))
+        code_box = tk.Text(code_card, height=6, width=44,
+                           bg=BG3, fg=FG,
                            insertbackground=FG, relief="flat",
-                           font=("Consolas", 9), bd=4, wrap="none")
-        code_box.grid(row=3, column=1, columnspan=3, padx=14, pady=(8, 4))
+                           font=("Consolas", 10), wrap="none",
+                           padx=10, pady=8, highlightthickness=0,
+                           selectbackground=BG4, selectforeground=ACCENT)
+        code_box.pack(fill="both", expand=True, padx=2, pady=2)
         default_code = existing.get("action_code",
                                     'logger.log("Ma tâche s\'exécute ✓")')
         code_box.insert("1.0", default_code)
 
         # ── Boutons ──
-        btn_frame = tk.Frame(dlg, bg=BG2)
-        btn_frame.grid(row=4, column=0, columnspan=4, pady=(4, 12))
+        btn_frame = ctk.CTkFrame(body, fg_color="transparent")
+        btn_frame.grid(row=7, column=0, columnspan=4, sticky="e", pady=(4, 0))
 
         def _ok():
             label      = lbl_var.get().strip() or "Tâche"
@@ -1136,15 +1188,17 @@ class DashboardWindow:
                 self._task_register_custom(label, sched_type, iv, unit, at, code,
                                            insert_at=pos)
 
+        ctk.CTkButton(btn_frame, text="Annuler", command=dlg.destroy,
+                       fg_color=BG3, hover_color=BG4, text_color=FG_DIM,
+                       corner_radius=8, width=100, height=32,
+                       font=regular_font).pack(side="left", padx=(0, 8))
         btn_label = "Enregistrer" if editing else "Créer"
-        tk.Button(btn_frame, text=btn_label, command=_ok,
-                  bg=BG4, fg=ACCENT, activebackground=BG3,
-                  relief="flat", cursor="hand2", padx=18, pady=4, bd=0,
-                  font=("Segoe UI", 9, "bold")).pack(side="left", padx=6)
-        tk.Button(btn_frame, text="Annuler", command=dlg.destroy,
-                  bg=BG3, fg=FG_DIM, activebackground=BG4,
-                  relief="flat", cursor="hand2", padx=18, pady=4, bd=0,
-                  font=("Segoe UI", 9)).pack(side="left", padx=6)
+        ctk.CTkButton(btn_frame, text=btn_label, command=_ok,
+                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                       text_color="#FFFFFF",
+                       corner_radius=8, width=120, height=32,
+                       font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+                       ).pack(side="left")
 
         dlg.update_idletasks()
         rx = self.root.winfo_x() + (self.root.winfo_width()  - dlg.winfo_width())  // 2
@@ -1198,7 +1252,7 @@ class DashboardWindow:
             self._task_tree.insert("", "end",
                                    values=(entry["label"], period_str, nxt),
                                    tags=(tag,))
-        self._task_tree.tag_configure("custom", foreground="#A8CCEA")
+        self._task_tree.tag_configure("custom", foreground=ACCENT)
         self.root.after(5000, self._refresh_tasks)
 
     def _refresh_hotkeys(self):
@@ -1208,7 +1262,7 @@ class DashboardWindow:
 
     def _tick_clock(self):
         if self.root:
-            self._clock_lbl.config(
+            self._clock_lbl.configure(
                 text=datetime.datetime.now().strftime("%d/%m/%Y  %H:%M:%S"))
             self.root.after(1000, self._tick_clock)
 
