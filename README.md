@@ -63,7 +63,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-L'application se réduit dans le system tray. Double-clic ou `Ctrl+Alt+D` pour ouvrir le dashboard.
+L'application se réduit dans le system tray. Double-clic ou `Ctrl+Shift+D` pour ouvrir le dashboard.
 
 Pour démarrer automatiquement avec Windows, créer un raccourci vers `main.py` (ou un `.bat`) dans `shell:startup`.
 
@@ -129,3 +129,4 @@ boostache/
 | `tkinterdnd2` | Drag & drop dans Tkinter |
 | `platformdirs` | Chemin de données utilisateur cross-platform |
 | `pyttsx3` | Text-to-speech (SAPI5 Windows) |
+| `customtkinter` | Widgets Tkinter modernisés (boutons arrondis, hover, palette dark) |

@@ -6,3 +6,4 @@ ollama>=0.2.0
 tkinterdnd2>=0.3.0
 platformdirs>=4.0.0
 pyttsx3>=2.90
+customtkinter>=5.2.0
