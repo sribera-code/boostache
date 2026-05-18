@@ -1,35 +1,38 @@
 """
-theme.py – Palette Boostache (dark moderne, Tokyo Night-ish)
-Centralise les couleurs utilisées par l'UI et les widgets CustomTkinter.
+theme.py – Palette Boostache (dark monochrome)
+Gris purs pour le chrome, accent blanc cassé, GREEN/RED conservés pour
+les états sémantiques (success / erreur).
 """
 
-# ── Background (du plus sombre au plus clair) ────────────────────────────────
-BG        = "#1A1B26"   # fond principal (contenu, chat)
-BG2       = "#16161E"   # fond fenêtre / barres / status
-BG3       = "#24283B"   # fond input, cards
-BG4       = "#2F334D"   # fond hover / sélection
-BG_LOG    = "#13141A"   # fond zone log / console output
-BG_CHAT   = "#1A1B26"   # fond zone chat (= BG)
-BORDER    = "#0F0F13"   # bordures
+# ── Background (du plus sombre au plus clair, gris neutres) ──────────────────
+BG        = "#1E1E1E"   # fond principal (contenu, chat)
+BG2       = "#171717"   # fond fenêtre / barres / status
+BG3       = "#2A2A2A"   # fond input, cards
+BG4       = "#3A3A3A"   # fond hover / sélection
+BG_LOG    = "#121212"   # fond zone log / console output
+BG_CHAT   = "#1E1E1E"   # fond zone chat (= BG)
+BORDER    = "#0A0A0A"   # bordures
 
-# ── Foreground ───────────────────────────────────────────────────────────────
-FG        = "#C0CAF5"   # texte principal
-FG_DIM    = "#7A88AF"   # texte secondaire
-FG_LOG    = "#A9B1D6"   # texte log
-FG_HEAD   = "#C0CAF5"   # texte headers
+# ── Foreground (blanc / gris) ────────────────────────────────────────────────
+FG        = "#E5E5E5"   # texte principal
+FG_DIM    = "#808080"   # texte secondaire
+FG_LOG    = "#A8A8A8"   # texte log
+FG_HEAD   = "#D0D0D0"   # texte headers
 
-# ── Accents ──────────────────────────────────────────────────────────────────
-ACCENT          = "#7AA2F7"   # bleu accent (boutons primaires, sélection)
-ACCENT_HOVER    = "#5E81E8"   # bleu accent hover
-ACCENT_DIM      = "#3D5A99"   # bleu accent désaturé (états désactivés)
-GREEN           = "#9ECE6A"   # success / utilisateur chat
-GREEN_HOVER     = "#7FAF4C"
-RED             = "#F7768E"   # erreur / stop
-PURPLE          = "#BB9AF7"
-YELLOW          = "#E0AF68"
-CYAN            = "#7DCFFF"
+# ── Accents (boutons primaires : blanc cassé, texte sombre) ──────────────────
+ACCENT          = "#E0E0E0"
+ACCENT_HOVER    = "#FFFFFF"
+ACCENT_DIM      = "#5A5A5A"
+
+# ── Sémantique (conservés en couleur car fonctionnels) ───────────────────────
+GREEN           = "#7AAF7A"   # success / actif / utilisateur chat
+GREEN_HOVER     = "#5F8F5F"
+RED             = "#D47070"   # erreur / stop
+PURPLE          = "#A8A8A8"   # neutralisé en gris
+YELLOW          = "#C8C8C8"   # neutralisé en gris
+CYAN            = "#B0B0B0"   # neutralisé en gris
 
 # ── Couleurs sémantiques chat ────────────────────────────────────────────────
-USER_COLOR  = "#9ECE6A"
-BOT_COLOR   = "#7AA2F7"
-CODE_COLOR  = "#7DCFFF"
+USER_COLOR  = "#9EC89E"   # vert doux pour utilisateur (non-bleu)
+BOT_COLOR   = "#D0D0D0"   # gris clair pour bot
+CODE_COLOR  = "#C8C8C8"   # gris clair pour code

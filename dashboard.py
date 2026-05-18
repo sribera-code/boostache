@@ -245,7 +245,7 @@ class DashboardWindow:
         ctk.CTkButton(btn_row, text="Sauvegarder",
                        command=self._save_system_prompt,
                        fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                       text_color="#FFFFFF",
+                       text_color="#1A1A1A",
                        corner_radius=8, width=120, height=32,
                        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
                        ).pack(side="right")
@@ -1195,7 +1195,7 @@ class DashboardWindow:
         btn_label = "Enregistrer" if editing else "Créer"
         ctk.CTkButton(btn_frame, text=btn_label, command=_ok,
                        fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                       text_color="#FFFFFF",
+                       text_color="#1A1A1A",
                        corner_radius=8, width=120, height=32,
                        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
                        ).pack(side="left")

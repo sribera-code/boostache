@@ -88,7 +88,7 @@ class ConsoleTab:
         self._out_box.tag_configure("sys_tag",  foreground=FG_DIM,
                                      font=("Consolas", 8, "italic"),
                                      lmargin1=10)
-        self._out_box.tag_configure("stdin_tag", foreground="#C8A8E8",
+        self._out_box.tag_configure("stdin_tag", foreground="#C0C0C0",
                                      font=("Consolas", 9, "italic"),
                                      lmargin1=10)
 

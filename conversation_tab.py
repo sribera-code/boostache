@@ -65,7 +65,8 @@ class ConversationTab:
             bg=BG_CHAT, fg=FG, font=("Segoe UI", 9),
             relief="flat", borderwidth=0, wrap="word",
             padx=10, pady=8,
-            selectbackground="#4A7EBB", selectforeground="#FFFFFF")
+            selectbackground=BG4, selectforeground=ACCENT,
+            highlightthickness=0)
 
         chat_vsb = ttk.Scrollbar(msg_frame, orient="vertical",
                                   command=self._chat_box.yview)
@@ -74,14 +75,14 @@ class ConversationTab:
         self._chat_box.pack(fill="both", expand=True)
 
         # ── Tags de base ──
-        # Vert clair pour l'utilisateur
+        # Vert doux pour l'utilisateur (la seule couleur sémantique restante)
         self._chat_box.tag_configure("user_tag",
-                                      foreground="#8EC88E",
+                                      foreground="#9EC89E",
                                       font=("Segoe UI", 9), spacing1=4, spacing3=4,
                                       lmargin1=12, lmargin2=12, rmargin=12)
-        # Bleu clair pour le LLM (plus de surlignage fond)
+        # Bot : gris clair
         self._chat_box.tag_configure("bot_tag",
-                                      foreground="#A8CCEA",
+                                      foreground="#D0D0D0",
                                       font=("Segoe UI", 9), spacing1=4, spacing3=4,
                                       lmargin1=12, lmargin2=12, rmargin=12)
         self._chat_box.tag_configure("sys_tag",
@@ -93,7 +94,7 @@ class ConversationTab:
                                       font=("Segoe UI", 7, "bold"),
                                       spacing1=8, spacing3=0, lmargin1=12)
 
-        # ── Tags markdown — uniquement foreground, pas de background ──
+        # ── Tags markdown — gris uniquement, hiérarchie par luminance ─────────
         self._chat_box.tag_configure("md_h1", foreground="#FFFFFF",
                                       font=("Segoe UI", 14, "bold"),
                                       spacing1=10, spacing3=4, lmargin1=12)
@@ -103,21 +104,21 @@ class ConversationTab:
         self._chat_box.tag_configure("md_h3", foreground="#E0E0E0",
                                       font=("Segoe UI", 10, "bold"),
                                       spacing1=6, spacing3=2, lmargin1=12)
-        self._chat_box.tag_configure("md_bold", foreground="#D0E8F8",
+        self._chat_box.tag_configure("md_bold", foreground="#F0F0F0",
                                       font=("Segoe UI", 9, "bold"))
-        self._chat_box.tag_configure("md_italic", foreground="#A8CCEA",
+        self._chat_box.tag_configure("md_italic", foreground="#B0B0B0",
                                       font=("Segoe UI", 9, "italic"))
-        self._chat_box.tag_configure("md_bold_italic", foreground="#C8E4F8",
+        self._chat_box.tag_configure("md_bold_italic", foreground="#DCDCDC",
                                       font=("Segoe UI", 9, "bold italic"))
-        # Code inline : bleu clair, sans fond
-        self._chat_box.tag_configure("md_code", foreground="#7EC8E8",
+        # Code inline : gris clair Consolas
+        self._chat_box.tag_configure("md_code", foreground="#C8C8C8",
                                       font=("Consolas", 9))
-        # Bloc de code : bleu légèrement plus sombre, sans fond
-        self._chat_box.tag_configure("md_code_block", foreground="#90C8E0",
+        # Bloc de code : même gris clair
+        self._chat_box.tag_configure("md_code_block", foreground="#C8C8C8",
                                       font=("Consolas", 9),
                                       spacing1=2, spacing3=2,
                                       lmargin1=20, lmargin2=20)
-        self._chat_box.tag_configure("md_bullet", foreground="#A8CCEA",
+        self._chat_box.tag_configure("md_bullet", foreground="#B0B0B0",
                                       font=("Segoe UI", 9),
                                       lmargin1=20, lmargin2=32)
         self._chat_box.tag_configure("md_hr", foreground="#444444",
@@ -126,13 +127,13 @@ class ConversationTab:
         self._chat_box.tag_configure("md_table_head", foreground="#FFFFFF",
                                       font=("Consolas", 9),
                                       lmargin1=12, lmargin2=12)
-        self._chat_box.tag_configure("md_table_row", foreground="#A8CCEA",
+        self._chat_box.tag_configure("md_table_row", foreground="#B0B0B0",
                                       font=("Consolas", 9),
                                       lmargin1=12, lmargin2=12)
         self._chat_box.tag_configure("md_table_border", foreground="#555555",
                                       font=("Consolas", 9),
                                       lmargin1=12, lmargin2=12)
-        self._chat_box.tag_configure("md_table_bold", foreground="#D0E8F8",
+        self._chat_box.tag_configure("md_table_bold", foreground="#F0F0F0",
                                       font=("Consolas", 9))
 
         self._chat_box.bind("<Control-c>", self._chat_copy_selection)
@@ -189,7 +190,7 @@ class ConversationTab:
             input_frame, text="➤", command=self._chat_send,
             width=44, height=44, corner_radius=10,
             fg_color=ACCENT, hover_color=ACCENT_HOVER,
-            text_color="#FFFFFF",
+            text_color="#1A1A1A",
             font=ctk.CTkFont(family="Segoe UI", size=18, weight="bold"))
         self._chat_send_btn.pack(side="right", padx=(6, 10), pady=8)
 
