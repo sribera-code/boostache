@@ -109,9 +109,11 @@ class DashboardWindow:
         style.configure("TFrame", background=BG)
         style.configure("Treeview", background=BG3, foreground=FG,
                         fieldbackground=BG3, rowheight=30,
-                        font=("Segoe UI", 9), borderwidth=0, relief="flat")
+                        font=("Segoe UI", 9), borderwidth=0, relief="flat",
+                        bordercolor=BG3, lightcolor=BG3, darkcolor=BG3)
         style.configure("Treeview.Heading", background=BG2, foreground=FG_HEAD,
                         font=("Segoe UI", 9, "bold"), relief="flat", borderwidth=0,
+                        bordercolor=BG2, lightcolor=BG2, darkcolor=BG2,
                         padding=[8, 6])
         style.map("Treeview.Heading",
                   background=[("active", BG3)])
