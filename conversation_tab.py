@@ -797,21 +797,39 @@ class ConversationTab:
 
     def _chat_screenshot(self):
         def capture():
+            window_hidden = False
             try:
                 import time
-                from PIL import ImageGrab
+                from PIL import ImageGrab, Image
                 import keyboard
                 try:
                     self.root.after(0, lambda: self.root.clipboard_clear())
                 except Exception:
                     pass
+                if self.root:
+                    try:
+                        self.root.after(0, lambda: self.root.withdraw())
+                        window_hidden = True
+                        time.sleep(0.25)
+                    except Exception:
+                        pass
                 keyboard.send("windows+shift+s")
                 deadline = time.time() + 30
                 img = None
                 while time.time() < deadline:
                     time.sleep(0.4)
                     try:
-                        img = ImageGrab.grabclipboard()
+                        grabbed = ImageGrab.grabclipboard()
+                        if isinstance(grabbed, list):
+                            for f in grabbed:
+                                try:
+                                    img = Image.open(f)
+                                    img.load()
+                                    break
+                                except Exception:
+                                    continue
+                        elif grabbed is not None:
+                            img = grabbed
                         if img is not None:
                             break
                     except Exception:
@@ -828,13 +846,30 @@ class ConversationTab:
                     err = str(e)
                     self.root.after(0, lambda: self._chat_append(
                         f"⚠ Capture échouée : {err}", "sys_tag"))
+            finally:
+                if window_hidden and self.root:
+                    try:
+                        self.root.after(0, lambda: (self.root.deiconify(), self.root.lift()))
+                    except Exception:
+                        pass
         threading.Thread(target=capture, daemon=True).start()
 
     def _chat_paste(self, event):
         try:
-            from PIL import ImageGrab
+            from PIL import ImageGrab, Image
             import time as _t
-            img = ImageGrab.grabclipboard()
+            grabbed = ImageGrab.grabclipboard()
+            img = None
+            if isinstance(grabbed, list):
+                for f in grabbed:
+                    try:
+                        img = Image.open(f)
+                        img.load()
+                        break
+                    except Exception:
+                        continue
+            elif grabbed is not None:
+                img = grabbed
             if img is not None:
                 tmp_path = str(CACHE_DIR / f"boostache_paste_{int(_t.time())}.png")
                 img.save(tmp_path, "PNG")

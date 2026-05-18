@@ -6,9 +6,7 @@ Ajoute tes raccourcis dans register(), en suivant les exemples fournis.
 Prérequis Windows : lancer Vigil en administrateur pour les hotkeys globaux.
 """
 
-import datetime
-
-from engine import hotkey_manager, logger
+from engine import hotkey_manager
 
 
 def register(open_dashboard_fn):
@@ -24,14 +22,8 @@ def register(open_dashboard_fn):
     def show_dashboard():
         open_dashboard_fn()
 
-    def log_time():
-        now = datetime.datetime.now().strftime("%H:%M:%S")
-        logger.log(f"⌚ Heure courante : {now}")
-
-    hotkey_manager.add("ctrl+alt+d", show_dashboard,
+    hotkey_manager.add("ctrl+shift+d", show_dashboard,
                        label="Ouvrir le dashboard")
-    hotkey_manager.add("ctrl+alt+t", log_time,
-                       label="Logger l'heure courante")
 
     # ── Tes raccourcis ────────────────────────────────────────────────────────
     # Décommente et adapte selon tes besoins.
