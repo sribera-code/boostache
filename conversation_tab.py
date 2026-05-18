@@ -75,14 +75,14 @@ class ConversationTab:
         self._chat_box.pack(fill="both", expand=True)
 
         # ── Tags de base ──
-        # Vert doux pour l'utilisateur (la seule couleur sémantique restante)
+        # Vert doux pour l'utilisateur
         self._chat_box.tag_configure("user_tag",
                                       foreground="#9EC89E",
                                       font=("Segoe UI", 9), spacing1=4, spacing3=4,
                                       lmargin1=12, lmargin2=12, rmargin=12)
-        # Bot : gris clair
+        # Bot : bleu clair (réponses LLM)
         self._chat_box.tag_configure("bot_tag",
-                                      foreground="#D0D0D0",
+                                      foreground="#A8CCEA",
                                       font=("Segoe UI", 9), spacing1=4, spacing3=4,
                                       lmargin1=12, lmargin2=12, rmargin=12)
         self._chat_box.tag_configure("sys_tag",
@@ -94,7 +94,7 @@ class ConversationTab:
                                       font=("Segoe UI", 7, "bold"),
                                       spacing1=8, spacing3=0, lmargin1=12)
 
-        # ── Tags markdown — gris uniquement, hiérarchie par luminance ─────────
+        # ── Tags markdown — bleus pour réponses LLM ──────────────────────────
         self._chat_box.tag_configure("md_h1", foreground="#FFFFFF",
                                       font=("Segoe UI", 14, "bold"),
                                       spacing1=10, spacing3=4, lmargin1=12)
@@ -104,21 +104,19 @@ class ConversationTab:
         self._chat_box.tag_configure("md_h3", foreground="#E0E0E0",
                                       font=("Segoe UI", 10, "bold"),
                                       spacing1=6, spacing3=2, lmargin1=12)
-        self._chat_box.tag_configure("md_bold", foreground="#F0F0F0",
+        self._chat_box.tag_configure("md_bold", foreground="#D0E8F8",
                                       font=("Segoe UI", 9, "bold"))
-        self._chat_box.tag_configure("md_italic", foreground="#B0B0B0",
+        self._chat_box.tag_configure("md_italic", foreground="#A8CCEA",
                                       font=("Segoe UI", 9, "italic"))
-        self._chat_box.tag_configure("md_bold_italic", foreground="#DCDCDC",
+        self._chat_box.tag_configure("md_bold_italic", foreground="#C8E4F8",
                                       font=("Segoe UI", 9, "bold italic"))
-        # Code inline : gris clair Consolas
-        self._chat_box.tag_configure("md_code", foreground="#C8C8C8",
+        self._chat_box.tag_configure("md_code", foreground="#7EC8E8",
                                       font=("Consolas", 9))
-        # Bloc de code : même gris clair
-        self._chat_box.tag_configure("md_code_block", foreground="#C8C8C8",
+        self._chat_box.tag_configure("md_code_block", foreground="#90C8E0",
                                       font=("Consolas", 9),
                                       spacing1=2, spacing3=2,
                                       lmargin1=20, lmargin2=20)
-        self._chat_box.tag_configure("md_bullet", foreground="#B0B0B0",
+        self._chat_box.tag_configure("md_bullet", foreground="#A8CCEA",
                                       font=("Segoe UI", 9),
                                       lmargin1=20, lmargin2=32)
         self._chat_box.tag_configure("md_hr", foreground="#444444",
@@ -127,13 +125,13 @@ class ConversationTab:
         self._chat_box.tag_configure("md_table_head", foreground="#FFFFFF",
                                       font=("Consolas", 9),
                                       lmargin1=12, lmargin2=12)
-        self._chat_box.tag_configure("md_table_row", foreground="#B0B0B0",
+        self._chat_box.tag_configure("md_table_row", foreground="#A8CCEA",
                                       font=("Consolas", 9),
                                       lmargin1=12, lmargin2=12)
         self._chat_box.tag_configure("md_table_border", foreground="#555555",
                                       font=("Consolas", 9),
                                       lmargin1=12, lmargin2=12)
-        self._chat_box.tag_configure("md_table_bold", foreground="#F0F0F0",
+        self._chat_box.tag_configure("md_table_bold", foreground="#D0E8F8",
                                       font=("Consolas", 9))
 
         self._chat_box.bind("<Control-c>", self._chat_copy_selection)

@@ -90,7 +90,9 @@ class DashboardWindow:
                         focuscolor=BG2)
         style.map("TNotebook.Tab",
                   background=[("selected", BG), ("active", BG3)],
-                  foreground=[("selected", ACCENT), ("active", FG)])
+                  foreground=[("selected", ACCENT), ("active", FG)],
+                  padding=[("selected", [18, 9]), ("active", [18, 9])],
+                  font=[("selected", ("Segoe UI", 9, "bold"))])
 
         # Notebook interne (onglets de conversation)
         style.configure("Inner.TNotebook", background=BG, borderwidth=0, relief="flat",
@@ -100,7 +102,9 @@ class DashboardWindow:
                         focuscolor=BG)
         style.map("Inner.TNotebook.Tab",
                   background=[("selected", BG_CHAT), ("active", BG3)],
-                  foreground=[("selected", FG), ("active", FG)])
+                  foreground=[("selected", FG), ("active", FG)],
+                  padding=[("selected", [12, 5]), ("active", [12, 5])],
+                  font=[("selected", ("Segoe UI", 8, "bold"))])
 
         style.configure("TFrame", background=BG)
         style.configure("Treeview", background=BG3, foreground=FG,

@@ -5,6 +5,7 @@ console_tab.py – Onglet console (terminal léger intégré)
 import json
 import os
 import re
+import sys
 import threading
 import tkinter as tk
 from tkinter import ttk, filedialog
@@ -14,8 +15,8 @@ import customtkinter as ctk
 from engine import logger, tts
 from storage import DATA_DIR, settings
 from theme import (
-    BG2, BG3, BG4, BG_CHAT, BORDER, FG, FG_DIM, ACCENT,
-    GREEN, RED,
+    BG2, BG3, BG4, BG_CHAT, BORDER, FG, FG_DIM, ACCENT, ACCENT_HOVER,
+    RED,
 )
 from ui_utils import DND_OK, DND_FILES, parse_drop_data
 
@@ -23,6 +24,25 @@ from ui_utils import DND_OK, DND_FILES, parse_drop_data
 # ── Répertoire de persistance des consoles ────────────────────────────────────
 CONSOLES_DIR = DATA_DIR / "consoles"
 CONSOLES_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _detect_console_encoding() -> str:
+    """Sur Windows : retourne la codepage OEM utilisée par cmd.exe (typiquement
+    cp850 sur un Windows français), ou 'utf-8' si UTF-8 est activé globalement.
+    Sur les autres plateformes, retourne 'utf-8'."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            cp = ctypes.windll.kernel32.GetOEMCP()
+            if cp == 65001:
+                return "utf-8"
+            return f"cp{cp}"
+        except Exception:
+            return "cp850"
+    return "utf-8"
+
+
+_CONSOLE_ENCODING = _detect_console_encoding()
 
 
 class ConsoleTab:
@@ -78,8 +98,8 @@ class ConsoleTab:
 
         self._out_box.tag_configure("cmd_tag",  foreground="#8EC88E",
                                      font=("Consolas", 9, "bold"),
-                                     spacing1=6, lmargin1=10)
-        self._out_box.tag_configure("out_tag",  foreground=FG,
+                                     lmargin2=10)
+        self._out_box.tag_configure("out_tag",  foreground="#A8CCEA",
                                      font=("Consolas", 9),
                                      lmargin1=10, lmargin2=10)
         self._out_box.tag_configure("err_tag",  foreground="#E07070",
@@ -91,6 +111,9 @@ class ConsoleTab:
         self._out_box.tag_configure("stdin_tag", foreground="#C0C0C0",
                                      font=("Consolas", 9, "italic"),
                                      lmargin1=10)
+        self._out_box.tag_configure("prompt_tag", foreground=FG_DIM,
+                                     font=("Consolas", 9),
+                                     spacing1=6, lmargin1=10)
 
         self._out_box.bind("<Button-3>", self._out_context_menu)
         self._out_box.bind("<Control-c>", self._copy_selection)
@@ -151,8 +174,8 @@ class ConsoleTab:
 
         self._run_btn = ctk.CTkButton(in_row, text="▶", command=self._run_cmd,
                                        width=44, height=44, corner_radius=10,
-                                       fg_color=GREEN, hover_color="#7FAF4C",
-                                       text_color="#0F1117",
+                                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                                       text_color="#1A1A1A",
                                        font=ctk.CTkFont(family="Segoe UI", size=16, weight="bold"))
         self._run_btn.pack(side="right", padx=(6, 0))
 
@@ -295,8 +318,10 @@ class ConsoleTab:
         # ── Process en attente d'input → envoyer sur stdin ──
         if self._proc is not None:
             try:
-                # stdin est en mode binaire (Popen sans text=True)
-                self._proc.stdin.write((text + "\n").encode("utf-8", errors="replace"))
+                # stdin est en mode binaire (Popen sans text=True) ; on encode
+                # avec la codepage console pour rester cohérent avec stdout
+                self._proc.stdin.write(
+                    (text + "\n").encode(_CONSOLE_ENCODING, errors="replace"))
                 self._proc.stdin.flush()
                 self._write_out(text, "stdin_tag")
             except Exception as e:
@@ -305,6 +330,7 @@ class ConsoleTab:
 
         cmd = text
         self._hist_push(cmd)
+        self._write_prompt(cmd)
 
         # Commande cd intégrée
         if cmd == "cd" or cmd.startswith("cd ") or cmd.startswith("cd\t"):
@@ -325,7 +351,6 @@ class ConsoleTab:
                 self._write_err(f"cd: répertoire introuvable : {target}")
             return
 
-        self._write_out(cmd, "cmd_tag")
         self._set_running(True)
         # Auto-label avec le basename de l'exécutable si l'onglet n'est pas renommé
         if not self._label:
@@ -370,7 +395,7 @@ class ConsoleTab:
                 """Lit en chunks bruts et découpe sur \\r et \\n.
                 \\n  → ligne committée
                 \\r  → ligne réécrite (barres de progression)"""
-                decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                decoder = codecs.getincrementaldecoder(_CONSOLE_ENCODING)(errors="replace")
                 buffer = ""
                 while True:
                     try:
@@ -424,18 +449,18 @@ class ConsoleTab:
             if self._proc is proc:
                 self._proc = None
             if self.root:
+                self.root.after(0, lambda: self._set_running(False))
                 self.root.after(0, self._progress_finalize)
                 if rc != 0:
                     self.root.after(0, lambda: self._write_sys(f"← code {rc}"))
                 self.root.after(0, self._persist)
-                self.root.after(0, lambda: self._set_running(False))
         except Exception as e:
             if self.root:
                 err = str(e)
+                self.root.after(0, lambda: self._set_running(False))
                 self.root.after(0, self._progress_finalize)
                 self.root.after(0, lambda: self._write_err(err))
                 self.root.after(0, self._persist)
-                self.root.after(0, lambda: self._set_running(False))
             if self._proc is locals().get("proc"):
                 self._proc = None
 
@@ -456,18 +481,37 @@ class ConsoleTab:
     def _set_running(self, running: bool):
         """Met à jour l'apparence pour indiquer qu'un process est en cours."""
         if running:
-            self._input.configure(bg="#1F2235")
+            self._input.configure(bg="#262626")
             self._run_btn.configure(text="■", fg_color=RED,
-                                    hover_color="#D45B73",
+                                    hover_color="#B85A5A",
                                     text_color="#FFFFFF",
                                     command=self._interrupt)
-            self._write_sys("⏳ process en cours — Entrée envoie sur stdin, Ctrl+C interrompt")
+            # Hint transient taggué pour pouvoir le retirer à la fin
+            self._out_box.configure(state="normal")
+            if self._progress_active:
+                self._out_box.insert("end-1c", "\n")
+                self._progress_active = False
+            self._out_box.insert(
+                "end",
+                "⏳ process en cours — Entrée envoie sur stdin, Ctrl+C interrompt\n",
+                ("sys_tag", "running_hint"))
+            self._out_box.see("end")
+            self._out_box.configure(state="disabled")
         else:
             self._input.configure(bg=BG3)
-            self._run_btn.configure(text="▶", fg_color=GREEN,
-                                    hover_color="#7FAF4C",
-                                    text_color="#0F1117",
+            self._run_btn.configure(text="▶", fg_color=ACCENT,
+                                    hover_color=ACCENT_HOVER,
+                                    text_color="#1A1A1A",
                                     command=self._run_cmd)
+            # Retire le hint « process en cours » s'il est encore là
+            ranges = self._out_box.tag_ranges("running_hint")
+            if ranges:
+                self._out_box.configure(state="normal")
+                # Parcours par paires (start, end) à l'envers pour ne pas
+                # invalider les indices suivants
+                for i in range(len(ranges) - 2, -1, -2):
+                    self._out_box.delete(ranges[i], ranges[i + 1])
+                self._out_box.configure(state="disabled")
 
     def _interrupt(self, event=None):
         if self._proc:
@@ -648,6 +692,17 @@ class ConsoleTab:
         self._out_box.see("end")
         self._out_box.configure(state="disabled")
 
+    def _write_prompt(self, cmd: str):
+        """Affiche '<cwd>  ›  <cmd>' avant l'exécution, à la manière d'un shell."""
+        self._out_box.configure(state="normal")
+        if self._progress_active:
+            self._out_box.insert("end-1c", "\n")
+            self._progress_active = False
+        self._out_box.insert("end", f"{self._cwd}  ›  ", "prompt_tag")
+        self._out_box.insert("end", cmd + "\n", "cmd_tag")
+        self._out_box.see("end")
+        self._out_box.configure(state="disabled")
+
     def _write_progress(self, text: str, tag: str = "out_tag", commit: bool = True):
         """Écrit une ligne en gérant les barres de progression (\\r).
         Si commit=False, la ligne pourra être réécrite par le prochain appel."""
@@ -682,7 +737,8 @@ class ConsoleTab:
     # ─────────────────────────────────────────
     #  Persistance
     # ─────────────────────────────────────────
-    _KNOWN_TAGS = ("cmd_tag", "err_tag", "sys_tag", "stdin_tag", "out_tag")
+    _KNOWN_TAGS = ("cmd_tag", "err_tag", "sys_tag", "stdin_tag", "out_tag",
+                    "prompt_tag")
 
     def _slot_path(self):
         return CONSOLES_DIR / f"console_{self.slot}.json"
