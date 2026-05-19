@@ -1,5 +1,5 @@
 """
-console_tab.py – Onglet console (terminal léger intégré)
+consoles_tab.py – Onglet Consoles (terminal léger intégré)
 """
 
 import json

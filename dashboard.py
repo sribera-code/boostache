@@ -19,8 +19,9 @@ from theme import (
     FG, FG_DIM, FG_LOG, FG_HEAD, ACCENT, ACCENT_HOVER, GREEN,
 )
 from ui_utils import OLLAMA_OK, _ollama, CTkRoot
-from conversation_tab import ConversationTab
-from console_tab import ConsoleTab, CONSOLES_DIR
+from conversations_tab import ConversationTab
+from consoles_tab import ConsoleTab, CONSOLES_DIR
+from notes_tab import NoteTab, NOTES_DIR
 
 
 class DashboardWindow:
@@ -38,6 +39,11 @@ class DashboardWindow:
         self._console_notebook: ttk.Notebook | None = None
         self._plus_frame_console: ttk.Frame | None = None
         self._restoring_consoles: bool = False
+
+        self._note_tabs: list[NoteTab] = []
+        self._note_notebook: ttk.Notebook | None = None
+        self._plus_frame_note: ttk.Frame | None = None
+        self._restoring_notes: bool = False
 
     def build(self):
         self.root = CTkRoot()
@@ -141,15 +147,20 @@ class DashboardWindow:
         nb = ttk.Notebook(container)
         nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
 
-        # ── Conversation ──────────────────────
+        # ── Conversations ─────────────────────
         chat_frame = ttk.Frame(nb)
-        nb.add(chat_frame, text="  Conversation  ")
+        nb.add(chat_frame, text="  Conversations  ")
         self._build_chat_tab(chat_frame)
 
-        # ── Console ───────────────────────────
+        # ── Consoles ──────────────────────────
         console_frame = ttk.Frame(nb)
-        nb.add(console_frame, text="  Console  ")
+        nb.add(console_frame, text="  Consoles  ")
         self._build_console_tab(console_frame)
+
+        # ── Notes ─────────────────────────────
+        note_frame = ttk.Frame(nb)
+        nb.add(note_frame, text="  Notes  ")
+        self._build_note_tab(note_frame)
 
         # ── Historique ────────────────────────
         log_frame = ttk.Frame(nb)
@@ -263,7 +274,7 @@ class DashboardWindow:
         self.root.after(2000, lambda: self._settings_status.configure(text=""))
 
     # ─────────────────────────────────────────
-    #  Tab Conversation (inner notebook multi-onglets)
+    #  Tab Conversations (inner notebook multi-onglets)
     # ─────────────────────────────────────────
     def _build_chat_tab(self, parent):
         if not OLLAMA_OK:
@@ -410,7 +421,7 @@ class DashboardWindow:
                          command=lambda: self._new_conversation_tab(insert_after=idx))
         menu.add_command(label="Renommer cet onglet…",
                          command=lambda t=target: self._inline_rename_tab(
-                             self._conv_notebook, str(t.frame), False))
+                             self._conv_notebook, str(t.frame), "conv"))
         menu.add_separator()
         menu.add_command(label="Fermer cette conversation",
                          command=lambda: self._close_tab(target))
@@ -427,7 +438,7 @@ class DashboardWindow:
     # ─────────────────────────────────────────
     _rename_popup: tk.Toplevel | None = None  # popup de renommage actif
 
-    def _inline_rename_tab(self, nb: ttk.Notebook, tab_id: str, is_console: bool,
+    def _inline_rename_tab(self, nb: ttk.Notebook, tab_id: str, kind: str,
                             screen_x: int | None = None, screen_y: int | None = None):
         # Fermer un éventuel popup déjà ouvert
         if self._rename_popup is not None:
@@ -478,7 +489,7 @@ class DashboardWindow:
             except Exception:
                 pass
             display = f"  {label}  " if label else "  ·  "
-            if is_console:
+            if kind == "console":
                 for t in self._console_tabs:
                     if str(t.frame) == tab_id:
                         t._label = label
@@ -488,7 +499,21 @@ class DashboardWindow:
                             pass
                         t._persist()
                         break
-            else:
+            elif kind == "note":
+                for t in self._note_tabs:
+                    if str(t.frame) == tab_id:
+                        t._label = label
+                        if label:
+                            try:
+                                nb.tab(tab_id, text=display)
+                            except Exception:
+                                pass
+                        else:
+                            t._update_auto_title()
+                        t._persist()
+                        self._note_save_meta()
+                        break
+            else:   # "conv"
                 for t in self._conv_tabs:
                     if str(t.frame) == tab_id:
                         t._custom_label = label
@@ -522,7 +547,7 @@ class DashboardWindow:
         tab_id = nb.tabs()[idx]
         if tab_id == str(self._plus_frame):
             return
-        self._inline_rename_tab(nb, tab_id, is_console=False,
+        self._inline_rename_tab(nb, tab_id, "conv",
                                  screen_x=event.x_root, screen_y=event.y_root)
 
     def _on_console_tab_double_click(self, event):
@@ -534,7 +559,7 @@ class DashboardWindow:
         tab_id = nb.tabs()[idx]
         if tab_id == str(self._plus_frame_console):
             return
-        self._inline_rename_tab(nb, tab_id, is_console=True,
+        self._inline_rename_tab(nb, tab_id, "console",
                                  screen_x=event.x_root, screen_y=event.y_root)
 
     # ─────────────────────────────────────────
@@ -647,7 +672,7 @@ class DashboardWindow:
             tab.load_conversation(data)
 
     # ─────────────────────────────────────────
-    #  Tab Console (inner notebook multi-onglets)
+    #  Tab Consoles (inner notebook multi-onglets)
     # ─────────────────────────────────────────
     _CONSOLES_META = CONSOLES_DIR / "meta.json"
 
@@ -796,7 +821,7 @@ class DashboardWindow:
                          command=lambda: self._new_console_tab(insert_after=idx))
         menu.add_command(label="Renommer cet onglet…",
                          command=lambda t=target_tab: self._inline_rename_tab(
-                             self._console_notebook, str(t.frame), True))
+                             self._console_notebook, str(t.frame), "console"))
         menu.add_separator()
         menu.add_command(label="Fermer cette console",
                          command=lambda: self._close_console_tab(target_tab))
@@ -848,6 +873,211 @@ class DashboardWindow:
         except Exception:
             pass
         self._console_save_meta()
+        tab.frame.destroy()
+
+    # ─────────────────────────────────────────
+    #  Tab Notes (inner notebook multi-onglets)
+    # ─────────────────────────────────────────
+    _NOTES_META = NOTES_DIR / "meta.json"
+
+    def _note_save_meta(self):
+        """Persiste l'ordre des notes actives (filtre les onglets vides et non nommés)."""
+        try:
+            order = []
+            for t in self._note_tabs:
+                content = t._editor.get("1.0", "end-1c") if t._editor else ""
+                if not t._label and not content.strip():
+                    try:
+                        t._slot_path().unlink(missing_ok=True)
+                    except Exception:
+                        pass
+                    continue
+                t._persist()
+                order.append(t.slot)
+            with open(self._NOTES_META, "w", encoding="utf-8") as f:
+                json.dump({"order": order}, f)
+        except Exception as e:
+            logger.log(f"Note meta erreur : {e}")
+
+    def _note_load_meta(self) -> list[int]:
+        try:
+            with open(self._NOTES_META, "r", encoding="utf-8") as f:
+                order = json.load(f).get("order", [])
+            return [s for s in order
+                    if (NOTES_DIR / f"note_{s}.json").exists()]
+        except Exception:
+            return sorted(
+                int(p.stem.split("_")[1])
+                for p in NOTES_DIR.glob("note_*.json")
+                if p.stem.split("_")[1].isdigit()
+            )
+
+    def _build_note_tab(self, parent):
+        self._note_notebook = ttk.Notebook(parent, style="Inner.TNotebook")
+        self._note_notebook.pack(fill="both", expand=True)
+
+        self._plus_frame_note = ttk.Frame(self._note_notebook)
+        self._note_notebook.add(self._plus_frame_note, text="  ＋  ")
+
+        self._note_notebook.bind("<<NotebookTabChanged>>",
+                                  self._on_note_tab_changed)
+        self._note_notebook.bind("<Button-3>",
+                                  self._on_note_tab_right_click)
+        self._note_notebook.bind("<Double-Button-1>",
+                                  self._on_note_tab_double_click)
+
+        self._restoring_notes = True
+        slots = self._note_load_meta()
+        if slots:
+            for slot in slots:
+                self._new_note_tab(slot=slot)
+        else:
+            self._new_note_tab()
+        self._restoring_notes = False
+
+        # Remettre "+" à la fin
+        try:
+            nb = self._note_notebook
+            nb.forget(self._plus_frame_note)
+            nb.add(self._plus_frame_note, text="  ＋  ")
+        except Exception:
+            pass
+
+        if self._note_tabs:
+            self._note_notebook.select(self._note_tabs[0].frame)
+
+    def _new_note_tab(self, insert_after: int | None = None,
+                      slot: int | None = None):
+        nb = self._note_notebook
+        tab = NoteTab(nb, self, slot=slot)
+
+        try:
+            all_tabs = list(nb.tabs())
+            plus_id  = str(self._plus_frame_note)
+            plus_idx = all_tabs.index(plus_id) if plus_id in all_tabs \
+                       else len(all_tabs)
+            target   = (insert_after + 1) if insert_after is not None \
+                       else plus_idx
+            target   = min(target, plus_idx)
+            tab_text = nb.tab(tab.frame, "text")
+            nb.forget(tab.frame)
+            nb.insert(target, tab.frame, text=tab_text)
+        except Exception:
+            pass
+
+        self._note_tabs.append(tab)
+        if not self._restoring_notes:
+            nb.select(tab.frame)
+            self._note_save_meta()
+        return tab
+
+    def _on_note_tab_changed(self, event):
+        if self._restoring_notes or not self._plus_frame_note:
+            return
+        try:
+            if self._note_notebook.select() == str(self._plus_frame_note):
+                self._new_note_tab()
+        except Exception:
+            pass
+
+    def _on_note_tab_right_click(self, event):
+        nb = self._note_notebook
+        try:
+            idx = nb.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        tab_id = nb.tabs()[idx]
+
+        if tab_id == str(self._plus_frame_note):
+            menu = tk.Menu(self.root, tearoff=0,
+                           bg=BG3, fg=FG, activebackground=BG4,
+                           activeforeground=ACCENT, relief="flat", bd=0,
+                           font=("Segoe UI", 9))
+            menu.add_command(label="Nouvelle note",
+                             command=self._new_note_tab)
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+            return
+
+        target_tab: "NoteTab | None" = None
+        for t in self._note_tabs:
+            if str(t.frame) == tab_id:
+                target_tab = t
+                break
+        if target_tab is None:
+            return
+
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=BG3, fg=FG, activebackground=BG4,
+                       activeforeground=ACCENT, relief="flat", bd=0,
+                       font=("Segoe UI", 9))
+        menu.add_command(label="Nouvelle note",
+                         command=lambda: self._new_note_tab(insert_after=idx))
+        menu.add_command(label="Renommer cet onglet…",
+                         command=lambda t=target_tab: self._inline_rename_tab(
+                             self._note_notebook, str(t.frame), "note"))
+        menu.add_separator()
+        menu.add_command(label="Copier le contenu",
+                         command=lambda t=target_tab: t._copy_all())
+        menu.add_command(label="Tout lire",
+                         command=lambda t=target_tab: t._tts_speak_mode("all"))
+        menu.add_separator()
+        menu.add_command(label="Fermer cette note",
+                         command=lambda: self._close_note_tab(target_tab))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _on_note_tab_double_click(self, event):
+        nb = self._note_notebook
+        try:
+            idx = nb.index(f"@{event.x},{event.y}")
+        except tk.TclError:
+            return
+        tab_id = nb.tabs()[idx]
+        if tab_id == str(self._plus_frame_note):
+            return
+        self._inline_rename_tab(nb, tab_id, "note",
+                                 screen_x=event.x_root, screen_y=event.y_root)
+
+    def _close_note_tab(self, tab: NoteTab):
+        if len(self._note_tabs) <= 1:
+            tab._suspend_autosave = True
+            tab._editor.delete("1.0", "end")
+            tab._suspend_autosave = False
+            tab._label = ""
+            try:
+                self._note_notebook.tab(tab.frame, text="  ·  ")
+            except Exception:
+                pass
+            tab._persist()
+            self._note_save_meta()
+            return
+
+        nb          = self._note_notebook
+        all_tab_ids = list(nb.tabs())
+        plus_id     = str(self._plus_frame_note)
+        tab_pos     = all_tab_ids.index(str(tab.frame))
+
+        fallback = None
+        for candidate in [tab_pos - 1, tab_pos + 1]:
+            if 0 <= candidate < len(all_tab_ids) \
+               and all_tab_ids[candidate] != plus_id:
+                fallback = candidate
+                break
+        if fallback is not None:
+            nb.select(fallback)
+
+        self._note_tabs.remove(tab)
+        nb.forget(tab.frame)
+        try:
+            tab._slot_path().unlink(missing_ok=True)
+        except Exception:
+            pass
+        self._note_save_meta()
         tab.frame.destroy()
 
     # ─────────────────────────────────────────

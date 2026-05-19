@@ -1,12 +1,12 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), un terminal intégré, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), un terminal intégré, un éditeur de notes, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre toujours au premier plan.
 
 ---
 
 ## Fonctionnalités
 
-### Chat LLM
+### Conversations (chat LLM)
 - Conversations multi-onglets avec n'importe quel modèle Ollama installé
 - Streaming des réponses token par token
 - Rendu Markdown : titres, gras/italique, code inline et blocs, tableaux, listes, séparateurs
@@ -16,7 +16,7 @@ Application de bureau Windows légère qui vit dans le **system tray**. Elle reg
 - Pré-prompt système configurable
 - Persistance automatique des conversations et restauration des onglets au redémarrage
 
-### Console
+### Consoles
 - Terminal léger multi-onglets directement dans la fenêtre
 - Historique des commandes (↑ / ↓)
 - Commande `cd` intégrée avec sélecteur de répertoire
@@ -25,6 +25,15 @@ Application de bureau Windows légère qui vit dans le **system tray**. Elle reg
 - Ouverture dans un vrai terminal externe (Ctrl+T)
 - Lecture TTS de la sortie
 - Persistance de l'état (répertoire, historique, contenu) entre les sessions
+
+### Notes
+- Éditeur de texte multi-onglets, un onglet = une note
+- Renommage de l'onglet (double-clic ou clic droit → Renommer)
+- Titre auto dérivé de la première ligne tant que l'onglet n'est pas renommé
+- Copier la sélection ou tout le contenu (clic droit)
+- Lecture TTS de la sélection ou de toute la note (clic droit ou bouton 🔊)
+- Dictée vocale (bouton 🎤, raccourci Windows intégré)
+- Auto-sauvegarde et restauration des notes entre les sessions
 
 ### Tâches planifiées
 - Interface visuelle dans l'onglet **Tâches**
@@ -102,16 +111,17 @@ Après modification, clic droit sur l'icône tray → **Recharger** pour appliqu
 
 ```
 boostache/
-├── main.py              # TrayApp + point d'entrée
-├── dashboard.py         # Fenêtre principale (orchestration des onglets)
-├── conversation_tab.py  # Onglet chat LLM (+ rendu Markdown)
-├── console_tab.py       # Onglet terminal
-├── engine.py            # Logger, TaskManager, HotkeyManager, TTSEngine
-├── storage.py           # Persistance (settings, conversations, consoles)
-├── theme.py             # Palette de couleurs
-├── ui_utils.py          # Helpers UI partagés
-├── tasks.py             # Tâches planifiées (à personnaliser)
-├── bindings.py          # Raccourcis clavier (à personnaliser)
+├── main.py               # TrayApp + point d'entrée
+├── dashboard.py          # Fenêtre principale (orchestration des onglets)
+├── conversations_tab.py  # Onglet Conversations (chat LLM + rendu Markdown)
+├── consoles_tab.py       # Onglet Consoles (terminal léger)
+├── notes_tab.py          # Onglet Notes (éditeur de texte + TTS + dictée)
+├── engine.py             # Logger, TaskManager, HotkeyManager, TTSEngine
+├── storage.py            # Persistance (settings, conversations, consoles, notes)
+├── theme.py              # Palette de couleurs
+├── ui_utils.py           # Helpers UI partagés
+├── tasks.py              # Tâches planifiées (à personnaliser)
+├── bindings.py           # Raccourcis clavier (à personnaliser)
 └── requirements.txt
 ```
 

@@ -1,5 +1,5 @@
 """
-conversation_tab.py – Onglet de conversation (chat LLM via Ollama)
+conversations_tab.py – Onglet Conversations (chat LLM via Ollama)
 Encapsule l'état et les widgets d'une seule conversation.
 """
 
