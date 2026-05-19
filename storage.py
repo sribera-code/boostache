@@ -5,6 +5,7 @@ Settings (modèle choisi, préférences) et conversations.
 
 import json
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -49,6 +50,7 @@ _DEFAULTS = {
     "system_prompt":        "",
     "tts_mode_chat":        "last",   # "last" | "all"
     "tts_mode_console":     "last",   # "last" | "all"
+    "clipboard_max_items":  100,
 }
 
 
@@ -263,3 +265,75 @@ class ConsoleManager:
 
 
 consoles = ConsoleManager()
+
+
+# ─────────────────────────────────────────────
+#  Historique du presse-papiers
+# ─────────────────────────────────────────────
+CLIPBOARD_FILE = DATA_DIR / "clipboard_history.json"
+
+
+class ClipboardManager:
+    """Historique des copies texte (en mémoire + persistance JSON).
+    Les items sont triés du plus récent au plus ancien."""
+
+    def __init__(self):
+        _ensure_dirs()
+        self._items: list[dict] = []   # [{"ts": iso, "text": "..."}]
+        self._lock = threading.Lock()
+        self.load()
+
+    def load(self):
+        try:
+            with open(CLIPBOARD_FILE, "r", encoding="utf-8") as f:
+                self._items = json.load(f).get("items", [])
+        except Exception:
+            self._items = []
+
+    def save(self):
+        try:
+            with open(CLIPBOARD_FILE, "w", encoding="utf-8") as f:
+                json.dump({"items": self._items}, f,
+                          indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+
+    def add(self, text: str, max_items: int = 100) -> bool:
+        """Ajoute une entrée. Retourne True si ajoutée, False si dédupliquée."""
+        if not text or not text.strip():
+            return False
+        with self._lock:
+            if self._items and self._items[0].get("text") == text:
+                return False
+            self._items.insert(0, {
+                "ts":   datetime.now().isoformat(timespec="seconds"),
+                "text": text,
+            })
+            if max_items and len(self._items) > max_items:
+                self._items = self._items[:max_items]
+            self.save()
+        return True
+
+    def all(self) -> list[dict]:
+        with self._lock:
+            return list(self._items)
+
+    def delete(self, idx: int):
+        with self._lock:
+            if 0 <= idx < len(self._items):
+                self._items.pop(idx)
+                self.save()
+
+    def clear(self):
+        with self._lock:
+            self._items.clear()
+            self.save()
+
+    def trim(self, max_items: int):
+        with self._lock:
+            if max_items and len(self._items) > max_items:
+                self._items = self._items[:max_items]
+                self.save()
+
+
+clipboard_history = ClipboardManager()

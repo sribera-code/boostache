@@ -1,6 +1,6 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), un terminal intégré, un éditeur de notes, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), un terminal intégré, un éditeur de notes, un historique du presse-papiers, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre toujours au premier plan.
 
 ---
 
@@ -34,6 +34,15 @@ Application de bureau Windows légère qui vit dans le **system tray**. Elle reg
 - Lecture TTS de la sélection ou de toute la note (clic droit ou bouton 🔊)
 - Dictée vocale (bouton 🎤, raccourci Windows intégré)
 - Auto-sauvegarde et restauration des notes entre les sessions
+
+### Presse-papiers
+- Capture automatique de chaque copie texte (Ctrl+C, clic droit → Copier, Win+Shift+S, etc.)
+- Notification push via l'API Win32 `AddClipboardFormatListener` — pas de polling
+- Treeview avec horodatage et aperçu du contenu
+- Double-clic sur une entrée : popup avec le contenu complet et bouton **Copier**
+- Clic droit : ouvrir, copier, supprimer, tout effacer
+- Taille max de l'historique configurable dans **Paramètres** (défaut 100)
+- Persistance entre sessions (`clipboard_history.json`)
 
 ### Tâches planifiées
 - Interface visuelle dans l'onglet **Tâches**
@@ -116,8 +125,9 @@ boostache/
 ├── conversations_tab.py  # Onglet Conversations (chat LLM + rendu Markdown)
 ├── consoles_tab.py       # Onglet Consoles (terminal léger)
 ├── notes_tab.py          # Onglet Notes (éditeur de texte + TTS + dictée)
+├── clipboard_listener.py # Écouteur Win32 du presse-papiers (push, sans polling)
 ├── engine.py             # Logger, TaskManager, HotkeyManager, TTSEngine
-├── storage.py            # Persistance (settings, conversations, consoles, notes)
+├── storage.py            # Persistance (settings, conversations, consoles, notes, presse-papiers)
 ├── theme.py              # Palette de couleurs
 ├── ui_utils.py           # Helpers UI partagés
 ├── tasks.py              # Tâches planifiées (à personnaliser)

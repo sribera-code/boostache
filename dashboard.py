@@ -12,8 +12,8 @@ from tkinter import ttk, scrolledtext
 
 import customtkinter as ctk
 
-from engine import logger, task_manager, hotkey_manager
-from storage import settings, conversations, DATA_DIR
+from engine import logger, task_manager, hotkey_manager, tts
+from storage import settings, conversations, clipboard_history, DATA_DIR
 from theme import (
     BG, BG2, BG3, BG4, BG_LOG, BG_CHAT, BORDER,
     FG, FG_DIM, FG_LOG, FG_HEAD, ACCENT, ACCENT_HOVER, GREEN,
@@ -22,6 +22,7 @@ from ui_utils import OLLAMA_OK, _ollama, CTkRoot
 from conversations_tab import ConversationTab
 from consoles_tab import ConsoleTab, CONSOLES_DIR
 from notes_tab import NoteTab, NOTES_DIR
+from clipboard_listener import ClipboardListener
 
 
 class DashboardWindow:
@@ -45,6 +46,9 @@ class DashboardWindow:
         self._plus_frame_note: ttk.Frame | None = None
         self._restoring_notes: bool = False
 
+        self._clip_listener: ClipboardListener | None = None
+        self._clip_tree = None
+
     def build(self):
         self.root = CTkRoot()
 
@@ -67,6 +71,7 @@ class DashboardWindow:
         self._poll_logs()
         self._task_load_persisted()   # charge les tâches custom sauvegardées
         self._refresh_tasks()
+        self._start_clipboard_listener()
         self.hide()
 
     def _on_unmap(self, event):
@@ -161,6 +166,11 @@ class DashboardWindow:
         note_frame = ttk.Frame(nb)
         nb.add(note_frame, text="  Notes  ")
         self._build_note_tab(note_frame)
+
+        # ── Presse-papiers ────────────────────
+        clip_frame = ttk.Frame(nb)
+        nb.add(clip_frame, text="  Presse-papiers  ")
+        self._build_clipboard_tab(clip_frame)
 
         # ── Historique ────────────────────────
         log_frame = ttk.Frame(nb)
@@ -267,11 +277,44 @@ class DashboardWindow:
                        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
                        ).pack(side="right")
 
+        # ── Presse-papiers : taille max de l'historique ──
+        sep = tk.Frame(outer, bg=BG3, height=1)
+        sep.pack(fill="x", pady=(22, 14))
+
+        clip_row = ctk.CTkFrame(outer, fg_color="transparent")
+        clip_row.pack(fill="x")
+        ctk.CTkLabel(clip_row, text="Presse-papiers — taille max de l'historique",
+                     text_color=FG_HEAD, anchor="w",
+                     font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+                     ).pack(side="left")
+        self._clip_max_var = tk.StringVar(
+            value=str(settings.get("clipboard_max_items", 100)))
+        clip_entry = ctk.CTkEntry(clip_row, textvariable=self._clip_max_var,
+                                   width=90, height=30,
+                                   fg_color=BG3, border_color=BG4, border_width=1,
+                                   text_color=FG, corner_radius=8,
+                                   font=ctk.CTkFont(family="Segoe UI", size=11))
+        clip_entry.pack(side="right")
+        clip_entry.bind("<Return>",   lambda e: self._save_clip_max())
+        clip_entry.bind("<FocusOut>", lambda e: self._save_clip_max())
+
     def _save_system_prompt(self):
         prompt = self._system_prompt_box.get("1.0", "end").strip()
         settings.set("system_prompt", prompt)
         self._settings_status.configure(text="✓ Sauvegardé")
         self.root.after(2000, lambda: self._settings_status.configure(text=""))
+
+    def _save_clip_max(self):
+        try:
+            v = int(self._clip_max_var.get())
+            v = max(1, min(v, 10000))
+        except Exception:
+            v = int(settings.get("clipboard_max_items", 100))
+        self._clip_max_var.set(str(v))
+        if v != settings.get("clipboard_max_items", 100):
+            settings.set("clipboard_max_items", v)
+            clipboard_history.trim(v)
+            self._refresh_clipboard()
 
     # ─────────────────────────────────────────
     #  Tab Conversations (inner notebook multi-onglets)
@@ -1081,6 +1124,249 @@ class DashboardWindow:
         tab.frame.destroy()
 
     # ─────────────────────────────────────────
+    #  Tab Presse-papiers
+    # ─────────────────────────────────────────
+    def _build_clipboard_tab(self, parent):
+        cols = ("Heure", "Contenu")
+        self._clip_tree = ttk.Treeview(parent, columns=cols,
+                                        show="headings", selectmode="browse")
+        for c in cols:
+            self._clip_tree.heading(c, text=c)
+        self._clip_tree.column("Heure",   width=140, anchor="w")
+        self._clip_tree.column("Contenu", width=560, anchor="w")
+        vsb = ttk.Scrollbar(parent, orient="vertical",
+                            command=self._clip_tree.yview)
+        self._clip_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        self._clip_tree.pack(fill="both", expand=True)
+
+        self._clip_tree.bind("<Button-3>",       self._clip_context_menu)
+        self._clip_tree.bind("<Double-Button-1>", self._clip_on_double_click)
+
+        self._refresh_clipboard()
+
+    def _clip_preview(self, text: str, n: int = 80) -> str:
+        one = text.replace("\n", " ⏎ ").replace("\r", "").strip()
+        return (one[:n] + "…") if len(one) > n else one
+
+    def _clip_format_ts(self, iso: str) -> str:
+        try:
+            dt = datetime.datetime.fromisoformat(iso)
+            return dt.strftime("%d/%m %H:%M:%S")
+        except Exception:
+            return iso
+
+    def _refresh_clipboard(self):
+        if not self._clip_tree:
+            return
+        self._clip_tree.delete(*self._clip_tree.get_children())
+        for i, item in enumerate(clipboard_history.all()):
+            self._clip_tree.insert(
+                "", "end", iid=str(i),
+                values=(self._clip_format_ts(item.get("ts", "")),
+                        self._clip_preview(item.get("text", ""))))
+
+    def _start_clipboard_listener(self):
+        try:
+            self._clip_listener = ClipboardListener(self._on_clipboard_update)
+            self._clip_listener.start()
+        except Exception as e:
+            logger.log(f"Clipboard listener indisponible : {e}")
+            self._clip_listener = None
+
+    def _on_clipboard_update(self, text: str):
+        """Appelé depuis le thread Win32 — marshal vers le thread UI."""
+        try:
+            max_items = int(settings.get("clipboard_max_items", 100))
+        except Exception:
+            max_items = 100
+        added = clipboard_history.add(text, max_items=max_items)
+        if added and self.root:
+            self.root.after(0, self._refresh_clipboard)
+
+    def _clip_selected_index(self) -> int | None:
+        sel = self._clip_tree.selection() if self._clip_tree else ()
+        if not sel:
+            return None
+        try:
+            return int(sel[0])
+        except Exception:
+            return None
+
+    def _clip_context_menu(self, event):
+        row = self._clip_tree.identify_row(event.y)
+        if row:
+            self._clip_tree.selection_set(row)
+        idx = self._clip_selected_index()
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=BG3, fg=FG, activebackground=BG4,
+                       activeforeground=ACCENT, relief="flat", bd=0,
+                       font=("Segoe UI", 9))
+        if idx is not None:
+            menu.add_command(label="Ouvrir…",
+                             command=lambda i=idx: self._clip_open_popup(i))
+            menu.add_command(label="Copier",
+                             command=lambda i=idx: self._clip_copy(i))
+            menu.add_command(label="Supprimer",
+                             command=lambda i=idx: self._clip_delete(i))
+            menu.add_separator()
+        menu.add_command(label="Tout effacer", command=self._clip_clear)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _clip_on_double_click(self, event):
+        idx = self._clip_selected_index()
+        if idx is None:
+            row = self._clip_tree.identify_row(event.y)
+            if not row:
+                return
+            try:
+                idx = int(row)
+            except Exception:
+                return
+        self._clip_open_popup(idx)
+
+    def _clip_copy(self, idx: int):
+        items = clipboard_history.all()
+        if 0 <= idx < len(items):
+            self.root.clipboard_clear()
+            self.root.clipboard_append(items[idx].get("text", ""))
+
+    def _clip_delete(self, idx: int):
+        clipboard_history.delete(idx)
+        self._refresh_clipboard()
+
+    def _clip_clear(self):
+        clipboard_history.clear()
+        self._refresh_clipboard()
+
+    def _clip_open_popup(self, idx: int):
+        items = clipboard_history.all()
+        if not (0 <= idx < len(items)):
+            return
+        item = items[idx]
+
+        dlg = ctk.CTkToplevel(self.root)
+        dlg.title("Élément du presse-papiers")
+        dlg.configure(fg_color=BG2)
+        dlg.attributes("-topmost", True)
+        dlg.geometry("640x420")
+        dlg.minsize(400, 240)
+        dlg.after(50, dlg.grab_set)
+
+        body = ctk.CTkFrame(dlg, fg_color=BG2, corner_radius=0)
+        body.pack(fill="both", expand=True, padx=18, pady=16)
+
+        ctk.CTkLabel(body, text=self._clip_format_ts(item.get("ts", "")),
+                     text_color=FG_DIM, anchor="w",
+                     font=ctk.CTkFont(family="Segoe UI", size=10)
+                     ).pack(fill="x", pady=(0, 6))
+
+        text_card = ctk.CTkFrame(body, fg_color=BG3, corner_radius=8)
+        text_card.pack(fill="both", expand=True, pady=(0, 12))
+
+        text_wrap = tk.Frame(text_card, bg=BG3)
+        text_wrap.pack(fill="both", expand=True, padx=2, pady=2)
+
+        text_box = tk.Text(
+            text_wrap, bg=BG3, fg=FG, font=("Segoe UI", 10),
+            relief="flat", borderwidth=0, wrap="word",
+            padx=12, pady=10, insertbackground=FG,
+            selectbackground=BG4, selectforeground=ACCENT,
+            highlightthickness=0)
+        vsb = ttk.Scrollbar(text_wrap, orient="vertical",
+                             command=text_box.yview)
+        text_box.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        text_box.pack(fill="both", expand=True)
+        text_box.insert("1.0", item.get("text", ""))
+        text_box.configure(state="disabled")
+
+        def _has_sel():
+            try:
+                text_box.index(tk.SEL_FIRST)
+                return True
+            except tk.TclError:
+                return False
+
+        def _sel_text():
+            try:
+                return text_box.get(tk.SEL_FIRST, tk.SEL_LAST)
+            except tk.TclError:
+                return ""
+
+        def _speak(text):
+            if not text:
+                return
+            try:
+                tts.stop()
+            except Exception:
+                pass
+            tts.speak(text)
+
+        def _popup_menu(event):
+            has_sel = _has_sel()
+            menu = tk.Menu(self.root, tearoff=0,
+                           bg=BG3, fg=FG, activebackground=BG4,
+                           activeforeground=ACCENT, relief="flat", bd=0,
+                           font=("Segoe UI", 9))
+            menu.add_command(label="Copier la sélection",
+                             command=lambda: (self.root.clipboard_clear(),
+                                              self.root.clipboard_append(_sel_text())),
+                             state=("normal" if has_sel else "disabled"))
+            menu.add_command(label="Copier tout",
+                             command=lambda: (self.root.clipboard_clear(),
+                                              self.root.clipboard_append(item.get("text", ""))))
+            menu.add_separator()
+            menu.add_command(label="Lire la sélection",
+                             command=lambda: _speak(_sel_text()),
+                             state=("normal" if has_sel else "disabled"))
+            menu.add_command(label="Tout lire",
+                             command=lambda: _speak(item.get("text", "")))
+            try:
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                menu.grab_release()
+
+        text_box.bind("<Button-3>", _popup_menu)
+
+        def _on_close():
+            try:
+                tts.stop()
+            except Exception:
+                pass
+            dlg.destroy()
+
+        dlg.protocol("WM_DELETE_WINDOW", _on_close)
+
+        btn_row = ctk.CTkFrame(body, fg_color="transparent")
+        btn_row.pack(fill="x")
+
+        def _copy_and_close():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(item.get("text", ""))
+            _on_close()
+
+        ctk.CTkButton(btn_row, text="Fermer", command=_on_close,
+                       fg_color=BG3, hover_color=BG4, text_color=FG_DIM,
+                       corner_radius=8, width=100, height=32,
+                       font=ctk.CTkFont(family="Segoe UI", size=11)
+                       ).pack(side="left")
+        ctk.CTkButton(btn_row, text="Copier", command=_copy_and_close,
+                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
+                       text_color="#1A1A1A",
+                       corner_radius=8, width=120, height=32,
+                       font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+                       ).pack(side="right")
+
+        dlg.update_idletasks()
+        rx = self.root.winfo_x() + (self.root.winfo_width()  - dlg.winfo_width())  // 2
+        ry = self.root.winfo_y() + (self.root.winfo_height() - dlg.winfo_height()) // 2
+        dlg.geometry(f"+{rx}+{ry}")
+
+    # ─────────────────────────────────────────
     #  Status bar
     # ─────────────────────────────────────────
     def _build_status_bar(self):
@@ -1521,5 +1807,10 @@ class DashboardWindow:
         self.root.mainloop()
 
     def destroy(self):
+        if self._clip_listener:
+            try:
+                self._clip_listener.stop()
+            except Exception:
+                pass
         if self.root:
             self.root.destroy()
