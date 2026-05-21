@@ -17,7 +17,7 @@ from theme import (
     BG2, BG3, BG4, BG_CHAT, FG, FG_DIM, ACCENT, ACCENT_HOVER, RED,
 )
 from ui_utils import (
-    OLLAMA_OK, _ollama,
+    _ollama,
     DND_OK, DND_FILES,
     strip_markdown, parse_drop_data,
 )

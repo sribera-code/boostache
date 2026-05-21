@@ -4,7 +4,10 @@ Détection des dépendances optionnelles, classe racine CTk+DnD,
 et utilitaires de parsing.
 """
 
+import os
 import re
+import socket
+from urllib.parse import urlparse
 
 import customtkinter as ctk
 
@@ -15,6 +18,26 @@ try:
 except ImportError:
     _ollama = None
     OLLAMA_OK = False
+
+
+def ollama_server_running(timeout: float = 0.6) -> bool:
+    """Vérifie qu'un serveur Ollama répond sur OLLAMA_HOST (défaut localhost:11434)."""
+    if not OLLAMA_OK:
+        return False
+    host_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    if "://" not in host_url:
+        host_url = "http://" + host_url
+    parsed = urlparse(host_url)
+    host = parsed.hostname or "localhost"
+    port = parsed.port or 11434
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+OLLAMA_AVAILABLE = OLLAMA_OK and ollama_server_running()
 
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD

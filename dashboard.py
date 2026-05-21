@@ -18,7 +18,7 @@ from theme import (
     BG, BG2, BG3, BG4, BG_LOG, BG_CHAT, BORDER,
     FG, FG_DIM, FG_LOG, FG_HEAD, ACCENT, ACCENT_HOVER, GREEN,
 )
-from ui_utils import OLLAMA_OK, _ollama, CTkRoot
+from ui_utils import OLLAMA_OK, OLLAMA_AVAILABLE, _ollama, CTkRoot
 from conversations_tab import ConversationTab
 from consoles_tab import ConsoleTab, CONSOLES_DIR
 from notes_tab import NoteTab, NOTES_DIR
@@ -153,9 +153,15 @@ class DashboardWindow:
         nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
 
         # ── Conversations ─────────────────────
-        chat_frame = ttk.Frame(nb)
-        nb.add(chat_frame, text="  Conversations  ")
-        self._build_chat_tab(chat_frame)
+        if OLLAMA_AVAILABLE:
+            chat_frame = ttk.Frame(nb)
+            nb.add(chat_frame, text="  Conversations  ")
+            self._build_chat_tab(chat_frame)
+        else:
+            reason = ("librairie 'ollama' absente (pip install ollama)"
+                      if not OLLAMA_OK
+                      else "serveur Ollama injoignable")
+            logger.log(f"Onglet Conversations masqué : {reason}.")
 
         # ── Consoles ──────────────────────────
         console_frame = ttk.Frame(nb)
@@ -320,13 +326,6 @@ class DashboardWindow:
     #  Tab Conversations (inner notebook multi-onglets)
     # ─────────────────────────────────────────
     def _build_chat_tab(self, parent):
-        if not OLLAMA_OK:
-            tk.Label(parent,
-                     text="⚠  La librairie 'ollama' n'est pas installée.\npip install ollama",
-                     bg=BG, fg=FG_DIM, font=("Segoe UI", 10),
-                     justify="center").pack(expand=True)
-            return
-
         # ── Notebook interne ──────────────────
         self._conv_notebook = ttk.Notebook(parent, style="Inner.TNotebook")
         self._conv_notebook.pack(fill="both", expand=True)
