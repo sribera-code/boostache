@@ -151,6 +151,7 @@ class DashboardWindow:
         container.pack(fill="both", expand=True, padx=0, pady=0)
         nb = ttk.Notebook(container)
         nb.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        self._main_nb = nb
 
         # ── Conversations ─────────────────────
         if OLLAMA_AVAILABLE:
@@ -177,6 +178,7 @@ class DashboardWindow:
         clip_frame = ttk.Frame(nb)
         nb.add(clip_frame, text="  Presse-papiers  ")
         self._build_clipboard_tab(clip_frame)
+        self._clip_frame = clip_frame
 
         # ── Historique ────────────────────────
         log_frame = ttk.Frame(nb)
@@ -275,11 +277,11 @@ class DashboardWindow:
                                               font=ctk.CTkFont(family="Segoe UI", size=11))
         self._settings_status.pack(side="left")
 
-        ctk.CTkButton(btn_row, text="Sauvegarder",
+        ctk.CTkButton(btn_row, text="💾 Sauvegarder",
                        command=self._save_system_prompt,
-                       fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                       text_color="#1A1A1A",
-                       corner_radius=8, width=120, height=32,
+                       fg_color=BG3, hover_color=BG4, text_color=FG,
+                       border_width=0,
+                       corner_radius=8, width=140, height=32,
                        font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
                        ).pack(side="right")
 
@@ -303,6 +305,38 @@ class DashboardWindow:
         clip_entry.pack(side="right")
         clip_entry.bind("<Return>",   lambda e: self._save_clip_max())
         clip_entry.bind("<FocusOut>", lambda e: self._save_clip_max())
+
+        # ── Accès rapide au répertoire de cache ──
+        sep2 = tk.Frame(outer, bg=BG3, height=1)
+        sep2.pack(fill="x", pady=(22, 14))
+
+        cache_row = ctk.CTkFrame(outer, fg_color="transparent")
+        cache_row.pack(fill="x")
+        cache_col = ctk.CTkFrame(cache_row, fg_color="transparent")
+        cache_col.pack(side="left", fill="x", expand=True)
+        ctk.CTkLabel(cache_col, text="Répertoire de cache",
+                     text_color=FG_HEAD, anchor="w",
+                     font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+                     ).pack(fill="x")
+        ctk.CTkLabel(cache_col, text=str(DATA_DIR),
+                     text_color=FG_DIM, anchor="w",
+                     font=ctk.CTkFont(family="Consolas", size=10)
+                     ).pack(fill="x", pady=(2, 0))
+        ctk.CTkButton(cache_row, text="📁 Ouvrir",
+                      command=self._open_cache_dir,
+                      fg_color=BG3, hover_color=BG4, text_color=FG,
+                      border_width=0,
+                      corner_radius=8, width=140, height=32,
+                      font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
+                      ).pack(side="right")
+
+    def _open_cache_dir(self):
+        import os
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            os.startfile(str(DATA_DIR))
+        except Exception as e:
+            logger.log(f"Impossible d'ouvrir le cache : {e}")
 
     def _save_system_prompt(self):
         prompt = self._system_prompt_box.get("1.0", "end").strip()
@@ -1206,6 +1240,8 @@ class DashboardWindow:
                              command=lambda i=idx: self._clip_open_popup(i))
             menu.add_command(label="Copier",
                              command=lambda i=idx: self._clip_copy(i))
+            menu.add_command(label="Lire",
+                             command=lambda i=idx: self._clip_speak(i))
             menu.add_command(label="Supprimer",
                              command=lambda i=idx: self._clip_delete(i))
             menu.add_separator()
@@ -1232,6 +1268,19 @@ class DashboardWindow:
         if 0 <= idx < len(items):
             self.root.clipboard_clear()
             self.root.clipboard_append(items[idx].get("text", ""))
+
+    def _clip_speak(self, idx: int):
+        items = clipboard_history.all()
+        if not (0 <= idx < len(items)):
+            return
+        text = items[idx].get("text", "")
+        if not text:
+            return
+        try:
+            tts.stop()
+        except Exception:
+            pass
+        tts.speak(text)
 
     def _clip_delete(self, idx: int):
         clipboard_history.delete(idx)
@@ -1382,7 +1431,40 @@ class DashboardWindow:
                                         text_color=FG_DIM,
                                         font=ctk.CTkFont(family="Consolas", size=11))
         self._clock_lbl.pack(side="right", padx=16)
+
+        # Bouton TTS (initialement masqué, apparaît quand une lecture est en cours)
+        self._tts_stop_btn = ctk.CTkButton(
+            bar, text="⏹ Arrêter lecture en cours",
+            width=180, height=22, corner_radius=4,
+            fg_color=BG3, hover_color=BG4,
+            text_color=FG, border_width=0,
+            font=ctk.CTkFont(family="Segoe UI", size=10),
+            command=self._tts_stop_global)
+
         self._tick_clock()
+        self._poll_tts_state()
+
+    def _tts_stop_global(self):
+        try:
+            tts.stop()
+        except Exception:
+            pass
+
+    def _poll_tts_state(self):
+        if not self.root:
+            return
+        try:
+            speaking = bool(tts.speaking)
+        except Exception:
+            speaking = False
+        if speaking:
+            if not self._tts_stop_btn.winfo_ismapped():
+                self._tts_stop_btn.pack(side="right", padx=(0, 12),
+                                        before=self._clock_lbl)
+        else:
+            if self._tts_stop_btn.winfo_ismapped():
+                self._tts_stop_btn.pack_forget()
+        self.root.after(300, self._poll_tts_state)
 
     # ─────────────────────────────────────────
     #  Logs
@@ -1799,7 +1881,23 @@ class DashboardWindow:
 
     def hide(self):
         if self.root:
+            self._switch_away_from_clipboard()
             self.root.withdraw()
+
+    def _switch_away_from_clipboard(self):
+        nb = getattr(self, "_main_nb", None)
+        clip = getattr(self, "_clip_frame", None)
+        if not nb or not clip:
+            return
+        try:
+            if nb.select() == str(clip):
+                tabs = list(nb.tabs())
+                fallback = next(
+                    (t for t in tabs if t != str(clip)), None)
+                if fallback:
+                    nb.select(fallback)
+        except Exception:
+            pass
 
     def run(self):
         self.build()
