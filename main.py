@@ -3,7 +3,9 @@ main.py – Point d'entrée de Boostache
 Gère le system tray et orchestre le démarrage de l'application.
 """
 
-import importlib
+import os
+import subprocess
+import sys
 import threading
 
 import pystray
@@ -39,24 +41,17 @@ class TrayApp:
             self.dashboard.root.after(0, self.dashboard.show)
 
     def _on_reload(self, icon=None, item=None):
-        logger.log("Rechargement en cours…")
-        hotkey_manager.remove_all()
-        import schedule
-        schedule.clear()
-        task_manager.registered.clear()
-        hotkey_manager.registered.clear()
+        logger.log("Redémarrage de Boostache…")
         try:
-            importlib.reload(tasks)
-            importlib.reload(bindings)
-            tasks.register()
-            bindings.register(open_dashboard_fn=self._on_open)
-            # Recharger les tâches custom persistées
-            self.dashboard._task_load_persisted()
-            logger.log("Rechargement terminé ✓")
+            kwargs = {}
+            if os.name == "nt":
+                kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen([sys.executable, *sys.argv],
+                             close_fds=True, **kwargs)
         except Exception as e:
-            logger.log(f"Erreur lors du rechargement : {e}")
-        if self.dashboard.root:
-            self.dashboard.root.after(0, self.dashboard._refresh_hotkeys)
+            logger.log(f"Échec du lancement de la nouvelle instance : {e}")
+            return
+        self._on_quit()
 
     def _on_quit(self, icon=None, item=None):
         logger.log("Arrêt de Boostache…")

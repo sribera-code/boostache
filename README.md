@@ -112,7 +112,7 @@ def register(open_dashboard_fn):
     hotkey_manager.add("ctrl+alt+x", mon_action, label="Mon action")
 ```
 
-Après modification, clic droit sur l'icône tray → **Recharger** pour appliquer sans redémarrer.
+Après modification, clic droit sur l'icône tray → **Recharger** : Boostache relance proprement le process pour prendre en compte tous les changements (UI, tâches, raccourcis).
 
 ---
 
