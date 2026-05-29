@@ -61,6 +61,8 @@ user32.GetClipboardData.argtypes               = [wintypes.UINT]
 user32.GetClipboardData.restype                = wintypes.HANDLE
 user32.CloseClipboard.argtypes                 = []
 user32.IsClipboardFormatAvailable.argtypes     = [wintypes.UINT]
+user32.RegisterClipboardFormatW.argtypes       = [wintypes.LPCWSTR]
+user32.RegisterClipboardFormatW.restype        = wintypes.UINT
 
 kernel32.GlobalLock.argtypes                   = [wintypes.HANDLE]
 kernel32.GlobalLock.restype                    = ctypes.c_void_p
@@ -70,13 +72,52 @@ kernel32.GetModuleHandleW.argtypes             = [wintypes.LPCWSTR]
 kernel32.GetModuleHandleW.restype              = wintypes.HMODULE
 
 
+# Marqueurs de confidentialité Windows utilisés par les gestionnaires de mots
+# de passe (Bitwarden, KeePass, 1Password…) et Office pour exclure un contenu
+# de l'historique du presse-papiers.
+CF_CAN_INCLUDE_IN_HISTORY = user32.RegisterClipboardFormatW(
+    "CanIncludeInClipboardHistory")
+CF_EXCLUDE_FROM_MONITORING = user32.RegisterClipboardFormatW(
+    "ExcludeClipboardContentFromMonitorProcessing")
+CF_CAN_UPLOAD_TO_CLOUD = user32.RegisterClipboardFormatW(
+    "CanUploadToCloudClipboard")
+
+
+def _is_clipboard_private() -> bool:
+    """True si l'app source a marqué le contenu comme confidentiel."""
+    try:
+        if CF_EXCLUDE_FROM_MONITORING and \
+                user32.IsClipboardFormatAvailable(CF_EXCLUDE_FROM_MONITORING):
+            return True
+        for fmt in (CF_CAN_INCLUDE_IN_HISTORY, CF_CAN_UPLOAD_TO_CLOUD):
+            if not fmt or not user32.IsClipboardFormatAvailable(fmt):
+                continue
+            h = user32.GetClipboardData(fmt)
+            if not h:
+                continue
+            ptr = kernel32.GlobalLock(h)
+            if not ptr:
+                continue
+            try:
+                if ctypes.c_uint32.from_address(ptr).value == 0:
+                    return True
+            finally:
+                kernel32.GlobalUnlock(h)
+    except Exception:
+        pass
+    return False
+
+
 def _read_clipboard_text() -> str | None:
-    """Lit le texte du presse-papiers en CF_UNICODETEXT, ou None."""
+    """Lit le texte du presse-papiers en CF_UNICODETEXT, ou None.
+    Retourne None si l'app source a marqué le contenu comme confidentiel."""
     if not user32.IsClipboardFormatAvailable(CF_UNICODETEXT):
         return None
     if not user32.OpenClipboard(None):
         return None
     try:
+        if _is_clipboard_private():
+            return None
         h = user32.GetClipboardData(CF_UNICODETEXT)
         if not h:
             return None

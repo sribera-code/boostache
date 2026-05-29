@@ -274,29 +274,25 @@ CLIPBOARD_FILE = DATA_DIR / "clipboard_history.json"
 
 
 class ClipboardManager:
-    """Historique des copies texte (en mémoire + persistance JSON).
+    """Historique des copies texte — strictement en mémoire.
+    Aucune persistance sur disque : le contenu disparaît à la fermeture.
     Les items sont triés du plus récent au plus ancien."""
 
     def __init__(self):
         _ensure_dirs()
         self._items: list[dict] = []   # [{"ts": iso, "text": "..."}]
         self._lock = threading.Lock()
-        self.load()
-
-    def load(self):
+        # Nettoyage d'un éventuel fichier résiduel d'anciennes versions
         try:
-            with open(CLIPBOARD_FILE, "r", encoding="utf-8") as f:
-                self._items = json.load(f).get("items", [])
-        except Exception:
-            self._items = []
-
-    def save(self):
-        try:
-            with open(CLIPBOARD_FILE, "w", encoding="utf-8") as f:
-                json.dump({"items": self._items}, f,
-                          indent=2, ensure_ascii=False)
+            CLIPBOARD_FILE.unlink(missing_ok=True)
         except Exception:
             pass
+
+    def load(self):
+        pass
+
+    def save(self):
+        pass
 
     def add(self, text: str, max_items: int = 100) -> bool:
         """Ajoute une entrée. Retourne True si ajoutée, False si dédupliquée."""
