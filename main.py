@@ -1,6 +1,10 @@
 """
 main.py – Point d'entrée de Boostache
 Gère le system tray et orchestre le démarrage de l'application.
+
+Options :
+    --show    affiche la fenêtre dès le démarrage
+    --debug   active les outils de développement (clic droit → Inspecter)
 """
 
 import os
@@ -12,14 +16,14 @@ import pystray
 
 from engine import create_tray_icon, logger, task_manager, hotkey_manager
 from storage import clear_cache
-from dashboard import DashboardWindow
+from app import BoostacheApp
 import tasks
 import bindings
 
 
 class TrayApp:
-    def __init__(self):
-        self.dashboard = DashboardWindow()
+    def __init__(self, debug: bool = False, show: bool = False):
+        self.app = BoostacheApp(debug=debug, show_on_start=show)
         self._tray = None  # type: ignore
 
     def _build_tray(self):
@@ -37,8 +41,7 @@ class TrayApp:
         self._tray.run()
 
     def _on_open(self, icon=None, item=None):
-        if self.dashboard.root:
-            self.dashboard.root.after(0, self.dashboard.show)
+        threading.Thread(target=self.app.show, daemon=True).start()
 
     def _on_reload(self, icon=None, item=None):
         logger.log("Redémarrage de Boostache…")
@@ -55,21 +58,22 @@ class TrayApp:
 
     def _on_quit(self, icon=None, item=None):
         logger.log("Arrêt de Boostache…")
-        task_manager.stop()
-        hotkey_manager.remove_all()
-        if self._tray:
-            self._tray.stop()
-        if self.dashboard.root:
-            self.dashboard.root.after(0, self.dashboard.destroy)
+        threading.Thread(target=self.app.quit, daemon=True).start()
 
     def run(self):
         tasks.register()
         bindings.register(open_dashboard_fn=self._on_open)
         threading.Thread(target=self._run_tray, daemon=True).start()
         task_manager.start()
-        self.dashboard.run()
+        try:
+            self.app.run()          # boucle d'interface (thread principal)
+        finally:
+            task_manager.stop()
+            hotkey_manager.remove_all()
+            if self._tray:
+                self._tray.stop()
 
 
 if __name__ == "__main__":
     clear_cache()
-    TrayApp().run()
+    TrayApp(debug="--debug" in sys.argv, show="--show" in sys.argv).run()

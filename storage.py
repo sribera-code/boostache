@@ -1,43 +1,91 @@
 """
 storage.py – Persistance de Boostache
-Settings (modèle choisi, préférences) et conversations.
+Réglages, conversations, consoles, notes, captures et historique du presse-papiers.
+
+Le répertoire de données peut être redirigé avec la variable d'environnement
+BOOSTACHE_DATA_DIR (utile pour tester sans toucher aux données réelles).
 """
 
 import json
 import os
+import shutil
+import tempfile
 import threading
 from datetime import datetime
 from pathlib import Path
 
-try:
-    from platformdirs import user_data_dir
-    DATA_DIR = Path(user_data_dir("Boostache", "Boostache"))
-except ImportError:
-    # Fallback : dossier AppData\Roaming\Boostache
-    DATA_DIR = Path(os.environ.get("APPDATA", "~")) / "Boostache"
-    DATA_DIR = DATA_DIR.expanduser()
 
-SETTINGS_FILE      = DATA_DIR / "settings.json"
-CONVERSATIONS_DIR  = DATA_DIR / "conversations"
-CACHE_DIR          = DATA_DIR / "cache"
+def _default_data_dir() -> Path:
+    override = os.environ.get("BOOSTACHE_DATA_DIR")
+    if override:
+        return Path(override).expanduser()
+    try:
+        from platformdirs import user_data_dir
+        return Path(user_data_dir("Boostache", "Boostache"))
+    except ImportError:
+        # Fallback : dossier AppData\Roaming\Boostache
+        return (Path(os.environ.get("APPDATA", "~")) / "Boostache").expanduser()
+
+
+DATA_DIR          = _default_data_dir()
+SETTINGS_FILE     = DATA_DIR / "settings.json"
+CONVERSATIONS_DIR = DATA_DIR / "conversations"
+ATTACHMENTS_DIR   = CONVERSATIONS_DIR / "attachments"
+CONSOLES_DIR      = DATA_DIR / "consoles"
+NOTES_DIR         = DATA_DIR / "notes"
+CAPTURES_DIR      = DATA_DIR / "captures"
+CACHE_DIR         = DATA_DIR / "cache"
 
 
 def _ensure_dirs():
-    for d in (DATA_DIR, CONVERSATIONS_DIR, CACHE_DIR):
+    for d in (DATA_DIR, CONVERSATIONS_DIR, CONSOLES_DIR, NOTES_DIR, CACHE_DIR):
         d.mkdir(parents=True, exist_ok=True)
+
+
+def read_json(path: Path):
+    """Lit un fichier JSON, ou None s'il est absent ou illisible."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+
+def write_json(path: Path, data) -> bool:
+    """Écrit un fichier JSON de façon atomique (fichier temporaire + remplacement),
+    pour ne jamais laisser un fichier à moitié écrit en cas d'arrêt brutal."""
+    tmp = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        os.replace(tmp, path)
+        return True
+    except Exception:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+        return False
 
 
 # ─────────────────────────────────────────────
 #  Nettoyage du cache au démarrage
 # ─────────────────────────────────────────────
 def clear_cache():
-    """Supprime les fichiers temporaires (screenshots, images collées)."""
+    """Supprime les fichiers temporaires (screenshots, images collées, captures
+    jointes à une conversation)."""
     _ensure_dirs()
     for f in CACHE_DIR.glob("boostache_*.png"):
         try:
             f.unlink()
         except Exception:
             pass
+    for d in CACHE_DIR.glob("boostache_*"):
+        if d.is_dir():
+            shutil.rmtree(d, ignore_errors=True)
 
 
 # ─────────────────────────────────────────────
@@ -45,12 +93,17 @@ def clear_cache():
 # ─────────────────────────────────────────────
 _DEFAULTS = {
     "last_model":           "",
-    "window_geometry":      "720x580",
+    "window_size":          [980, 680],
     "always_on_top":        True,
     "system_prompt":        "",
-    "tts_mode_chat":        "last",   # "last" | "all"
-    "tts_mode_console":     "last",   # "last" | "all"
+    "tts_mode_chat":        "last",        # "last" | "all"
+    "tts_mode_console":     "last",        # "last" | "all"
+    "tts_mode_note":        "all",         # "all" | "sel"
     "clipboard_max_items":  100,
+    "console_shell":        "powershell",  # "powershell" | "pwsh" | "cmd"
+    "sidebar_collapsed":    False,
+    "print_screen_capture": True,          # Impr. écran → onglet Captures
+    "capture_save_dir":     "",            # dernier dossier de « Enregistrer sous »
 }
 
 
@@ -58,28 +111,24 @@ class SettingsManager:
     def __init__(self):
         _ensure_dirs()
         self._data: dict = {}
+        self._lock = threading.Lock()
         self.load()
 
     def load(self):
-        try:
-            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                self._data = json.load(f)
-        except Exception:
-            self._data = {}
+        data = read_json(SETTINGS_FILE)
+        self._data = data if isinstance(data, dict) else {}
 
     def save(self):
-        try:
+        with self._lock:
             merged = {**_DEFAULTS, **self._data}
-            with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-                json.dump(merged, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        write_json(SETTINGS_FILE, merged)
 
     def get(self, key: str, default=None):
         return self._data.get(key, _DEFAULTS.get(key, default))
 
     def set(self, key: str, value):
-        self._data[key] = value
+        with self._lock:
+            self._data[key] = value
         self.save()
 
 
@@ -92,179 +141,134 @@ class ConversationManager:
     Chaque conversation = un fichier JSON dans conversations/.
     Format : {"id": "...", "title": "...", "model": "...",
                "created_at": "...", "messages": [...]}
+    Les messages suivent le format Ollama (role / content / images) avec
+    quelques champs d'affichage en plus (display, attachments, thinking, model).
     """
 
     def __init__(self):
         _ensure_dirs()
-        self._current_id: str | None = None
+        self._lock = threading.Lock()
 
-    # ── Nouveau fichier ──────────────────────
     def new(self, model: str) -> str:
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        conv_id = ts
-        self._current_id = conv_id
-        data = {
+        now = datetime.now()
+        conv_id = now.strftime("%Y%m%d_%H%M%S")
+        # Deux conversations créées dans la même seconde : suffixe
+        n = 1
+        while self._path(conv_id).exists():
+            n += 1
+            conv_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{n}"
+        self._write(conv_id, {
             "id":         conv_id,
-            "title":      f"Conversation du {datetime.now().strftime('%d/%m/%Y %H:%M')}",
+            "title":      f"Conversation du {now.strftime('%d/%m/%Y %H:%M')}",
             "model":      model,
-            "created_at": datetime.now().isoformat(),
+            "created_at": now.isoformat(),
             "messages":   [],
-        }
-        self._write(conv_id, data)
+        })
         return conv_id
 
-    # ── Sauvegarde ──────────────────────────
-    def save(self, messages: list[dict], model: str,
-             conv_id: str | None = None):
-        cid = conv_id or self._current_id
-        if not cid:
-            cid = self.new(model)
-        data = self._read(cid) or {}
-        data["messages"] = messages
-        data["model"]    = model
-        # Titre auto : premiers 60 chars du premier message utilisateur
-        if not data.get("title") or data["title"].startswith("Conversation"):
-            for m in messages:
-                if m.get("role") == "user":
-                    raw = m.get("content", "")
-                    # Tronquer si le contenu est long (ex: fichier injecté)
-                    first_line = raw.split("\n")[0][:60]
-                    if first_line:
-                        data["title"] = first_line
-                    break
-        self._write(cid, data)
-        self._current_id = cid
-        return cid
+    def save(self, messages: list[dict], model: str, conv_id: str | None = None) -> str:
+        with self._lock:
+            cid = conv_id or self.new(model)
+            data = self._read(cid) or {"id": cid, "created_at": datetime.now().isoformat()}
+            data["messages"] = messages
+            data["model"]    = model
+            # Titre auto : première ligne du premier message utilisateur
+            if not data.get("title") or data["title"].startswith("Conversation"):
+                for m in messages:
+                    if m.get("role") == "user":
+                        raw = m.get("display") or m.get("content", "")
+                        first_line = raw.strip().split("\n")[0][:60]
+                        if first_line:
+                            data["title"] = first_line
+                        break
+            self._write(cid, data)
+            return cid
 
-    # ── Chargement ──────────────────────────
     def load(self, conv_id: str) -> dict | None:
-        data = self._read(conv_id)
-        if data:
-            self._current_id = conv_id
-        return data
+        return self._read(conv_id)
 
     def load_latest(self) -> dict | None:
         """Charge la conversation la plus récente."""
-        files = sorted(CONVERSATIONS_DIR.glob("*.json"), reverse=True)
-        for f in files:
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                self._current_id = data.get("id")
-                return data
-            except Exception:
+        for f in sorted(CONVERSATIONS_DIR.glob("*.json"), reverse=True):
+            if f.name == "chat_meta.json":
                 continue
+            data = read_json(f)
+            if isinstance(data, dict) and "messages" in data:
+                return data
         return None
 
-    def list_all(self) -> list[dict]:
-        """Retourne toutes les conversations triées par date décroissante."""
-        result = []
-        for f in sorted(CONVERSATIONS_DIR.glob("*.json"), reverse=True):
-            try:
-                with open(f, "r", encoding="utf-8") as fp:
-                    data = json.load(fp)
-                result.append({
-                    "id":         data.get("id", f.stem),
-                    "title":      data.get("title", f.stem),
-                    "model":      data.get("model", ""),
-                    "created_at": data.get("created_at", ""),
-                    "count":      len(data.get("messages", [])),
-                })
-            except Exception:
-                continue
-        return result
-
-    @property
-    def current_id(self) -> str | None:
-        return self._current_id
-
-    # ── I/O ─────────────────────────────────
     def _path(self, conv_id: str) -> Path:
         return CONVERSATIONS_DIR / f"{conv_id}.json"
 
     def _read(self, conv_id: str) -> dict | None:
-        p = self._path(conv_id)
-        if not p.exists():
-            return None
-        try:
-            with open(p, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+        data = read_json(self._path(conv_id))
+        return data if isinstance(data, dict) else None
 
     def _write(self, conv_id: str, data: dict):
-        try:
-            with open(self._path(conv_id), "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+        write_json(self._path(conv_id), data)
 
 
-# Singletons
-settings      = SettingsManager()
-conversations = ConversationManager()
+class ChatMeta:
+    """Onglets de conversation ouverts : conversations/chat_meta.json
+    Format : {"tabs": [{"conv_id": "...", "label": "...", "model": "..."}]}"""
+
+    PATH = CONVERSATIONS_DIR / "chat_meta.json"
+
+    def load(self) -> list[dict]:
+        data = read_json(self.PATH)
+        tabs = data.get("tabs", []) if isinstance(data, dict) else []
+        return [t for t in tabs if isinstance(t, dict)]
+
+    def save(self, tabs: list[dict]):
+        write_json(self.PATH, {"tabs": tabs})
 
 
 # ─────────────────────────────────────────────
-#  Consoles
+#  Consoles, notes & captures : un fichier JSON par onglet
 # ─────────────────────────────────────────────
-CONSOLES_DIR = DATA_DIR / "consoles"
+class SlotStore:
+    """Onglets persistés sous forme de fichiers <prefix>_<slot>.json,
+    ordonnés par un meta.json : {"order": [slots…]}."""
 
+    def __init__(self, directory: Path, prefix: str):
+        self.dir = directory
+        self.prefix = prefix
+        self.dir.mkdir(parents=True, exist_ok=True)
 
-class ConsoleManager:
-    """
-    Sauvegarde / charge l'état des consoles.
-    Format : {"slot": N, "cwd": "...", "history": [...], "output": "..."}
-    Un fichier par slot (console_1.json, console_2.json, …).
-    """
-
-    def __init__(self):
-        _ensure_dirs()
-        CONSOLES_DIR.mkdir(parents=True, exist_ok=True)
-
-    def save(self, slot: int, cwd: str, history: list[str], output: str):
-        path = CONSOLES_DIR / f"console_{slot}.json"
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump({
-                    "slot":    slot,
-                    "cwd":     cwd,
-                    "history": history,
-                    "output":  output,
-                }, f, indent=2, ensure_ascii=False)
-        except Exception:
-            pass
+    def path(self, slot: int) -> Path:
+        return self.dir / f"{self.prefix}_{slot}.json"
 
     def load(self, slot: int) -> dict | None:
-        path = CONSOLES_DIR / f"console_{slot}.json"
-        if not path.exists():
-            return None
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            return None
+        data = read_json(self.path(slot))
+        return data if isinstance(data, dict) else None
 
-    def list_slots(self) -> list[int]:
-        """Retourne les numéros de slot persistés, triés."""
-        slots = []
-        for p in CONSOLES_DIR.glob("console_*.json"):
-            try:
-                n = int(p.stem.split("_")[1])
-                slots.append(n)
-            except Exception:
-                pass
-        return sorted(slots)
+    def save(self, slot: int, data: dict):
+        write_json(self.path(slot), data)
 
     def delete(self, slot: int):
-        path = CONSOLES_DIR / f"console_{slot}.json"
         try:
-            path.unlink(missing_ok=True)
+            self.path(slot).unlink(missing_ok=True)
         except Exception:
             pass
 
+    def existing_slots(self) -> list[int]:
+        slots = []
+        for p in self.dir.glob(f"{self.prefix}_*.json"):
+            tail = p.stem[len(self.prefix) + 1:]
+            if tail.isdigit():
+                slots.append(int(tail))
+        return sorted(slots)
 
-consoles = ConsoleManager()
+    def order(self) -> list[int]:
+        """Slots à restaurer, dans l'ordre. Si le meta est vide ou absent,
+        retombe sur les fichiers présents dans le dossier."""
+        data = read_json(self.dir / "meta.json")
+        order = data.get("order", []) if isinstance(data, dict) else []
+        order = [s for s in order if isinstance(s, int) and self.path(s).exists()]
+        return order or self.existing_slots()
+
+    def save_order(self, slots: list[int]):
+        write_json(self.dir / "meta.json", {"order": slots})
 
 
 # ─────────────────────────────────────────────
@@ -276,11 +280,12 @@ CLIPBOARD_FILE = DATA_DIR / "clipboard_history.json"
 class ClipboardManager:
     """Historique des copies texte — strictement en mémoire.
     Aucune persistance sur disque : le contenu disparaît à la fermeture.
-    Les items sont triés du plus récent au plus ancien."""
+    Les items sont triés du plus récent au plus ancien ; chacun a un id stable."""
 
     def __init__(self):
         _ensure_dirs()
-        self._items: list[dict] = []   # [{"ts": iso, "text": "..."}]
+        self._items: list[dict] = []   # [{"id": n, "ts": iso, "text": "..."}]
+        self._next_id = 1
         self._lock = threading.Lock()
         # Nettoyage d'un éventuel fichier résiduel d'anciennes versions
         try:
@@ -288,48 +293,52 @@ class ClipboardManager:
         except Exception:
             pass
 
-    def load(self):
-        pass
-
-    def save(self):
-        pass
-
     def add(self, text: str, max_items: int = 100) -> bool:
-        """Ajoute une entrée. Retourne True si ajoutée, False si dédupliquée."""
+        """Ajoute une entrée (ou remonte une entrée identique en tête).
+        Retourne True si l'historique a changé."""
         if not text or not text.strip():
             return False
         with self._lock:
             if self._items and self._items[0].get("text") == text:
                 return False
+            self._items = [it for it in self._items if it.get("text") != text]
             self._items.insert(0, {
+                "id":   self._next_id,
                 "ts":   datetime.now().isoformat(timespec="seconds"),
                 "text": text,
             })
+            self._next_id += 1
             if max_items and len(self._items) > max_items:
                 self._items = self._items[:max_items]
-            self.save()
         return True
 
     def all(self) -> list[dict]:
         with self._lock:
             return list(self._items)
 
-    def delete(self, idx: int):
+    def get(self, item_id: int) -> dict | None:
         with self._lock:
-            if 0 <= idx < len(self._items):
-                self._items.pop(idx)
-                self.save()
+            return next((it for it in self._items if it["id"] == item_id), None)
+
+    def delete(self, item_id: int):
+        with self._lock:
+            self._items = [it for it in self._items if it["id"] != item_id]
 
     def clear(self):
         with self._lock:
             self._items.clear()
-            self.save()
 
     def trim(self, max_items: int):
         with self._lock:
             if max_items and len(self._items) > max_items:
                 self._items = self._items[:max_items]
-                self.save()
 
 
+# Singletons
+settings          = SettingsManager()
+conversations     = ConversationManager()
+chat_meta         = ChatMeta()
+console_store     = SlotStore(CONSOLES_DIR, "console")
+note_store        = SlotStore(NOTES_DIR, "note")
+capture_store     = SlotStore(CAPTURES_DIR, "capture")
 clipboard_history = ClipboardManager()

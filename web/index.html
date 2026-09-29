@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <!-- 'unsafe-eval' : requis par le pont pywebview (evaluate_js) -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'">
+  <title>Boostache</title>
+  <link rel="stylesheet" href="vendor/xterm/xterm.css">
+  <link rel="stylesheet" href="css/app.css">
+  <script src="js/errors.js"></script>
+  <script src="vendor/markdown-it.min.js"></script>
+  <script src="vendor/highlight.min.js"></script>
+  <script src="vendor/hljs-powershell.min.js"></script>
+  <script src="vendor/hljs-dos.min.js"></script>
+  <script src="vendor/xterm/xterm.js"></script>
+  <script src="vendor/xterm/addon-fit.js"></script>
+  <script src="vendor/xterm/addon-serialize.js"></script>
+  <script src="vendor/xterm/addon-web-links.js"></script>
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <div id="app" class="app booting">
+    <nav class="sidebar" id="sidebar" aria-label="Navigation"></nav>
+    <main class="main" id="main"></main>
+  </div>
+</body>
+</html>
