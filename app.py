@@ -21,11 +21,13 @@ from captures import CapturesService, Snipper
 from chat import ChatService, OLLAMA_OK, ollama_server_running
 from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
+from gmail import GmailPane
 from notes import NotesService
 from storage import DATA_DIR, settings, clipboard_history
 from terminals import TerminalService
-from winutil import (PrintScreenHook, bring_to_front, dark_title_bar, is_minimized,
-                     restore_window)
+from whatsapp import WhatsAppPane
+from winutil import (PrintScreenHook, bring_to_front, dark_title_bar, is_maximized, is_minimized,
+                     restore_window, work_area_size)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 VIRTUAL_HOST = "boostache.example"
@@ -102,6 +104,7 @@ class BoostacheApp:
         self._was_minimized = False
         self._quitting = False
         self._size = tuple(settings.get("window_size", [980, 680]))
+        self._size_timer: threading.Timer | None = None
 
         self.bridge = Bridge()
         logger.subscribe(self._on_log)
@@ -120,6 +123,8 @@ class BoostacheApp:
         self.terminals = TerminalService(self.bridge)
         self.notes = NotesService()
         self.captures = CapturesService(self.bridge, self.snipper, show_window=self.show)
+        # Sites intégrés, par clé (whatsapp, gmail)
+        self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
         self._clip_listener: ClipboardListener | None = None
         self._print_screen: PrintScreenHook | None = None
         self.api = Api(self)
@@ -134,13 +139,13 @@ class BoostacheApp:
         self._set_print_screen(bool(settings.get("print_screen_capture", True)))
         _force_dark_titlebar()
 
-        w, h = self._size
+        w, h = self._initial_size()
         self.window = webview.create_window(
             "Boostache",
             url=_interface_url(),
             js_api=self.api,
-            width=max(MIN_SIZE[0], int(w)),
-            height=max(MIN_SIZE[1], int(h)),
+            width=w,
+            height=h,
             min_size=MIN_SIZE,
             hidden=True,
             on_top=bool(settings.get("always_on_top", True)),
@@ -157,6 +162,15 @@ class BoostacheApp:
         webview.start(self._after_start, gui="edgechromium", debug=self.debug,
                       icon=ICON_PATH, private_mode=True)
         self._shutdown()
+
+    def _initial_size(self) -> tuple[int, int]:
+        """Taille enregistrée, ramenée dans l'écran s'il est plus petit que celui
+        où elle a été choisie (autre moniteur, bureau à distance…)."""
+        w, h = int(self._size[0]), int(self._size[1])
+        area = work_area_size()
+        if area:
+            w, h = min(w, int(area[0] * .95)), min(h, int(area[1] * .95))
+        return max(MIN_SIZE[0], w), max(MIN_SIZE[1], h)
 
     def _after_start(self):
         if self.show_on_start:
@@ -211,9 +225,19 @@ class BoostacheApp:
         self.hide()
 
     def _on_resized(self, width, height):
-        if (self._visible and not is_minimized(self._hwnd)
+        # Taille normale seulement : agrandie, la fenêtre rouvrirait en plein
+        # écran sans l'être vraiment
+        if (self._visible and not is_minimized(self._hwnd) and not is_maximized(self._hwnd)
                 and width >= MIN_SIZE[0] and height >= MIN_SIZE[1]):
             self._size = (width, height)
+            # Enregistrée dès la fin du redimensionnement : un « Recharger » (le
+            # nouveau processus lit les réglages avant que l'ancien ne ferme) ou
+            # une fermeture de session Windows ne la perdent plus
+            if self._size_timer:
+                self._size_timer.cancel()
+            self._size_timer = threading.Timer(1.0, self._save_size)
+            self._size_timer.daemon = True
+            self._size_timer.start()
 
     def _on_loaded(self):
         try:
@@ -337,13 +361,14 @@ class BoostacheApp:
             "settings": {k: settings.get(k) for k in (
                 "system_prompt", "clipboard_max_items", "always_on_top", "console_shell",
                 "tts_mode_chat", "tts_mode_console", "tts_mode_note", "sidebar_collapsed",
-                "print_screen_capture")},
+                "print_screen_capture", "assist_model")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": self._chat_reason},
             "consoles":  self.terminals.snapshot(),
             "notes":     self.notes.snapshot(),
             "captures":  self.captures.snapshot(),
+            "panes":     {key: p.snapshot() for key, p in self.panes.items()},
             "clipboard": self.clipboard_items(),
             "logs":      logger.recent(),
             "tasks":     custom_tasks.rows(),
@@ -380,7 +405,7 @@ class BoostacheApp:
             if value not in ("last", "all", "sel"):
                 return settings.get(key)
             settings.set(key, value)
-        elif key in ("system_prompt", "sidebar_collapsed"):
+        elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
         else:
             return None

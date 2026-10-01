@@ -15,7 +15,7 @@ import custom_tasks
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 from engine import logger, tts, strip_markdown
 from storage import DATA_DIR, clipboard_history, settings
-from winutil import list_windows, open_url, reveal_in_explorer, set_topmost
+from winutil import list_windows, open_url, reveal_in_explorer, set_topmost, window_thumbnail
 
 ATTACH_TYPES = (
     "Texte & code (*.txt;*.md;*.py;*.js;*.ts;*.json;*.yaml;*.yml;*.csv;*.xml;*.html;*.css;"
@@ -89,7 +89,11 @@ class Api:
     def windows_list(self):
         return list_windows(exclude={self._app._hwnd})
 
+    def window_thumbnail(self, hwnd):
+        return window_thumbnail(int(hwnd))
+
     def window_set_topmost(self, hwnd, on):
+        """True si c'est fait, False si Windows refuse, None si la fenêtre est fermée."""
         return set_topmost(int(hwnd), bool(on))
 
     # ─────────────────────────────────────────
@@ -256,6 +260,27 @@ class Api:
 
     def note_save(self, slot, content):
         return self._app.notes.save(int(slot), content or "")
+
+    # ─────────────────────────────────────────
+    #  Sites intégrés (WhatsApp, Gmail) : pane = clé du site
+    # ─────────────────────────────────────────
+    def pane_show(self, pane, x, y, width, height, focus=False):
+        self._app.panes[pane].show(x, y, width, height, focus)
+
+    def pane_hide(self, pane):
+        self._app.panes[pane].hide()
+
+    def pane_reload(self, pane):
+        self._app.panes[pane].reload()
+
+    def pane_suggest(self, pane, model, hint=""):
+        return self._app.panes[pane].suggest(str(model or ""), str(hint or ""))
+
+    def pane_improve(self, pane, model, hint=""):
+        return self._app.panes[pane].improve(str(model or ""), str(hint or ""))
+
+    def pane_insert(self, pane, text):
+        return self._app.panes[pane].insert(str(text or ""))
 
     # ─────────────────────────────────────────
     #  Presse-papiers

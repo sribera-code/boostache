@@ -42,8 +42,10 @@ export function toast(text, kind = "success", ms = 2600) {
 // ─────────────────────────────────────────────
 const openMenus = [];
 
+/** Ferme les menus à partir du niveau donné ; au niveau 0, le panneau flottant aussi. */
 export function closeMenus(fromLevel = 0) {
   while (openMenus.length > fromLevel) openMenus.pop().el.remove();
+  if (!fromLevel) openPanel?.close();
 }
 
 function buildMenu(items, level) {
@@ -135,6 +137,49 @@ export function openMenuBelow(items, anchor, align = "left") {
   const fitsBelow = r.bottom + 6 + hgt <= window.innerHeight - 6;
   place(menu.el, align === "right" ? r.right - w : r.left, fitsBelow ? r.bottom + 6 : r.top - hgt - 6);
   return menu;
+}
+
+// ─────────────────────────────────────────────
+//  Panneau flottant ancré à un bouton (contenu libre, un seul à la fois)
+//  Se ferme au clic extérieur, avec Échap ou quand la fenêtre perd le focus ;
+//  un clic sur le bouton d'ancrage est laissé à l'appelant (bascule).
+// ─────────────────────────────────────────────
+let openPanel = null;
+
+export function openPopover(content, anchor, { cls = "", label = "", onClose } = {}) {
+  closeMenus();
+  closeTooltip();
+  const el = h("div", { class: `popover ${cls}`.trim(), role: "dialog", "aria-label": label || null }, content);
+  const panel = {
+    el,
+    close() {
+      if (openPanel !== panel) return;
+      openPanel = null;
+      el.remove();
+      document.removeEventListener("mousedown", onDown, true);
+      document.removeEventListener("keydown", onKey, true);
+      onClose?.();
+    },
+  };
+  function onDown(ev) {
+    if (!el.contains(ev.target) && !anchor.contains(ev.target)) panel.close();
+  }
+  function onKey(ev) {
+    if (ev.key === "Escape" && !openMenus.length) { ev.preventDefault(); ev.stopPropagation(); panel.close(); }
+  }
+  // Collé au bouton du côté où il y a le plus de place ; la hauteur suit le contenu
+  const r = anchor.getBoundingClientRect();
+  const below = window.innerHeight - r.bottom - 12;
+  const above = r.top - 12;
+  if (below >= above) Object.assign(el.style, { top: `${r.bottom + 6}px`, maxHeight: `${below}px` });
+  else Object.assign(el.style, { bottom: `${window.innerHeight - r.top + 6}px`, maxHeight: `${above}px` });
+  el.style.left = "-9999px";
+  document.body.append(el);
+  el.style.left = `${Math.max(6, Math.min(r.left, window.innerWidth - el.offsetWidth - 6))}px`;
+  document.addEventListener("mousedown", onDown, true);
+  document.addEventListener("keydown", onKey, true);
+  openPanel = panel;
+  return panel;
 }
 
 document.addEventListener("mousedown", (ev) => {

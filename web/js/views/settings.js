@@ -76,7 +76,7 @@ export function createSettingsView(ctx, state) {
   const shortcuts = [
     ["ctrl+shift+d", "Afficher Boostache (raccourci global, bindings.py)"],
     ["print screen", "Capturer une zone de l'écran (raccourci global, onglet Captures)"],
-    ["ctrl+1", "Aller à une section (Ctrl+1 à Ctrl+8)"],
+    ["ctrl+1", "Aller à une section (Ctrl+1 à Ctrl+9)"],
     ["ctrl+,", "Paramètres"],
     ["f2", "Renommer l'onglet sélectionné (ou double-clic)"],
     ["shift+enter", "Nouvelle ligne dans un message"],
@@ -117,7 +117,7 @@ export function createSettingsView(ctx, state) {
           h("div", {}, ...kbdCombo(combo)), h("div", { text: label })]))),
     )));
 
-  // Réglages modifiables ailleurs (menu « premier plan » de la barre latérale)
+  // Réglages modifiables ailleurs (panneau « premier plan » de la barre latérale)
   const syncSwitch = (sw, value) => {
     sw.classList.toggle("on", !!value);
     sw.setAttribute("aria-checked", String(!!value));

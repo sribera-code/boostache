@@ -1,6 +1,6 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, WhatsApp Web et Gmail avec un assistant de réponse, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
 
 L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview] ; toute la logique reste en Python.
 
@@ -54,6 +54,18 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Le bouton **+** ouvre un onglet vierge : capturer une zone, coller une image (Ctrl+V) ou en ouvrir une ; elle prend la place de l'onglet. Glisser-déposer des images fonctionne aussi
 - Onglets et retouches conservés entre les sessions ; la touche Impr. écran peut être rendue à Windows dans les **Paramètres**
 
+### WhatsApp et Gmail
+- WhatsApp Web et Gmail directement dans la fenêtre (sections **WhatsApp** et **Gmail**) : QR code à scanner (WhatsApp) ou connexion Google (Gmail) une seule fois, la session est conservée entre les lancements
+- Chargés à la première ouverture de leur section, puis gardés en arrière-plan : le nombre de non-lus s'affiche dans la barre latérale
+- Liens des messages ouverts dans le navigateur par défaut ; Ctrl+1 à Ctrl+9 restent actifs
+- **Assistant de réponse** (Ollama, en local — si Ollama est disponible) sous le site :
+  - **Suggérer des réponses** : trois propositions adaptées à la discussion ou à l'e-mail ouvert ; un clic place la réponse dans la zone de saisie (Gmail : la réponse s'ouvre si besoin, signature et citation sont conservées)
+  - **Améliorer le brouillon** : corrige et reformule le message en cours de saisie (bouton **Rétablir l'original**)
+  - Un brouillon remplacé par une proposition peut être récupéré (**Rétablir mon brouillon**)
+  - Consigne facultative (« plus formel », « décline poliment », « accepte mardi 14 h »…) et choix du modèle
+  - Rien n'est jamais envoyé automatiquement : il reste à relire et envoyer
+- Bouton **Recharger** (ou **Réessayer** si le site s'est arrêté)
+
 ### Historique, tâches et raccourcis
 - **Historique** : journal de l'application
 - **Tâches** : tâches de `tasks.py` + tâches créées depuis l'interface (intervalle ou heure fixe, code Python avec accès au `logger`), exécution manuelle
@@ -61,9 +73,9 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 
 ### Interface
 - Barre latérale repliable, onglets renommables (double-clic ou F2), menus contextuels
-- Navigation au clavier : Ctrl+1 à Ctrl+8 pour les sections, Ctrl+, pour les paramètres
+- Navigation au clavier : Ctrl+1 à Ctrl+9 pour les sections, Ctrl+, pour les paramètres
 - Fermer ou réduire la fenêtre la range dans le tray ; `Ctrl+Shift+D` la rappelle
-- Bouton **épingle** (bas de la barre latérale) : garder n'importe quelle fenêtre ouverte au premier plan, Boostache compris
+- Bouton **épingle** (bas de la barre latérale) : garder n'importe quelle fenêtre ouverte au premier plan, Boostache compris — chaque fenêtre avec l'icône de son application, une miniature et son titre complet ; filtre au clavier et « Tout libérer »
 
 ---
 
@@ -145,9 +157,12 @@ boostache/
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
+├── webpane.py           # Sites intégrés : contrôle WebView2 posé sur la fenêtre, assistant de réponse
+├── whatsapp.py           # WhatsApp Web (lecture de la discussion, zone de saisie)
+├── gmail.py              # Gmail (lecture du fil, éditeur de réponse)
 ├── custom_tasks.py       # Tâches créées depuis l'interface, raccourcis
 ├── clipboard_listener.py # Presse-papiers Win32 (écoute push, lecture, écriture)
-├── winutil.py            # Utilitaires Win32 (premier plan, explorateur, liens, touche Impr. écran)
+├── winutil.py            # Utilitaires Win32 (premier plan, icônes et miniatures des fenêtres, explorateur, liens, touche Impr. écran)
 ├── engine.py             # Logger, TaskManager, HotkeyManager, TTSEngine
 ├── storage.py            # Persistance (réglages, conversations, consoles, notes, captures)
 ├── tasks.py              # Tâches planifiées (à personnaliser)
@@ -155,12 +170,12 @@ boostache/
 ├── web/
 │   ├── index.html
 │   ├── css/app.css       # Thème et mise en page
-│   ├── js/               # main.js (coquille), ui.js (composants), views/ (une vue par section)
+│   ├── js/               # main.js (coquille), ui.js (composants), pin.js (panneau premier plan), views/ (une vue par section)
 │   └── vendor/           # Bibliothèques embarquées (voir vendor/licenses)
 └── requirements.txt
 ```
 
-Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres). La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
+Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte). La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
 
 ---
 

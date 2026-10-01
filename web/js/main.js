@@ -1,12 +1,14 @@
 // Point d'entrée de l'interface : barre latérale, navigation, comportements globaux.
 import { api, on, emit, ready, setErrorHandler, onCollect } from "./bridge.js";
 import { $, h, isTyping } from "./dom.js";
-import { ico, iconButton, toast, closeMenus, openMenu, openMenuBelow, setSpeakingButton } from "./ui.js";
+import { ico, iconButton, toast, closeMenus, openMenu, setSpeakingButton } from "./ui.js";
+import { togglePinPanel } from "./pin.js";
 import { createChatView } from "./views/chat.js";
 import { createConsolesView } from "./views/consoles.js";
 import { createNotesView } from "./views/notes.js";
 import { createClipboardView } from "./views/clipboard.js";
 import { createCapturesView } from "./views/captures.js";
+import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
 import { createHotkeysView } from "./views/hotkeys.js";
@@ -18,6 +20,8 @@ const NAV = [
   { id: "notes",     label: "Notes",          icon: "notebook-pen",    create: createNotesView },
   { id: "clipboard", label: "Presse-papiers", icon: "clipboard-list",  create: createClipboardView },
   { id: "captures",  label: "Captures",       icon: "palette",         create: createCapturesView },
+  { id: "whatsapp",  label: "WhatsApp",       icon: "message-circle",  create: createWhatsAppView },
+  { id: "gmail",     label: "Gmail",          icon: "mail",            create: createGmailView },
   "-",
   { id: "logs",      label: "Historique",     icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
@@ -38,13 +42,16 @@ const ctx = {
   navigate,
   isActive: (id) => store.active === id,
 
-  setBadge(id, value) {
+  /** kind "unread" : pastille verte, visible aussi barre latérale repliée. */
+  setBadge(id, value, kind = "") {
     const entry = views.get(id);
-    if (!entry) return;
+    if (!entry?.nav) return;
     const slot = entry.nav.querySelector(".nav-extra");
     slot.replaceChildren();
     if (value === "dot") slot.append(h("span", { class: "nav-dot" }));
-    else if (typeof value === "number" && value > 0) slot.append(h("span", { class: "nav-badge", text: value > 999 ? "999+" : String(value) }));
+    else if (typeof value === "number" && value > 0) {
+      slot.append(h("span", { class: `nav-badge ${kind}`.trim(), text: value > 999 ? "999+" : String(value) }));
+    }
   },
 
   async saveSetting(key, value) {
@@ -131,7 +138,7 @@ function buildSidebar() {
   sidebar.append(settingsEntry.nav);
 
   const clock = h("span", { class: "clock" });
-  const pin = iconButton("pin", "Garder des fenêtres au premier plan", (ev) => openPinMenu(ev.currentTarget),
+  const pin = iconButton("pin", "Garder des fenêtres au premier plan", (ev) => togglePinPanel(ctx, ev.currentTarget),
     { size: 15, cls: "sm" });
   const collapse = h("button", { class: "icon-btn sm collapse-btn", type: "button",
     onClick: () => setCollapsed(!$("#app").classList.contains("collapsed"), true) });
@@ -164,29 +171,12 @@ function buildSidebar() {
   setCollapsed(!!store.settings.sidebar_collapsed, false);
 }
 
-// ─────────────────────────────────────────────
-//  Premier plan : n'importe quelle fenêtre ouverte peut rester au-dessus des autres
-// ─────────────────────────────────────────────
-async function openPinMenu(anchor) {
-  const windows = (await api.windows_list()) || [];
-  const onTop = !!store.settings.always_on_top;
-  openMenuBelow([
-    { section: "Garder au premier plan" },
-    { label: "Boostache", checked: onTop, onSelect: () => ctx.saveSetting("always_on_top", !onTop) },
-    "-",
-    ...(windows.length
-      ? windows.map((w) => ({ label: w.title, hint: w.app, checked: w.topmost, onSelect: () => togglePin(w) }))
-      : [{ label: "Aucune autre fenêtre ouverte", disabled: true }]),
-  ], anchor);
-}
-
-async function togglePin(w) {
-  const name = w.title.length > 40 ? `${w.title.slice(0, 39)}…` : w.title;
-  if (await api.window_set_topmost(w.hwnd, !w.topmost)) {
-    toast(w.topmost ? `« ${name} » n'est plus au premier plan` : `« ${name} » reste au premier plan`);
-  } else {
-    toast("Windows refuse de modifier cette fenêtre (application lancée en administrateur ?).", "error");
-  }
+/** Ctrl+1…9 et Ctrl+, (clavier de l'interface ou relayé depuis WhatsApp). */
+function navShortcut(key) {
+  if (key === ",") { navigate("settings"); return true; }
+  const target = [...views.values()].find((e) => e.shortcut === Number(key));
+  if (target) navigate(target.item.id);
+  return !!target;
 }
 
 // ─────────────────────────────────────────────
@@ -290,11 +280,10 @@ function setupGlobalHandlers() {
   // Raccourcis de l'interface
   document.addEventListener("keydown", (ev) => {
     if (ev.ctrlKey && !ev.altKey && !ev.shiftKey && /^[1-9]$/.test(ev.key)) {
-      const target = [...views.values()].find((e) => e.shortcut === Number(ev.key));
-      if (target) { ev.preventDefault(); ev.stopPropagation(); navigate(target.item.id); }
+      if (navShortcut(ev.key)) { ev.preventDefault(); ev.stopPropagation(); }
     } else if (ev.ctrlKey && ev.key === ",") {
       ev.preventDefault();
-      navigate("settings");
+      navShortcut(",");
     } else if (ev.key === "F5" && !ev.ctrlKey) {
       ev.preventDefault();   // pas de rechargement accidentel de l'interface
     }
@@ -308,6 +297,7 @@ function setupGlobalHandlers() {
       if (fallback) navigate(fallback);
     }
   });
+  on("webpane:key", ({ key }) => navShortcut(key));
   on("window:shown", () => views.get(store.active)?.view.onWindowShown?.());
   on("toast", ({ text, kind }) => toast(text, kind || "info"));
 }
