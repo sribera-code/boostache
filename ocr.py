@@ -5,9 +5,14 @@ Appelé via PowerShell (accès natif aux API WinRT) : rien à installer. La
 langue est celle du profil Windows. Sert à l'aide contextuelle : les petits
 modèles Ollama voient les captures en basse résolution et ne lisent pas le
 texte d'une fenêtre, on le leur donne donc à part.
+
+Le script est passé en clair (-Command) : sur certains postes, une commande
+encodée en base64 (-EncodedCommand, précédée de -NonInteractive ou
+-ExecutionPolicy) est neutralisée, sans doute par l'antivirus, et PowerShell
+ne renvoie rien. Il ne doit pas contenir de guillemets doubles (ligne de
+commande Windows) ; le chemin de l'image arrive par l'environnement.
 """
 
-import base64
 import os
 import subprocess
 
@@ -17,6 +22,7 @@ TIMEOUT = 20                # secondes
 
 _SCRIPT = r"""
 $ErrorActionPreference = 'Stop'
+$Path = $env:BOOSTACHE_OCR_PATH
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 $null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
@@ -45,14 +51,12 @@ def read_text(path: str) -> str:
     """Lignes de texte de l'image (PNG, JPEG…), dans l'ordre de lecture.
     Chaîne vide si l'OCR est indisponible (aucune langue OCR installée) ou échoue."""
     # GetFileFromPathAsync n'accepte que des chemins absolus à barres obliques inverses
-    path = os.path.abspath(path)
-    script = f"$Path = '{path.replace(chr(39), chr(39) * 2)}'\n{_SCRIPT}"
+    env = {**os.environ, "BOOSTACHE_OCR_PATH": os.path.abspath(path)}
     try:
         result = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-             "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", _SCRIPT],
             capture_output=True, encoding="utf-8", errors="replace", timeout=TIMEOUT,
-            creationflags=subprocess.CREATE_NO_WINDOW)
+            env=env, creationflags=subprocess.CREATE_NO_WINDOW)
     except Exception as e:
         logger.log(f"OCR : lecture impossible ({e})")
         return ""

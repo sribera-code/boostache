@@ -21,7 +21,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from chat import _ollama
+from chat import NUM_CTX, _ollama
 from engine import logger
 from storage import DATA_DIR
 from winutil import open_url
@@ -177,7 +177,8 @@ class WebPane:
 
     @staticmethod
     def _ask(model: str, system: str, prompt: str, schema: dict) -> dict:
-        resp = _ollama.chat(model=model, format=schema, think=False, options={"temperature": 0.7},
+        resp = _ollama.chat(model=model, format=schema, think=False,
+                            options={"temperature": 0.7, "num_ctx": NUM_CTX},
                             messages=[{"role": "system", "content": system},
                                       {"role": "user", "content": prompt}])
         data = json.loads(resp.message.content or "{}")

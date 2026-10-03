@@ -11,6 +11,7 @@ de la capture et de son texte (OCR), puis répond à celle choisie ou écrite.
 """
 
 import base64
+import functools
 import hashlib
 import html
 import io
@@ -37,9 +38,16 @@ except ImportError:
 
 
 IMAGE_EXTS     = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
+MODEL_IMG_SIDE = 1280          # côté max. des images envoyées au modèle (pixels)
 MAX_TEXT_BYTES = 1_000_000
 TITLE_LEN      = 24
 DELTA_INTERVAL = 0.04          # regroupement des tokens envoyés à l'interface
+
+# Contexte des modèles (tokens) : les 4096 d'Ollama par défaut ne suffisent pas à une capture
+# d'écran suivie de la réflexion d'un modèle « thinking ». Le même pour tous les appels (sinon
+# Ollama recharge le modèle à chaque changement) ; un OLLAMA_CONTEXT_LENGTH plus grand est gardé.
+_ENV_CTX = os.environ.get("OLLAMA_CONTEXT_LENGTH", "")
+NUM_CTX  = max(8192, int(_ENV_CTX) if _ENV_CTX.isdigit() else 0)
 
 HELP_MAX_TEXT  = 4000          # texte de la fenêtre transmis au modèle (caractères)
 HELP_OCR_WAIT  = 10            # attente de l'OCR à l'envoi de la question (secondes)
@@ -135,6 +143,38 @@ def _load_image_ref(ref: str):
         return im.copy()
 
 
+@functools.lru_cache(maxsize=16)
+def _model_image(ref: str):
+    """Image telle qu'envoyée au modèle : réduite à MODEL_IMG_SIDE. En pleine
+    résolution, une capture d'écran occupe à elle seule le contexte par défaut
+    d'Ollama (4096 tokens) avec certains modèles (qwen) ; le texte de la fenêtre
+    est de toute façon lu à part (OCR). Une image assez petite est envoyée telle quelle."""
+    from PIL import Image
+    try:
+        im = _load_image_ref(ref)
+    except Exception:
+        return ref
+    if max(im.size) <= MODEL_IMG_SIDE:
+        return ref
+    if im.mode not in ("RGB", "RGBA"):
+        im = im.convert("RGBA")
+    im.thumbnail((MODEL_IMG_SIDE, MODEL_IMG_SIDE), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _ollama_error(e: Exception) -> str:
+    """Message d'une erreur Ollama, pour l'interface."""
+    error = str(e)
+    if "connect" in error.lower() or "10061" in error:
+        return "Ollama injoignable. Vérifie que le serveur est lancé."
+    if "exceed_context_size" in error or "exceeds the available context" in error:
+        return ("Trop long pour le contexte du modèle : ouvre une nouvelle conversation "
+                "ou retire des pièces jointes.")
+    return error
+
+
 def _message_html(text: str, images) -> str:
     """Message en HTML pour le presse-papiers : texte puis images (data URL)."""
     parts = [f"<p>{html.escape(text).replace(chr(10), '<br>')}</p>"] if text else []
@@ -205,7 +245,7 @@ def _to_ollama(m: dict, sees_images: bool = True) -> dict:
     images = [ref for ref in (m.get("images") or [])
               if isinstance(ref, str) and (os.path.isfile(ref) or len(ref) > 256)]
     if images and (sees_images or not m.get("screen_text")):
-        out["images"] = images
+        out["images"] = [_model_image(ref) for ref in images]
     return out
 
 
@@ -456,7 +496,7 @@ class ChatService:
         content = thinking = ""
         buf_c = buf_t = ""
         last_flush = time.monotonic()
-        error, stopped, stream = None, False, None
+        error, stopped, stream, done_reason = None, False, None, None
 
         def flush():
             nonlocal buf_c, buf_t, last_flush
@@ -466,11 +506,12 @@ class ChatService:
             last_flush = time.monotonic()
 
         try:
-            stream = _ollama.chat(model=model, messages=payload, stream=True)
+            stream = _ollama.chat(model=model, messages=payload, stream=True, options={"num_ctx": NUM_CTX})
             for chunk in stream:
                 if stop_evt.is_set():
                     stopped = True
                     break
+                done_reason = chunk.done_reason or done_reason
                 msg = chunk.message
                 d_think = getattr(msg, "thinking", None) or ""
                 d_text = msg.content or ""
@@ -483,9 +524,7 @@ class ChatService:
                 if time.monotonic() - last_flush >= DELTA_INTERVAL:
                     flush()
         except Exception as e:
-            error = str(e)
-            if "connect" in error.lower() or "10061" in error:
-                error = "Ollama injoignable. Vérifie que le serveur est lancé."
+            error = _ollama_error(e)
             logger.log(f"Chat ({model}) : {error}")
         finally:
             if stream is not None and hasattr(stream, "close"):
@@ -494,6 +533,10 @@ class ChatService:
                 except Exception:
                     pass
         flush()
+        if done_reason == "length" and not stopped:
+            error = (f"Réponse coupée : le contexte du modèle ({NUM_CTX} tokens) est plein. "
+                     "Ouvre une nouvelle conversation ou retire des pièces jointes.")
+            logger.log(f"Chat ({model}) : {error}")
 
         saved = None
         with self._lock:
@@ -602,10 +645,13 @@ class ChatService:
         else:
             message = {"role": "user", "content": self._help_context(aid)}
             if self.sees_images(model):
-                message["images"] = [aid["path"]]
+                message["images"] = [_model_image(aid["path"])]
             try:
-                resp = _ollama.chat(model=model, format=HELP_SCHEMA, think=False, options={"temperature": 0.4},
+                resp = _ollama.chat(model=model, format=HELP_SCHEMA, think=False,
+                                    options={"temperature": 0.4, "num_ctx": NUM_CTX},
                                     messages=[{"role": "system", "content": HELP_SYSTEM}, message])
+                if resp.done_reason == "length":
+                    raise RuntimeError("Réponse du modèle coupée : son contexte est trop petit.")
                 data = json.loads(resp.message.content or "{}")
                 raw = data.get("suggestions") if isinstance(data, dict) else None
                 suggestions = [s.strip().strip("\"'«»“” ").strip() for s in raw or [] if isinstance(s, str)]
@@ -615,9 +661,7 @@ class ChatService:
                 else:
                     update["error"] = "Le modèle n'a rien proposé."
             except Exception as e:
-                error = str(e)
-                if "connect" in error.lower() or "10061" in error:
-                    error = "Ollama injoignable. Vérifie que le serveur est lancé."
+                error = _ollama_error(e)
                 logger.log(f"Aide contextuelle ({model}) : {error}")
                 update["error"] = error
         with self._lock:
