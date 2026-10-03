@@ -1,9 +1,11 @@
 // Panneau « Garder au premier plan » (épingle de la barre latérale) : n'importe
-// quelle fenêtre ouverte peut rester au-dessus des autres. Chaque fenêtre est
-// présentée avec l'icône de son application, une miniature et son titre complet.
+// quelle fenêtre ouverte peut rester au-dessus des autres, et être rendue plus
+// ou moins transparente. Chaque fenêtre est présentée avec l'icône de son
+// application, une miniature et son titre complet.
 import { h, plural } from "./dom.js";
 import { ico, iconButton, openPopover, toast } from "./ui.js";
 
+const MIN_OPACITY = 20;        // comme winutil.MIN_OPACITY
 const THUMB_JOBS = 3;          // captures en parallèle (un thread Python par appel)
 const thumbs = new Map();      // hwnd → dernière miniature, montrée d'emblée à la réouverture
 let panel = null;
@@ -26,6 +28,56 @@ function appIcon(w, size) {
     : ico("app-window", size);
 }
 
+/**
+ * Curseur d'opacité, appliqué en direct pendant le glissement : un appel à la
+ * fois, la dernière valeur demandée part dès que le précédent a répondu.
+ * `apply(percent)` retourne false si c'est refusé (le curseur revient alors à
+ * la valeur en place). `initial` à null : transparence gérée par l'application.
+ */
+function opacitySlider(initial, apply) {
+  const input = h("input", { type: "range", min: MIN_OPACITY, max: 100, step: 5, "aria-label": "Opacité",
+    onInput: () => request(Number(input.value)) });
+  const value = h("span", { class: "pin-opacity-value" });
+  const el = h("div", { class: "pin-opacity", dataset: { tip: "Opacité · double-clic : opaque" },
+    onDblclick: () => { if (!input.disabled) request(100); } }, ico("blend", 14), input, value);
+  let current = initial ?? 100;    // valeur en place
+  let wanted = current;
+  let busy = false;
+
+  function show(percent) {
+    input.value = percent;
+    value.textContent = `${percent}\u00a0%`;
+    el.style.setProperty("--fill", `${((percent - MIN_OPACITY) / (100 - MIN_OPACITY)) * 100}%`);
+    el.classList.toggle("faded", percent < 100);
+  }
+
+  async function request(percent) {
+    show(percent);
+    wanted = percent;
+    if (busy) return;
+    busy = true;
+    try {
+      while (wanted !== current) {
+        const target = wanted;
+        if (!(await apply(target))) { wanted = current; show(current); break; }
+        current = target;
+      }
+    } finally {
+      busy = false;
+    }
+  }
+
+  function disable(tip) {
+    input.disabled = true;
+    el.classList.add("disabled");
+    el.dataset.tip = tip;
+  }
+
+  show(current);
+  if (initial == null) disable("Transparence gérée par l'application elle-même");
+  return { el, disable };
+}
+
 export async function togglePinPanel(ctx, anchor) {
   if (panel) { panel.close(); return; }
   if (opening) return;
@@ -36,9 +88,11 @@ export async function togglePinPanel(ctx, anchor) {
 
 function buildPanel(ctx, anchor, windows) {
   const { api, store } = ctx;
-  let items = [];            // { w, el, shot, sw, meta } dans l'ordre d'empilement
+  let items = [];            // { w, el, shot, sw, meta, fader } dans l'ordre d'empilement
   let focused = null;        // ligne choisie au clavier
   let generation = 0;        // invalide les miniatures d'un chargement précédent
+  let onSlider = false;      // clic commencé sur un curseur d'opacité : la ligne ne bascule pas
+  const pressed = (ev) => { onSlider = !!ev.target.closest(".pin-opacity"); };
 
   // ── En-tête ────────────────────────────────
   const count = h("span", { class: "pin-count" });
@@ -53,11 +107,14 @@ function buildPanel(ctx, anchor, windows) {
 
   // ── Boostache lui-même ─────────────────────
   const selfSwitch = switchEl();
-  const selfRow = h("div", { class: "pin-row pin-self", onClick: toggleSelf, onMouseenter: () => setFocus(self) },
+  const selfFader = opacitySlider(store.settings.window_opacity ?? 100, fadeSelf);
+  const selfRow = h("div", { class: "pin-row pin-self", onPointerdown: pressed,
+    onClick: () => { if (!onSlider) toggleSelf(); }, onMouseenter: () => setFocus(self) },
     h("div", { class: "brand-mark" }, ico("zap", 14, 2)),
     h("div", { class: "pin-text" },
       h("div", { class: "pin-title", text: "Boostache" }),
       h("div", { class: "pin-meta", text: "Cette fenêtre" })),
+    selfFader.el,
     selfSwitch);
   const self = { el: selfRow, self: true };
   const renderSelf = () => {
@@ -85,9 +142,12 @@ function buildPanel(ctx, anchor, windows) {
   // ── Rendu ──────────────────────────────────
   function row(w) {
     const item = { w, shot: h("div", { class: "pin-shot" }), sw: switchEl(), meta: h("div", { class: "pin-meta" }) };
-    item.el = h("div", { class: "pin-row", onClick: () => toggle(item), onMouseenter: () => setFocus(item) },
+    item.fader = opacitySlider(w.opacity, (percent) => fade(item, percent));
+    item.el = h("div", { class: "pin-row", onPointerdown: pressed,
+      onClick: () => { if (!onSlider) toggle(item); }, onMouseenter: () => setFocus(item) },
       item.shot,
       h("div", { class: "pin-text" }, h("div", { class: "pin-title", text: w.title }), item.meta),
+      item.fader.el,
       item.sw);
     setShot(item, thumbs.get(w.hwnd), !w.minimized);
     update(item);
@@ -200,19 +260,40 @@ function buildPanel(ctx, anchor, windows) {
     renderSelf();
   }
 
+  async function fadeSelf(percent) {
+    return (await ctx.saveSetting("window_opacity", percent)) === percent;
+  }
+
+  function forget(item) {
+    toast("Cette fenêtre a été fermée.", "info");
+    items = items.filter((it) => it !== item);
+    item.el.remove();
+    thumbs.delete(item.w.hwnd);
+    if (focused === item) focused = null;
+    applyFilter();
+    summarize();
+  }
+
+  async function fade(item, percent) {
+    const done = await api.window_set_opacity(item.w.hwnd, percent);
+    if (done === null) {
+      if (items.includes(item)) forget(item);
+    } else if (!done) {
+      item.fader.disable("Windows refuse de rendre cette fenêtre transparente");
+      toast("Windows refuse de rendre cette fenêtre transparente (application lancée en administrateur ?).", "error");
+    } else {
+      item.w.opacity = percent;
+    }
+    return !!done;
+  }
+
   async function toggle(item) {
     if (item.busy) return;
     item.busy = true;
     const on = !item.w.topmost;
     const done = await api.window_set_topmost(item.w.hwnd, on).finally(() => { item.busy = false; });
     if (done === null) {
-      toast("Cette fenêtre a été fermée.", "info");
-      items = items.filter((it) => it !== item);
-      item.el.remove();
-      thumbs.delete(item.w.hwnd);
-      if (focused === item) focused = null;
-      applyFilter();
-      summarize();
+      forget(item);
     } else if (!done) {
       toast("Windows refuse de modifier cette fenêtre (application lancée en administrateur ?).", "error");
     } else {

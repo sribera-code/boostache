@@ -228,7 +228,7 @@ export function createConsolesView(ctx, state) {
   }
 
   function termFocus(t) {
-    if (S.active === t.slot && ctx.isActive("consoles")) t.term?.focus();
+    if (S.active === t.slot && ctx.isFocused("consoles")) t.term?.focus();
   }
 
   async function start(t) {
@@ -342,8 +342,8 @@ export function createConsolesView(ctx, state) {
 
   function clear(t) {
     if (!t?.term) return;
-    if (!t.exited) sendInput(t, "\x1bcls\r");
-    setTimeout(() => { t.term.clear(); t.save(); }, 250);
+    const sent = t.exited ? Promise.resolve() : api.term_submit(t.slot, "cls");
+    sent.then(() => setTimeout(() => { t.term.clear(); t.save(); }, 250));
     t.term.focus();
   }
 
@@ -455,8 +455,9 @@ export function createConsolesView(ctx, state) {
     },
     onWindowShown() {
       const t = activeTab();
-      if (t?.term) { fitTerm(t); t.term.focus(); }
+      if (t?.term) fitTerm(t);
     },
+    focus() { activeTab()?.term?.focus(); },
     onDrop(paths, zone) {
       const t = activeTab();
       if (!t) return;

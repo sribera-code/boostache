@@ -183,6 +183,7 @@ export function createClipboardView(ctx, state) {
 
   return {
     el,
-    onShow() { if (!isTyping()) list.focus(); },
+    // Recherche en cours : le champ garde le clavier
+    focus() { if (!(isTyping() && el.contains(document.activeElement))) list.focus(); },
   };
 }

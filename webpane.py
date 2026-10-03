@@ -28,18 +28,26 @@ from winutil import open_url
 
 BACKGROUND_RGB = (22, 22, 22)
 
-# Les raccourcis de navigation de Boostache restent actifs quand le site a le focus
+# Les raccourcis de navigation de Boostache restent actifs quand le site a le
+# focus ; un clic dans le site en fait le volet actif (écran partagé)
 SHORTCUTS_JS = r"""
 (() => {
   if (window.top !== window) return;
+  const post = (msg) => window.chrome.webview.postMessage(msg);
   addEventListener("keydown", (ev) => {
-    if (!ev.ctrlKey || ev.altKey || ev.shiftKey || !/^[1-9,]$/.test(ev.key)) return;
+    let key = "";
+    if (ev.ctrlKey && !ev.altKey && !ev.shiftKey && /^[1-9,]$/.test(ev.key)) key = ev.key;
+    else if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "s") key = "split";
+    else if (ev.key === "F6" && !ev.ctrlKey && !ev.altKey && !ev.shiftKey) key = "F6";
+    if (!key) return;
     ev.preventDefault();
     ev.stopImmediatePropagation();
-    window.chrome.webview.postMessage({ type: "key", key: ev.key });
+    post({ type: "key", key });
   }, true);
+  addEventListener("focus", () => post({ type: "focus" }));
 })();
 """
+RELAYED_KEYS = (*"123456789,", "split", "F6")
 
 STYLE_RULES = (
     "N'utilise que l'alphabet et la langue des messages (aucun mot ni caractère d'une autre langue). "
@@ -362,8 +370,12 @@ class WebPane:
             msg = json.loads(args.WebMessageAsJson)
         except Exception:
             return
-        if isinstance(msg, dict) and msg.get("type") == "key" and msg.get("key") in list("123456789,"):
+        if not isinstance(msg, dict):
+            return
+        if msg.get("type") == "key" and msg.get("key") in RELAYED_KEYS:
             self._app.bridge.emit("webpane:key", {"key": msg["key"]})
+        elif msg.get("type") == "focus":
+            self._app.bridge.emit("webpane:focus", {"pane": self.key})
 
     def _on_process_failed(self, sender, args):
         kind = str(args.ProcessFailedKind)

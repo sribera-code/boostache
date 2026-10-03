@@ -101,7 +101,7 @@ export function createChatView(ctx, state) {
     renderAttachments();
     updateComposer();
     toBottom.hidden = t.stick;
-    if (ctx.isActive("chat")) input.focus();
+    if (ctx.isFocused("chat")) input.focus();
   }
 
   async function newTab(afterId = null) {
@@ -582,9 +582,9 @@ export function createChatView(ctx, state) {
     el,
     onShow() {
       const t = activeTab();
-      if (t) { autoScroll(t); input.focus(); }
+      if (t) autoScroll(t);
     },
-    onWindowShown() { input.focus(); },
+    focus() { input.focus(); },
     onDrop(paths) {
       const t = activeTab();
       if (!t) return;

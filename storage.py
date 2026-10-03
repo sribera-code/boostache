@@ -95,6 +95,7 @@ _DEFAULTS = {
     "last_model":           "",
     "window_size":          [980, 680],
     "always_on_top":        True,
+    "window_opacity":       100,           # en %, de 20 (MIN_OPACITY) à 100
     "system_prompt":        "",
     "tts_mode_chat":        "last",        # "last" | "all"
     "tts_mode_console":     "last",        # "last" | "all"
@@ -102,6 +103,7 @@ _DEFAULTS = {
     "clipboard_max_items":  100,
     "console_shell":        "powershell",  # "powershell" | "pwsh" | "cmd"
     "sidebar_collapsed":    False,
+    "layout":               {"panes": [], "ratio": 0.5},   # écran partagé : sections (gauche, droite)
     "print_screen_capture": True,          # Impr. écran → onglet Captures
     "capture_save_dir":     "",            # dernier dossier de « Enregistrer sous »
 }

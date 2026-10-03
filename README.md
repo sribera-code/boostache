@@ -74,8 +74,9 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 ### Interface
 - Barre latérale repliable, onglets renommables (double-clic ou F2), menus contextuels
 - Navigation au clavier : Ctrl+1 à Ctrl+9 pour les sections, Ctrl+, pour les paramètres
+- **Écran partagé** : deux sections côte à côte (Conversations et Consoles, par exemple) — bouton en haut de la barre latérale ou `Ctrl+Shift+S`. La barre latérale ouvre les sections dans le volet actif (souligné en haut) ; `Ctrl+clic` ou clic du milieu sur une section l'ouvre dans l'autre volet ; clic droit : « Ouvrir à gauche / à droite », ou glisser la section vers une moitié de l'écran. Séparateur redimensionnable (double-clic : parts égales ; clic droit : inverser, fermer un volet), `F6` pour passer d'un volet à l'autre ; la disposition est retrouvée au démarrage
 - Fermer ou réduire la fenêtre la range dans le tray ; `Ctrl+Shift+D` la rappelle
-- Bouton **épingle** (bas de la barre latérale) : garder n'importe quelle fenêtre ouverte au premier plan, Boostache compris — chaque fenêtre avec l'icône de son application, une miniature et son titre complet ; filtre au clavier et « Tout libérer »
+- Bouton **épingle** (bas de la barre latérale) : garder n'importe quelle fenêtre ouverte au premier plan, Boostache compris — chaque fenêtre avec l'icône de son application, une miniature et son titre complet ; un curseur règle sa transparence (20 à 100 %, double-clic pour la rendre opaque ; celle de Boostache est mémorisée) ; filtre au clavier et « Tout libérer »
 
 ---
 
@@ -170,7 +171,7 @@ boostache/
 ├── web/
 │   ├── index.html
 │   ├── css/app.css       # Thème et mise en page
-│   ├── js/               # main.js (coquille), ui.js (composants), pin.js (panneau premier plan), views/ (une vue par section)
+│   ├── js/               # main.js (coquille), layout.js (écran partagé), ui.js (composants), pin.js (panneau premier plan), views/ (une vue par section)
 │   └── vendor/           # Bibliothèques embarquées (voir vendor/licenses)
 └── requirements.txt
 ```

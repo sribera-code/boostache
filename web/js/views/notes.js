@@ -95,7 +95,7 @@ export function createNotesView(ctx, state) {
     renderStrip();
     updateStats();
     setSaveState(t.save.pending() ? "editing" : "");
-    if (ctx.isActive("notes")) t.editor.focus();
+    if (ctx.isFocused("notes")) t.editor.focus();
   }
 
   async function newTab(afterSlot = null) {
@@ -213,8 +213,8 @@ export function createNotesView(ctx, state) {
 
   return {
     el,
-    onShow() { activeTab()?.editor.focus(); updateStats(); },
+    onShow() { updateStats(); },
     onHide() { for (const t of S.tabs.values()) t.save.flush(); },
-    onWindowShown() { activeTab()?.editor.focus(); },
+    focus() { activeTab()?.editor.focus(); },
   };
 }

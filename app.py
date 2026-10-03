@@ -26,8 +26,8 @@ from notes import NotesService
 from storage import DATA_DIR, settings, clipboard_history
 from terminals import TerminalService
 from whatsapp import WhatsAppPane
-from winutil import (PrintScreenHook, bring_to_front, dark_title_bar, is_maximized, is_minimized,
-                     restore_window, work_area_size)
+from winutil import (MIN_OPACITY, PrintScreenHook, bring_to_front, dark_title_bar, is_maximized,
+                     is_minimized, restore_window, work_area_size)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 VIRTUAL_HOST = "boostache.example"
@@ -240,6 +240,8 @@ class BoostacheApp:
             self._size_timer.start()
 
     def _on_loaded(self):
+        # Pas avant : pywebview remet l'opacité à 1 après avoir créé la fenêtre masquée
+        self._set_opacity(self._opacity_setting())
         try:
             self.window.dom.document.events.drop += DOMEventHandler(
                 self._on_drop, prevent_default=True)
@@ -331,6 +333,31 @@ class BoostacheApp:
         except Exception as e:
             logger.log(f"Premier plan : réglage impossible ({e})")
 
+    @staticmethod
+    def _opacity_setting() -> int:
+        try:
+            return max(MIN_OPACITY, min(int(settings.get("window_opacity", 100)), 100))
+        except (TypeError, ValueError):
+            return 100
+
+    def _set_opacity(self, percent: int):
+        """Transparence de la fenêtre. Par Form.Opacity (via Invoke, comme
+        _set_on_top) : WinForms recalcule lui-même le style de la fenêtre et
+        effacerait une transparence posée directement en Win32."""
+        form = getattr(self.window, "native", None)
+        if form is None:
+            return
+        try:
+            from System import Func, Type
+
+            def apply():
+                form.Opacity = percent / 100
+                return None
+
+            form.Invoke(Func[Type](apply))
+        except Exception as e:
+            logger.log(f"Transparence : réglage impossible ({e})")
+
     def _save_size(self):
         w, h = self._size
         if list(settings.get("window_size", [])) != [w, h]:
@@ -359,9 +386,9 @@ class BoostacheApp:
         self.bridge.discard_pending()
         state = {
             "settings": {k: settings.get(k) for k in (
-                "system_prompt", "clipboard_max_items", "always_on_top", "console_shell",
-                "tts_mode_chat", "tts_mode_console", "tts_mode_note", "sidebar_collapsed",
-                "print_screen_capture", "assist_model")},
+                "system_prompt", "clipboard_max_items", "always_on_top", "window_opacity",
+                "console_shell", "tts_mode_chat", "tts_mode_console", "tts_mode_note",
+                "sidebar_collapsed", "print_screen_capture", "assist_model", "layout")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": self._chat_reason},
@@ -393,6 +420,13 @@ class BoostacheApp:
             value = bool(value)
             settings.set(key, value)
             self._set_on_top(value)
+        elif key == "window_opacity":
+            try:
+                value = max(MIN_OPACITY, min(int(value), 100))
+            except (TypeError, ValueError):
+                return settings.get(key)
+            settings.set(key, value)
+            self._set_opacity(value)
         elif key == "print_screen_capture":
             value = bool(value)
             settings.set(key, value)
@@ -407,9 +441,35 @@ class BoostacheApp:
             settings.set(key, value)
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
+        elif key == "layout":
+            # Écran partagé : sections affichées (gauche, droite) et part du volet gauche
+            if not isinstance(value, dict):
+                return settings.get(key)
+            panes = [p for p in value.get("panes") or [] if isinstance(p, str)][:2]
+            try:
+                ratio = max(0.1, min(float(value.get("ratio", 0.5)), 0.9))
+            except (TypeError, ValueError):
+                ratio = 0.5
+            settings.set(key, {"panes": panes, "ratio": ratio})
         else:
             return None
         return settings.get(key)
+
+    def focus_ui(self):
+        """Rend le clavier à l'interface quand un site intégré l'a gardé
+        (écran partagé : le site reste affiché à côté)."""
+        form = getattr(self.window, "native", None)
+        if form is None:
+            return
+        try:
+            from System import Action
+
+            def focus():
+                form.browser.webview.Focus()
+
+            form.BeginInvoke(Action(focus))
+        except Exception as e:
+            logger.log(f"Interface : focus impossible ({e})")
 
     def clipboard_items(self) -> list[dict]:
         items = []

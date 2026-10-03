@@ -15,7 +15,8 @@ import custom_tasks
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 from engine import logger, tts, strip_markdown
 from storage import DATA_DIR, clipboard_history, settings
-from winutil import list_windows, open_url, reveal_in_explorer, set_topmost, window_thumbnail
+from winutil import (list_windows, open_url, reveal_in_explorer, set_opacity, set_topmost,
+                     window_thumbnail)
 
 ATTACH_TYPES = (
     "Texte & code (*.txt;*.md;*.py;*.js;*.ts;*.json;*.yaml;*.yml;*.csv;*.xml;*.html;*.css;"
@@ -83,6 +84,9 @@ class Api:
     def hide_window(self):
         self._app.hide()
 
+    def focus_ui(self):
+        self._app.focus_ui()
+
     # ─────────────────────────────────────────
     #  Fenêtres des autres applications
     # ─────────────────────────────────────────
@@ -95,6 +99,10 @@ class Api:
     def window_set_topmost(self, hwnd, on):
         """True si c'est fait, False si Windows refuse, None si la fenêtre est fermée."""
         return set_topmost(int(hwnd), bool(on))
+
+    def window_set_opacity(self, hwnd, percent):
+        """True si c'est fait, False si Windows refuse, None si la fenêtre est fermée."""
+        return set_opacity(int(hwnd), int(percent))
 
     # ─────────────────────────────────────────
     #  Conversations
@@ -225,6 +233,9 @@ class Api:
 
     def term_input(self, slot, data):
         self._app.terminals.write(int(slot), data)
+
+    def term_submit(self, slot, line):
+        self._app.terminals.submit(int(slot), line)
 
     def term_resize(self, slot, cols, rows):
         self._app.terminals.resize(int(slot), cols, rows)

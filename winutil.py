@@ -1,7 +1,7 @@
 """
-winutil.py – Petits utilitaires Win32 (premier plan, barre de titre sombre,
-explorateur, liens externes, icônes et miniatures des fenêtres, interception
-de la touche Impr. écran).
+winutil.py – Petits utilitaires Win32 (premier plan et transparence, barre de
+titre sombre, explorateur, liens externes, icônes et miniatures des fenêtres,
+interception de la touche Impr. écran).
 """
 
 import base64
@@ -127,11 +127,15 @@ def open_url(url: str) -> bool:
 
 
 # ─────────────────────────────────────────────
-#  Fenêtres des autres applications : premier plan
+#  Fenêtres des autres applications : premier plan et transparence
 # ─────────────────────────────────────────────
 GWL_EXSTYLE = -20
 WS_EX_TOPMOST = 0x00000008
 WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_LAYERED = 0x00080000
+LWA_ALPHA = 0x00000002
+RDW_INVALIDATE, RDW_ERASE, RDW_ALLCHILDREN, RDW_FRAME = 0x0001, 0x0004, 0x0080, 0x0400
+MIN_OPACITY = 20                    # en dessous, la fenêtre devient introuvable
 GW_OWNER = 4
 HWND_TOPMOST = wintypes.HWND(-1)
 HWND_NOTOPMOST = wintypes.HWND(-2)
@@ -151,8 +155,14 @@ user32.GetWindowLongW.restype = ctypes.c_long
 user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+user32.SetWindowLongW.restype = ctypes.c_long
 user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
                                 ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.GetLayeredWindowAttributes.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.COLORREF),
+                                              ctypes.POINTER(wintypes.BYTE), ctypes.POINTER(wintypes.DWORD)]
+user32.SetLayeredWindowAttributes.argtypes = [wintypes.HWND, wintypes.COLORREF, wintypes.BYTE, wintypes.DWORD]
+user32.RedrawWindow.argtypes = [wintypes.HWND, ctypes.c_void_p, ctypes.c_void_p, wintypes.UINT]
 dwmapi.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
 kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
 kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -163,6 +173,30 @@ kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
 
 def _is_topmost(hwnd: int) -> bool:
     return bool(user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)
+
+
+_faded: set[int] = set()    # fenêtres que Boostache a rendues transparentes (style ajouté par lui)
+
+
+def _layered_attributes(hwnd: int) -> tuple[int, int, int] | None:
+    """(couleur clé, alpha, drapeaux) d'une fenêtre transparente. None si elle
+    dessine sa transparence pixel par pixel (UpdateLayeredWindow)."""
+    key, alpha, flags = wintypes.COLORREF(), wintypes.BYTE(), wintypes.DWORD()
+    if not user32.GetLayeredWindowAttributes(hwnd, ctypes.byref(key), ctypes.byref(alpha), ctypes.byref(flags)):
+        return None
+    return key.value, alpha.value, flags.value
+
+
+def _opacity(hwnd: int) -> int | None:
+    """Opacité en pour cent (100 = opaque), None si l'application gère
+    elle-même sa transparence."""
+    if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED:
+        return 100
+    attrs = _layered_attributes(hwnd)
+    if attrs is None:
+        return None
+    _, alpha, flags = attrs
+    return round(alpha * 100 / 255) if flags & LWA_ALPHA else 100
 
 
 def _process_path(hwnd: int) -> str:
@@ -220,7 +254,7 @@ def list_windows(exclude=(), limit: int = 30) -> list[dict]:
         found.append({"hwnd": int(hwnd), "title": title.value,
                       "app": os.path.splitext(os.path.basename(path))[0],
                       "icon": window_icon(hwnd, path), "topmost": _is_topmost(hwnd),
-                      "minimized": bool(user32.IsIconic(hwnd))})
+                      "opacity": _opacity(hwnd), "minimized": bool(user32.IsIconic(hwnd))})
         return True
 
     user32.EnumWindows(WNDENUMPROC(visit), 0)
@@ -236,6 +270,39 @@ def set_topmost(hwnd: int, on: bool) -> bool | None:
     user32.SetWindowPos(hwnd, HWND_TOPMOST if on else HWND_NOTOPMOST, 0, 0, 0, 0,
                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
     return _is_topmost(hwnd) == on
+
+
+def set_opacity(hwnd: int, percent: int) -> bool | None:
+    """Rend une fenêtre plus ou moins transparente (100 = opaque). Retourne
+    False si Windows refuse (application lancée en administrateur ou qui ne
+    répond plus, transparence gérée par l'application), None si la fenêtre
+    n'existe plus."""
+    if not hwnd or not user32.IsWindow(hwnd):
+        return None
+    if user32.IsHungAppWindow(hwnd):    # changer son style attendrait sa réponse
+        return False
+    percent = max(MIN_OPACITY, min(100, int(percent)))
+    style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+    if style & WS_EX_LAYERED:
+        attrs = _layered_attributes(hwnd)
+        if attrs is None:
+            return False
+        key, _, flags = attrs
+    elif percent == 100:
+        return True
+    else:
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_LAYERED)
+        if not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED:
+            return False
+        _faded.add(hwnd)
+        key, flags = 0, 0
+    if percent == 100 and hwnd in _faded:
+        # Style retiré plutôt qu'un alpha à 255 : la fenêtre retrouve son rendu d'origine
+        _faded.discard(hwnd)
+        user32.SetWindowLongW(hwnd, GWL_EXSTYLE, user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & ~WS_EX_LAYERED)
+        user32.RedrawWindow(hwnd, None, None, RDW_ERASE | RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN)
+        return not user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_LAYERED
+    return bool(user32.SetLayeredWindowAttributes(hwnd, key, round(percent * 255 / 100), flags | LWA_ALPHA))
 
 
 # ─────────────────────────────────────────────

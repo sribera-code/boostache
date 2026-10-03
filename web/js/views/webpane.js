@@ -79,10 +79,22 @@ function createPaneView(ctx, state, cfg) {
     else api.pane_show(cfg.id, ...next.split(",").map(Number), focus === true);
   }
 
+  // Menus, panneaux et modales qui chevauchent le site (écran partagé : un menu
+  // de l'autre volet le laisse affiché)
+  function overlapped() {
+    const r = host.getBoundingClientRect();
+    return [...document.querySelectorAll("body > .menu, body > .popover, body > .modal-backdrop, body > .split-drop")]
+      .some((o) => {
+        const b = o.getBoundingClientRect();
+        return b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top;
+      });
+  }
+
   new ResizeObserver(() => sync()).observe(host);
   window.addEventListener("resize", () => sync());
+  on("layout", () => sync());     // volet déplacé sans changer de taille (inversion…)
   new MutationObserver(() => {
-    const now = !!document.querySelector("body > .menu, body > .popover, body > .modal-backdrop");
+    const now = active && overlapped();
     if (now !== covered) { covered = now; sync(); }
   }).observe(document.body, { childList: true });
 
@@ -92,8 +104,10 @@ function createPaneView(ctx, state, cfg) {
 
   return {
     el,
-    onShow() { active = true; sync(true); },
-    onHide() { active = false; sync(); },
+    native: true,       // garde le clavier dans son propre contrôle (voir layout.focusView)
+    onShow() { active = true; sync(); },
+    onHide() { active = false; covered = false; sync(); },
+    focus() { lastSent = ""; sync(true); },
   };
 }
 

@@ -3,6 +3,7 @@ import { api, on, emit, ready, setErrorHandler, onCollect } from "./bridge.js";
 import { $, h, isTyping } from "./dom.js";
 import { ico, iconButton, toast, closeMenus, openMenu, setSpeakingButton } from "./ui.js";
 import { togglePinPanel } from "./pin.js";
+import { createLayout } from "./layout.js";
 import { createChatView } from "./views/chat.js";
 import { createConsolesView } from "./views/consoles.js";
 import { createNotesView } from "./views/notes.js";
@@ -31,6 +32,7 @@ const SETTINGS = { id: "settings", label: "Paramètres", icon: "settings", creat
 
 const store = { settings: {}, tts: { speaking: false, source: null }, active: null, dataDir: "" };
 const views = new Map();          // id → { view, nav, item }
+let layout = null;                // une section ou deux côte à côte (layout.js)
 let pendingDrop = null;
 
 // ─────────────────────────────────────────────
@@ -39,8 +41,12 @@ let pendingDrop = null;
 const ctx = {
   api, on, emit, store, onCollect,
 
-  navigate,
-  isActive: (id) => store.active === id,
+  // (layout n'existe qu'une fois les vues construites)
+  navigate: (id) => layout?.navigate(id),
+  /** Section affichée (dans l'un des volets). */
+  isActive: (id) => !!layout?.isVisible(id),
+  /** Section du volet actif : celle qui reçoit le clavier. */
+  isFocused: (id) => !!layout?.isFocused(id),
 
   /** kind "unread" : pastille verte, visible aussi barre latérale repliée. */
   setBadge(id, value, kind = "") {
@@ -93,35 +99,33 @@ const ctx = {
 // ─────────────────────────────────────────────
 //  Navigation
 // ─────────────────────────────────────────────
-function navigate(id) {
-  if (!views.has(id)) return;
-  closeMenus();
-  if (store.active === id) return;
-  const previous = views.get(store.active);
-  store.active = id;
-  for (const [vid, entry] of views) {
-    entry.view.el.classList.toggle("active", vid === id);
-    entry.nav.classList.toggle("active", vid === id);
-    entry.nav.setAttribute("aria-current", vid === id ? "page" : "false");
-  }
-  previous?.view.onHide?.();
-  views.get(id).view.onShow?.();
-}
-
+/** Clic : dans le volet actif ; Ctrl+clic : dans l'autre volet (écran partagé). */
 function navItem(item) {
   const el = h("div", {
     class: "nav-item", role: "button", tabindex: "0", dataset: { nav: item.id },
-    onClick: () => navigate(item.id),
-    onKeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); navigate(item.id); } },
+    onClick: (ev) => (ev.ctrlKey ? layout.openBeside(item.id) : layout.navigate(item.id)),
+    onKeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); layout.navigate(item.id); } },
   }, ico(item.icon, 17), h("span", { class: "nav-label", text: item.label }), h("span", { class: "nav-extra" }));
+  layout.bindNav(el, item.id);
   return el;
 }
 
 function buildSidebar() {
   const sidebar = $("#sidebar");
+  // Écran partagé : en haut (barre dépliée) ou dans le pied (barre repliée, en colonne)
+  const splitButton = () => iconButton("columns-2", "Écran partagé", () => layout.toggle(),
+    { size: 15, cls: "sm split-btn", kbd: "Ctrl+Maj+S" });
+  const splitButtons = [splitButton(), splitButton()];
+  layout.onChange = (on) => {
+    for (const btn of splitButtons) {
+      btn.classList.toggle("on", on);
+      btn.dataset.tip = on ? "Revenir à une seule section" : "Écran partagé — Ctrl+clic sur une section pour l'ouvrir à côté";
+      btn.setAttribute("aria-label", on ? "Revenir à une seule section" : "Écran partagé");
+    }
+  };
   sidebar.append(h("div", { class: "brand" },
     h("div", { class: "brand-mark" }, ico("zap", 15, 2)),
-    h("span", { class: "brand-name", text: "Boostache" })));
+    h("span", { class: "brand-name", text: "Boostache" }), splitButtons[0]));
 
   let shortcut = 1;
   for (const item of NAV) {
@@ -144,7 +148,7 @@ function buildSidebar() {
     onClick: () => setCollapsed(!$("#app").classList.contains("collapsed"), true) });
   sidebar.append(h("div", { class: "sidebar-foot" },
     h("span", { class: "status-dot", dataset: { tip: "Boostache est actif" } }),
-    h("span", { class: "status-text", text: "Actif" }), clock, pin, collapse));
+    h("span", { class: "status-text", text: "Actif" }), clock, splitButtons[1], pin, collapse));
 
   const tick = () => {
     const d = new Date();
@@ -171,11 +175,14 @@ function buildSidebar() {
   setCollapsed(!!store.settings.sidebar_collapsed, false);
 }
 
-/** Ctrl+1…9 et Ctrl+, (clavier de l'interface ou relayé depuis WhatsApp). */
-function navShortcut(key) {
-  if (key === ",") { navigate("settings"); return true; }
+/** Ctrl+1…9, Ctrl+, , Ctrl+Maj+S (« split ») et F6 (clavier de l'interface ou relayé
+ *  depuis un site intégré). */
+function shortcut(key) {
+  if (key === ",") { layout.navigate("settings"); return true; }
+  if (key === "split") { layout.toggle(); return true; }
+  if (key === "F6") { layout.focusOther(); return layout.isSplit(); }
   const target = [...views.values()].find((e) => e.shortcut === Number(key));
-  if (target) navigate(target.item.id);
+  if (target) layout.navigate(target.item.id);
   return !!target;
 }
 
@@ -235,7 +242,8 @@ function setupGlobalHandlers() {
   });
   window.open = (url) => { api.open_url(String(url)); return null; };
 
-  // Glisser-déposer de fichiers : le chemin complet arrive par Python (files:dropped)
+  // Glisser-déposer de fichiers : le chemin complet arrive par Python (files:dropped).
+  // Écran partagé : les fichiers vont à la section sous le curseur.
   const hasFiles = (ev) => [...(ev.dataTransfer?.types || [])].includes("Files");
   let depth = 0;
   const clearDragging = () => {
@@ -243,11 +251,15 @@ function setupGlobalHandlers() {
     document.querySelectorAll(".dragging").forEach((n) => n.classList.remove("dragging"));
     document.querySelectorAll(".drop-target").forEach((n) => n.classList.remove("drop-target"));
   };
+  const markDragging = (target) => {
+    const id = layout.viewAt(target);
+    for (const [vid, entry] of views) entry.view.el.classList.toggle("dragging", vid === id);
+  };
   document.addEventListener("dragenter", (ev) => {
     if (!hasFiles(ev)) return;
     ev.preventDefault();
     depth += 1;
-    views.get(store.active)?.view.el.classList.add("dragging");
+    markDragging(ev.target);
   });
   document.addEventListener("dragleave", (ev) => {
     if (!hasFiles(ev)) return;
@@ -258,14 +270,16 @@ function setupGlobalHandlers() {
     if (!hasFiles(ev)) return;
     ev.preventDefault();
     ev.dataTransfer.dropEffect = "copy";
+    markDragging(ev.target);
     const zone = ev.target.closest?.("[data-drop]");
     document.querySelectorAll(".drop-target").forEach((n) => { if (n !== zone) n.classList.remove("drop-target"); });
     zone?.classList.add("drop-target");
   });
   document.addEventListener("drop", (ev) => {
+    if (!hasFiles(ev)) return;      // section glissée depuis la barre latérale (layout.js)
     ev.preventDefault();
     const zone = ev.target.closest?.("[data-drop]")?.dataset.drop || null;
-    pendingDrop = { view: store.active, zone, at: Date.now() };
+    pendingDrop = { view: layout.viewAt(ev.target), zone, at: Date.now() };
     clearDragging();
   }, true);
   on("files:dropped", ({ paths }) => {
@@ -280,10 +294,16 @@ function setupGlobalHandlers() {
   // Raccourcis de l'interface
   document.addEventListener("keydown", (ev) => {
     if (ev.ctrlKey && !ev.altKey && !ev.shiftKey && /^[1-9]$/.test(ev.key)) {
-      if (navShortcut(ev.key)) { ev.preventDefault(); ev.stopPropagation(); }
+      if (shortcut(ev.key)) { ev.preventDefault(); ev.stopPropagation(); }
     } else if (ev.ctrlKey && ev.key === ",") {
       ev.preventDefault();
-      navShortcut(",");
+      shortcut(",");
+    } else if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "s") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      shortcut("split");
+    } else if (ev.key === "F6" && !ev.ctrlKey && !ev.altKey && !ev.shiftKey) {
+      if (shortcut("F6")) { ev.preventDefault(); ev.stopPropagation(); }
     } else if (ev.key === "F5" && !ev.ctrlKey) {
       ev.preventDefault();   // pas de rechargement accidentel de l'interface
     }
@@ -292,13 +312,10 @@ function setupGlobalHandlers() {
   // Fenêtre masquée : on ne laisse pas l'historique du presse-papiers affiché
   on("window:hidden", () => {
     closeMenus();
-    if (store.active === "clipboard") {
-      const fallback = [...views.keys()].find((id) => id !== "clipboard" && id !== "settings");
-      if (fallback) navigate(fallback);
-    }
+    layout.evict("clipboard");
   });
-  on("webpane:key", ({ key }) => navShortcut(key));
-  on("window:shown", () => views.get(store.active)?.view.onWindowShown?.());
+  on("webpane:key", ({ key }) => shortcut(key));
+  on("window:shown", () => layout.windowShown());
   on("toast", ({ text, kind }) => toast(text, kind || "info"));
 }
 
@@ -329,12 +346,12 @@ async function boot() {
     main.append(view.el);
     views.set(item.id, { view, item, nav: null, shortcut: 0 });
   }
+  layout = createLayout(ctx, views, main);
   buildSidebar();
   setupTts();
   setupGlobalHandlers();
 
-  const first = [...views.keys()][0];
-  navigate(first);
+  layout.restore(store.settings.layout, state.visible);
   // (pas de requestAnimationFrame : il ne s'exécute pas tant que la fenêtre est masquée)
   $("#app").classList.remove("booting");
   window.__bootStage = "prêt";

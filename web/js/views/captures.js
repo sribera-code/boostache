@@ -1423,7 +1423,7 @@ export function createCapturesView(ctx, state) {
 
   // ── Clavier ─────────────────────────────────
   document.addEventListener("keydown", (ev) => {
-    if (!ctx.isActive("captures") || isTyping(ev.target) || document.querySelector(".modal-backdrop")) return;
+    if (!ctx.isFocused("captures") || isTyping(ev.target) || document.querySelector(".modal-backdrop")) return;
     const t = activeTab();
     const key = ev.key.toLowerCase();
     if (ev.ctrlKey && !ev.altKey) {

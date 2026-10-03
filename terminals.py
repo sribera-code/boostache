@@ -284,6 +284,15 @@ class TerminalService:
             except Exception:
                 pass
 
+    def submit(self, slot: int, line: str):
+        """Remplace la saisie en cours par `line` et la valide.
+        Échap (efface la saisie, cmd comme PSReadLine) doit partir seul : suivi
+        d'un caractère dans la même écriture, ConPTY le lit comme Alt+<car.>
+        (« Set-Location » devenait « et-Location », « cls » devenait « ls »)."""
+        self.write(slot, "\x1b")
+        time.sleep(0.05)
+        self.write(slot, line + "\r")
+
     def resize(self, slot: int, cols: int, rows: int):
         t = self._find(slot)
         if t and t.proc is not None:
@@ -324,8 +333,7 @@ class TerminalService:
                 cmd = f'cd /d "{path}"'
             else:
                 cmd = "Set-Location -LiteralPath '" + path.replace("'", "''") + "'"
-            # Échap efface la saisie en cours (cmd comme PSReadLine)
-            self.write(slot, "\x1b" + cmd + "\r")
+            self.submit(slot, cmd)
         else:
             t.cwd = path
             self._persist(t)
