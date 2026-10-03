@@ -225,10 +225,28 @@ def _app_path(hwnd: int, cls: str) -> str:
     return _process_path(hwnd)
 
 
-def list_windows(exclude=(), limit: int = 30) -> list[dict]:
+def _class_name(hwnd: int) -> str:
+    cls = ctypes.create_unicode_buffer(256)
+    user32.GetClassNameW(hwnd, cls, 256)
+    return cls.value
+
+
+def _title(hwnd: int) -> str:
+    length = user32.GetWindowTextLengthW(hwnd)
+    title = ctypes.create_unicode_buffer(length + 1)
+    user32.GetWindowTextW(hwnd, title, length + 1)
+    return title.value
+
+
+def _app_name(path: str) -> str:
+    return os.path.splitext(os.path.basename(path))[0]
+
+
+def list_windows(exclude=(), limit: int = 30, details: bool = True) -> list[dict]:
     """Fenêtres d'application visibles (celles de la barre des tâches), dans
     l'ordre d'empilement : celles au premier plan d'abord, puis de la plus
-    récemment utilisée à la plus ancienne."""
+    récemment utilisée à la plus ancienne. Sans `details` : ni icône, ni
+    premier plan, ni transparence."""
     found: list[dict] = []
 
     def visit(hwnd, _):
@@ -237,28 +255,44 @@ def list_windows(exclude=(), limit: int = 30) -> list[dict]:
         if (hwnd in exclude or not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, GW_OWNER)
                 or user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW):
             return True
-        length = user32.GetWindowTextLengthW(hwnd)
-        if not length:
+        if not user32.GetWindowTextLengthW(hwnd):
             return True
         cloaked = ctypes.c_int(0)   # applications UWP suspendues, autres bureaux virtuels
         dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
         if cloaked.value:
             return True
-        cls = ctypes.create_unicode_buffer(256)
-        user32.GetClassNameW(hwnd, cls, 256)
-        if cls.value in SHELL_CLASSES:
+        cls = _class_name(hwnd)
+        if cls in SHELL_CLASSES:
             return True
-        title = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, title, length + 1)
-        path = _app_path(hwnd, cls.value)
-        found.append({"hwnd": int(hwnd), "title": title.value,
-                      "app": os.path.splitext(os.path.basename(path))[0],
-                      "icon": window_icon(hwnd, path), "topmost": _is_topmost(hwnd),
-                      "opacity": _opacity(hwnd), "minimized": bool(user32.IsIconic(hwnd))})
+        path = _app_path(hwnd, cls)
+        window = {"hwnd": int(hwnd), "title": _title(hwnd), "app": _app_name(path),
+                  "minimized": bool(user32.IsIconic(hwnd))}
+        if details:
+            window.update(icon=window_icon(hwnd, path), topmost=_is_topmost(hwnd), opacity=_opacity(hwnd))
+        found.append(window)
         return True
 
     user32.EnumWindows(WNDENUMPROC(visit), 0)
     return found
+
+
+def _own_window(hwnd: int) -> bool:
+    pid = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    return pid.value == os.getpid()
+
+
+def active_window() -> dict | None:
+    """Fenêtre que l'utilisateur est en train d'utiliser ({hwnd, title, app}) :
+    celle au premier plan ; si c'est une fenêtre de Boostache ou le bureau, la
+    plus récemment utilisée des autres. None s'il n'y en a aucune."""
+    fg = user32.GetForegroundWindow()
+    if fg and user32.IsWindowVisible(fg) and not user32.IsIconic(fg) and not _own_window(fg):
+        cls = _class_name(fg)
+        if cls not in SHELL_CLASSES:
+            return {"hwnd": int(fg), "title": _title(fg), "app": _app_name(_app_path(fg, cls))}
+    return next((w for w in list_windows(details=False)
+                 if not w["minimized"] and not _own_window(w["hwnd"])), None)
 
 
 def set_topmost(hwnd: int, on: bool) -> bool | None:
@@ -486,42 +520,85 @@ def _render_scale(hwnd: int) -> float:
     return min(1.0, window_dpi / dpi_x.value)
 
 
-def window_thumbnail(hwnd: int) -> str | None:
-    """Miniature JPEG (data URL) du contenu de la fenêtre, même cachée par
+class _PhysicalPixels:
+    """Coordonnées en pixels physiques dans le thread courant, même sur un
+    écran d'une autre échelle que le principal."""
+
+    def __enter__(self):
+        self.previous = _set_thread_dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) if _set_thread_dpi else None
+
+    def __exit__(self, *_):
+        if self.previous:
+            _set_thread_dpi(self.previous)
+
+
+def _frame(hwnd: int, rect: wintypes.RECT) -> wintypes.RECT:
+    """Cadre visible : sans les bordures invisibles de redimensionnement (Windows 10+)."""
+    frame = wintypes.RECT()
+    if dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
+                                    ctypes.byref(frame), ctypes.sizeof(frame)):
+        return rect
+    return frame
+
+
+def window_image(hwnd: int):
+    """Contenu de la fenêtre (image PIL en pixels physiques), même cachée par
     d'autres. None si elle est réduite, ne répond plus ou se capture en noir."""
     if not hwnd or not user32.IsWindow(hwnd) or user32.IsIconic(hwnd) or user32.IsHungAppWindow(hwnd):
         return None
-    # Pixels physiques, même sur un écran d'une autre échelle que le principal
-    previous = _set_thread_dpi(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) if _set_thread_dpi else None
-    try:
+    with _PhysicalPixels():
+        try:
+            rect = wintypes.RECT()
+            if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return None
+            width, height = rect.right - rect.left, rect.bottom - rect.top
+            if width <= 0 or height <= 0 or width * height > MAX_CAPTURE_PIXELS:
+                return None
+            with _Canvas(width, height) as canvas:
+                if not user32.PrintWindow(hwnd, canvas.dc, PW_RENDERFULLCONTENT):
+                    return None
+                image = canvas.image()
+            frame = _frame(hwnd, rect)
+            scale = _render_scale(hwnd)
+            box = (max(0, round((frame.left - rect.left) * scale)), max(0, round((frame.top - rect.top) * scale)),
+                   min(width, round((frame.right - rect.left) * scale)),
+                   min(height, round((frame.bottom - rect.top) * scale)))
+            if box[2] - box[0] > 8 and box[3] - box[1] > 8:
+                image = image.crop(box)
+            return image if image.getbbox() else None
+        except Exception:
+            return None
+
+
+def window_thumbnail(hwnd: int) -> str | None:
+    """Miniature JPEG (data URL) du contenu de la fenêtre (voir window_image)."""
+    image = window_image(hwnd)
+    if image is None:
+        return None
+    image.thumbnail(THUMB_SIZE)
+    return _data_url(image, "JPEG")
+
+
+def window_screenshot(hwnd: int):
+    """Image de la fenêtre : son contenu (window_image), à défaut les pixels de
+    l'écran à son emplacement — une application lancée en administrateur
+    refuse PrintWindow. None si elle est réduite ou introuvable."""
+    image = window_image(hwnd)
+    if image is not None or not hwnd or not user32.IsWindow(hwnd) or user32.IsIconic(hwnd):
+        return image
+    from PIL import ImageGrab
+    with _PhysicalPixels():
         rect = wintypes.RECT()
         if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
             return None
-        width, height = rect.right - rect.left, rect.bottom - rect.top
-        if width <= 0 or height <= 0 or width * height > MAX_CAPTURE_PIXELS:
+        frame = _frame(hwnd, rect)
+        if frame.right - frame.left < 8 or frame.bottom - frame.top < 8:
             return None
-        with _Canvas(width, height) as canvas:
-            if not user32.PrintWindow(hwnd, canvas.dc, PW_RENDERFULLCONTENT):
-                return None
-            image = canvas.image()
-        # Sans les bordures invisibles de redimensionnement (Windows 10+)
-        frame = wintypes.RECT()
-        if dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_EXTENDED_FRAME_BOUNDS,
-                                        ctypes.byref(frame), ctypes.sizeof(frame)):
-            frame = rect
-        scale = _render_scale(hwnd)
-        box = (max(0, round((frame.left - rect.left) * scale)), max(0, round((frame.top - rect.top) * scale)),
-               min(width, round((frame.right - rect.left) * scale)),
-               min(height, round((frame.bottom - rect.top) * scale)))
-        if box[2] - box[0] > 8 and box[3] - box[1] > 8:
-            image = image.crop(box)
-        image.thumbnail(THUMB_SIZE)
-        return _data_url(image, "JPEG") if image.getbbox() else None
-    except Exception:
-        return None
-    finally:
-        if previous:
-            _set_thread_dpi(previous)
+        try:
+            image = ImageGrab.grab(bbox=(frame.left, frame.top, frame.right, frame.bottom), all_screens=True)
+        except Exception:
+            return None
+    return image if image.getbbox() else None
 
 
 # ─────────────────────────────────────────────
@@ -532,7 +609,8 @@ HC_ACTION = 0
 WM_QUIT = 0x0012
 WM_KEYDOWN, WM_SYSKEYDOWN = 0x0100, 0x0104
 VK_SNAPSHOT = 0x2C
-MODIFIER_VKS = (0x10, 0x11, 0x12, 0x5B, 0x5C)   # Maj, Ctrl, Alt, Windows gauche/droite
+VK_CONTROL = 0x11
+OTHER_MODIFIER_VKS = (0x10, 0x12, 0x5B, 0x5C)   # Maj, Alt, Windows gauche/droite
 
 LRESULT = ctypes.c_ssize_t
 HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
@@ -559,16 +637,18 @@ kernel32.GetCurrentThreadId.restype = wintypes.DWORD
 
 
 class PrintScreenHook:
-    """Remplace la touche Impr. écran (seule, sans modificateur) par `callback`,
-    dans tout Windows. Alt+Impr. écran et Win+Impr. écran gardent leur effet.
+    """Remplace la touche Impr. écran par `callback` et Ctrl+Impr. écran par
+    `ctrl_callback`, dans tout Windows. Tous deux modifiables à chaud ; None
+    laisse la combinaison à Windows, comme Alt+ et Win+Impr. écran.
 
     Hook clavier bas niveau dédié plutôt que la librairie keyboard : celle-ci
     attend le scan code 84 alors que la touche physique envoie 55 (étendu), et
     ne bloque pas le relâchement de la touche — Windows copierait alors l'écran
     entier dans le presse-papiers, ou ouvrirait sa propre capture."""
 
-    def __init__(self, callback):
-        self._callback = callback
+    def __init__(self, callback=None, ctrl_callback=None):
+        self.callback = callback
+        self.ctrl_callback = ctrl_callback
         self._thread: threading.Thread | None = None
         self._thread_id = 0
         self._proc = None          # référence forte au callback ctypes (sinon GC)
@@ -592,9 +672,16 @@ class PrintScreenHook:
         self._thread = None
         self._thread_id = 0
 
-    def _fire(self):
+    def _action(self):
+        """Action de la combinaison en cours (Impr. écran seule ou avec Ctrl)."""
+        if any(user32.GetAsyncKeyState(vk) & 0x8000 for vk in OTHER_MODIFIER_VKS):
+            return None
+        return self.ctrl_callback if user32.GetAsyncKeyState(VK_CONTROL) & 0x8000 else self.callback
+
+    @staticmethod
+    def _fire(action):
         try:
-            self._callback()
+            action()
         except Exception:
             pass
 
@@ -607,10 +694,10 @@ class PrintScreenHook:
                 kb = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                 if kb.vkCode == VK_SNAPSHOT:
                     down = w_param in (WM_KEYDOWN, WM_SYSKEYDOWN)
-                    if down and not self._swallowing and not any(
-                            user32.GetAsyncKeyState(vk) & 0x8000 for vk in MODIFIER_VKS):
+                    action = self._action() if down and not self._swallowing else None
+                    if action:
                         self._swallowing = True
-                        threading.Thread(target=self._fire, daemon=True,
+                        threading.Thread(target=self._fire, args=(action,), daemon=True,
                                          name="PrintScreen").start()
                     if self._swallowing:
                         if not down:

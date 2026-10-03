@@ -4,12 +4,17 @@ chat.py – Onglet Conversations : chat LLM local via Ollama.
 Streaming token par token, réflexion des modèles « thinking » (champ
 thinking), pièces jointes (texte/code et images), persistance des
 conversations et des onglets ouverts.
+
+Aide contextuelle (Ctrl+Impr. écran) : une conversation s'ouvre avec la
+capture de la fenêtre active ; le modèle propose des questions d'aide à partir
+de la capture et de son texte (OCR), puis répond à celle choisie ou écrite.
 """
 
 import base64
 import hashlib
 import html
 import io
+import json
 import os
 import re
 import socket
@@ -18,6 +23,7 @@ import time
 import uuid
 from urllib.parse import urlparse
 
+import ocr
 from clipboard_listener import set_clipboard_content, set_clipboard_image
 from engine import logger
 from storage import settings, conversations, chat_meta, ATTACHMENTS_DIR, CACHE_DIR
@@ -34,6 +40,29 @@ IMAGE_EXTS     = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 MAX_TEXT_BYTES = 1_000_000
 TITLE_LEN      = 24
 DELTA_INTERVAL = 0.04          # regroupement des tokens envoyés à l'interface
+
+HELP_MAX_TEXT  = 4000          # texte de la fenêtre transmis au modèle (caractères)
+HELP_OCR_WAIT  = 10            # attente de l'OCR à l'envoi de la question (secondes)
+HELP_SYSTEM = (
+    "Tu es un assistant d'aide contextuelle. L'utilisateur t'envoie une capture de la fenêtre qu'il "
+    "est en train d'utiliser, avec le texte qu'elle affiche (lu par reconnaissance de caractères, dans "
+    "l'ordre de lecture). Décris d'abord en une phrase ce qu'il est en train de faire, puis propose 4 "
+    "questions qu'il pourrait te poser pour être aidé à cet instant précis : priorité aux erreurs et "
+    "avertissements affichés, puis à la tâche en cours. Chaque question cite un élément réellement "
+    "visible (message, nom, valeur, réglage…) — aucune question générique qui conviendrait à n'importe "
+    "quelle fenêtre. Questions courtes, à la première personne, en français, sans numéro."
+)
+HELP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "context":     {"type": "string"},
+        "suggestions": {"type": "array", "items": {"type": "string"}, "minItems": 3, "maxItems": 5},
+    },
+    "required": ["context", "suggestions"],
+}
+HELP_ANSWER = ("Aide-moi en t'appuyant sur ce que montre cette fenêtre. Réponds en français, "
+               "concrètement (étapes numérotées si c'est utile).")
+HELP_DEFAULT_QUESTION = "Que montre cette fenêtre, et que puis-je y faire ?"
 
 _LEGACY_FILE_BLOCK = re.compile(r"\[Fichier : (.+?)\]\n```\n.*?\n```(?:\n\n)?", re.S)
 
@@ -143,6 +172,16 @@ def _split_legacy(content: str) -> tuple[str, list[dict]]:
     return rest.strip(), [{"name": n, "type": "text"} for n in names]
 
 
+def _shorten(text: str) -> str:
+    return text[:TITLE_LEN] + ("…" if len(text) > TITLE_LEN else "")
+
+
+def _file_name(text: str, fallback: str) -> str:
+    """Nom de fichier tiré d'un titre de fenêtre."""
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", text or "")[:60].strip(" .")
+    return name or fallback
+
+
 def _ui_message(m: dict) -> dict | None:
     role = m.get("role")
     if role == "user":
@@ -158,12 +197,14 @@ def _ui_message(m: dict) -> dict | None:
     return None
 
 
-def _to_ollama(m: dict) -> dict:
-    """Message au format Ollama (sans les champs d'affichage)."""
+def _to_ollama(m: dict, sees_images: bool = True) -> dict:
+    """Message au format Ollama (sans les champs d'affichage). Un modèle qui
+    ne lit pas les images reçoit quand même une question d'aide contextuelle :
+    sans la capture, mais avec le texte de la fenêtre."""
     out = {"role": m.get("role", "user"), "content": m.get("content", "")}
     images = [ref for ref in (m.get("images") or [])
               if isinstance(ref, str) and (os.path.isfile(ref) or len(ref) > 256)]
-    if images:
+    if images and (sees_images or not m.get("screen_text")):
         out["images"] = images
     return out
 
@@ -183,6 +224,7 @@ class ChatTab:
         self.partial: dict | None = None  # réponse en cours de génération
         self.stop_evt = threading.Event()
         self.gen = 0                      # incrémenté quand l'onglet est réinitialisé
+        self.help: dict | None = None     # aide contextuelle (ChatService.open_help)
 
     @property
     def title(self) -> str:
@@ -193,8 +235,15 @@ class ChatTab:
                 text = _ui_message(m)["text"].strip()
                 first = text.split("\n")[0].strip() if text else ""
                 if first:
-                    return first[:TITLE_LEN] + ("…" if len(first) > TITLE_LEN else "")
+                    return _shorten(first)
+        if self.help:
+            return "Aide · " + _shorten(self.help["window"] or self.help["app"] or "écran")
         return ""
+
+    def help_ui(self) -> dict | None:
+        if not self.help:
+            return None
+        return {k: self.help[k] for k in ("window", "app", "status", "suggestions", "error", "model")}
 
     def ui_attachments(self) -> list[dict]:
         return [{k: a.get(k) for k in ("id", "name", "type", "thumb", "path")}
@@ -210,6 +259,7 @@ class ChatTab:
             "partial":     self.partial,
             "messages":    [u for u in (_ui_message(m) for m in self.messages) if u],
             "attachments": self.ui_attachments(),
+            "help":        self.help_ui(),
         }
 
 
@@ -226,6 +276,7 @@ class ChatService:
         self.tabs: list[ChatTab] = []
         self.models: list[str] = []
         self.models_error = ""
+        self._vision: dict[str, bool] = {}   # modèle → lit les images
         self._restore()
         self.refresh_models()
 
@@ -307,6 +358,7 @@ class ChatService:
         with self._lock:
             if len(self.tabs) <= 1:
                 tab.messages, tab.conv_id, tab.label, tab.partial = [], None, "", None
+                tab.help = None
                 tab.stop_evt = threading.Event()
                 tab.streaming = False
                 tab.gen += 1
@@ -328,7 +380,7 @@ class ChatService:
         tab = self._find(tab_id)
         if tab and model:
             tab.model = model
-            settings.set("last_model", model)
+            settings.set("help_model" if tab.help else "last_model", model)
             self._save_meta()
 
     # ── Envoi & streaming ─────────────────────
@@ -345,6 +397,11 @@ class ChatService:
             return {"ok": False, "error": self.models_error or "Aucun modèle disponible."}
         if not model or model not in self.models:
             return {"ok": False, "error": "Sélectionne un modèle valide."}
+        # Aide contextuelle : la question part avec la capture et le texte de la fenêtre
+        aid = tab.help
+        screen = aid is not None and any(a["id"] == aid["att"] for a in tab.pending)
+        if screen:
+            aid["read"].wait(HELP_OCR_WAIT)
 
         blocks, images, atts = [], [], []
         try:
@@ -358,8 +415,14 @@ class ChatService:
         except Exception as e:
             return {"ok": False, "error": f"Pièce jointe illisible : {e}"}
 
-        content = "\n\n".join(blocks + ([text] if text else []))
+        question = text
+        if screen:
+            question = (f"{self._help_context(aid)}\n\n{HELP_ANSWER}\n\n"
+                        f"Ma question : {text or HELP_DEFAULT_QUESTION}")
+        content = "\n\n".join(blocks + ([question] if question else []))
         message = {"role": "user", "content": content, "display": text, "attachments": atts}
+        if screen and aid["text"]:
+            message["screen_text"] = True
         if images:
             message["images"] = images
 
@@ -383,8 +446,9 @@ class ChatService:
 
     def _stream(self, tab: ChatTab, model: str):
         system_prompt = settings.get("system_prompt", "").strip()
+        sees_images = self.sees_images(model)
         with self._lock:
-            payload = [_to_ollama(m) for m in tab.messages]
+            payload = [_to_ollama(m, sees_images) for m in tab.messages]
             stop_evt, gen = tab.stop_evt, tab.gen
         if system_prompt:
             payload.insert(0, {"role": "system", "content": system_prompt})
@@ -455,6 +519,112 @@ class ChatService:
             "stopped": stopped,
             "title":   tab.title,
         })
+
+    # ── Aide contextuelle ─────────────────────
+    def sees_images(self, model: str) -> bool:
+        """Le modèle lit-il les images ? (un serveur Ollama trop ancien pour le
+        dire : on suppose que oui)"""
+        if model not in self._vision:
+            try:
+                caps = _ollama.show(model).capabilities
+            except Exception:
+                return True
+            self._vision[model] = caps is None or "vision" in caps
+        return self._vision[model]
+
+    def _help_model(self) -> str:
+        """Modèle de l'aide : le dernier choisi pour elle, sinon un modèle qui
+        lit les images, sinon n'importe lequel (il n'aura que le texte de la fenêtre)."""
+        wanted = [settings.get("help_model", ""), settings.get("last_model", ""), *self.models]
+        models = [m for m in dict.fromkeys(wanted) if m in self.models]
+        return next((m for m in models if self.sees_images(m)), models[0] if models else "")
+
+    def open_help(self, image, window: str = "", app: str = "") -> dict:
+        """Nouvelle conversation d'aide sur une capture de fenêtre : la capture
+        est jointe à la première question, des propositions d'aide sont générées."""
+        name = _file_name(window or app, "Écran")
+        path = CACHE_DIR / f"boostache_{int(time.time() * 1000)}" / f"{name}.png"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        image.save(path, "PNG")
+        tab = ChatTab(model=self._help_model())
+        # Fichier gardé même si la pièce jointe est retirée : les propositions s'en servent
+        # (le cache est vidé au prochain démarrage)
+        self._add_file(tab, str(path))
+        tab.help = {
+            "window": window, "app": app, "path": str(path), "att": tab.pending[0]["id"],
+            "text": "",                    # texte de la fenêtre (OCR)
+            "read": threading.Event(),     # OCR terminé
+            "status": "loading", "suggestions": [], "error": "", "model": "", "gen": 0,
+        }
+        with self._lock:
+            self.tabs.append(tab)
+        self._bridge.emit("chat:help-open", tab.to_ui())
+        self.help_suggest(tab.id)
+        return tab.to_ui()
+
+    def help_suggest(self, tab_id: str):
+        """(Re)génère les propositions d'aide avec le modèle de l'onglet."""
+        tab = self._find(tab_id)
+        if not tab or not tab.help:
+            return
+        model = tab.model if tab.model in self.models else self._help_model()
+        with self._lock:
+            aid = tab.help
+            if aid is None:
+                return
+            tab.model = model
+            aid["gen"] += 1
+            aid.update(status="loading", suggestions=[], error="", model=model)
+            gen = aid["gen"]
+        self._bridge.emit("chat:help", {"tab": tab.id, "help": tab.help_ui()})
+        threading.Thread(target=self._help_run, args=(tab, aid, gen),
+                         daemon=True, name=f"help-{tab.id}").start()
+
+    @staticmethod
+    def _help_context(aid: dict) -> str:
+        """Description de la fenêtre capturée, pour le modèle."""
+        window = f"Fenêtre : « {aid['window'] or 'écran entier'} »"
+        if aid["app"]:
+            window += f" (application : {aid['app']})"
+        parts = [window + "."]
+        if aid["text"]:
+            parts.append(f'Texte affiché dans la fenêtre :\n"""\n{aid["text"]}\n"""')
+        return "\n\n".join(parts)
+
+    def _help_run(self, tab: ChatTab, aid: dict, gen: int):
+        if not aid["read"].is_set():
+            aid["text"] = ocr.read_text(aid["path"])[:HELP_MAX_TEXT]
+            aid["read"].set()
+        model = aid["model"]
+        update = {"status": "error", "suggestions": []}
+        if not model:
+            update["error"] = self.models_error or "Aucun modèle Ollama installé."
+        else:
+            message = {"role": "user", "content": self._help_context(aid)}
+            if self.sees_images(model):
+                message["images"] = [aid["path"]]
+            try:
+                resp = _ollama.chat(model=model, format=HELP_SCHEMA, think=False, options={"temperature": 0.4},
+                                    messages=[{"role": "system", "content": HELP_SYSTEM}, message])
+                data = json.loads(resp.message.content or "{}")
+                raw = data.get("suggestions") if isinstance(data, dict) else None
+                suggestions = [s.strip().strip("\"'«»“” ").strip() for s in raw or [] if isinstance(s, str)]
+                suggestions = [s for s in dict.fromkeys(suggestions) if s][:5]
+                if suggestions:
+                    update = {"status": "ready", "suggestions": suggestions}
+                else:
+                    update["error"] = "Le modèle n'a rien proposé."
+            except Exception as e:
+                error = str(e)
+                if "connect" in error.lower() or "10061" in error:
+                    error = "Ollama injoignable. Vérifie que le serveur est lancé."
+                logger.log(f"Aide contextuelle ({model}) : {error}")
+                update["error"] = error
+        with self._lock:
+            if tab.help is not aid or aid["gen"] != gen:
+                return              # onglet effacé ou propositions redemandées entre-temps
+            aid.update(update)
+        self._bridge.emit("chat:help", {"tab": tab.id, "help": tab.help_ui()})
 
     # ── Pièces jointes ────────────────────────
     def _add_file(self, tab: ChatTab, path: str, temp: bool = False) -> str | None:

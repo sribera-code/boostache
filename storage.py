@@ -105,6 +105,8 @@ _DEFAULTS = {
     "sidebar_collapsed":    False,
     "layout":               {"panes": [], "ratio": 0.5},   # écran partagé : sections (gauche, droite)
     "print_screen_capture": True,          # Impr. écran → onglet Captures
+    "help_capture":         True,          # Ctrl+Impr. écran → aide sur la fenêtre active
+    "help_model":           "",            # modèle de l'aide contextuelle (de préférence lisant les images)
     "capture_save_dir":     "",            # dernier dossier de « Enregistrer sous »
 }
 

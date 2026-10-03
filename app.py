@@ -26,8 +26,8 @@ from notes import NotesService
 from storage import DATA_DIR, settings, clipboard_history
 from terminals import TerminalService
 from whatsapp import WhatsAppPane
-from winutil import (MIN_OPACITY, PrintScreenHook, bring_to_front, dark_title_bar, is_maximized,
-                     is_minimized, restore_window, work_area_size)
+from winutil import (MIN_OPACITY, PrintScreenHook, active_window, bring_to_front, dark_title_bar,
+                     is_maximized, is_minimized, restore_window, window_screenshot, work_area_size)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 VIRTUAL_HOST = "boostache.example"
@@ -35,6 +35,7 @@ MIN_SIZE = (760, 520)
 TITLEBAR_RGB = (20, 20, 20)
 PREVIEW_LEN = 2000
 PRINT_SCREEN = "print screen"
+CTRL_PRINT_SCREEN = "ctrl+print screen"
 
 
 def _force_dark_titlebar():
@@ -136,7 +137,7 @@ class BoostacheApp:
         """Crée la fenêtre et lance la boucle d'interface (bloquant)."""
         custom_tasks.load_persisted()
         self._start_clipboard_listener()
-        self._set_print_screen(bool(settings.get("print_screen_capture", True)))
+        self._set_screen_keys()
         _force_dark_titlebar()
 
         w, h = self._initial_size()
@@ -185,21 +186,56 @@ class BoostacheApp:
             logger.log(f"Clipboard listener indisponible : {e}")
             self._clip_listener = None
 
-    def _set_print_screen(self, enabled: bool):
-        """Impr. écran → capture d'une zone, ouverte dans l'onglet Captures."""
-        if enabled and not self._print_screen:
-            hook = PrintScreenHook(self.captures.snip)
+    def _set_screen_keys(self):
+        """Impr. écran → capture d'une zone, ouverte dans l'onglet Captures ;
+        Ctrl+Impr. écran → aide contextuelle sur la fenêtre active. Chacune
+        désactivable dans les paramètres (la touche retrouve alors son effet Windows)."""
+        snip = self.captures.snip if settings.get("print_screen_capture", True) else None
+        helper = self.help_window if settings.get("help_capture", True) else None
+        if (snip or helper) and not self._print_screen:
+            hook = PrintScreenHook()
             if not hook.start():
                 logger.log("Impr. écran : interception de la touche impossible.")
-                return
-            self._print_screen = hook
-            hotkey_manager.list_external(PRINT_SCREEN, self.captures.snip,
-                                         label="Capturer une zone de l'écran (onglet Captures)")
-        elif not enabled and self._print_screen:
+                snip = helper = None
+            else:
+                self._print_screen = hook
+        elif not (snip or helper) and self._print_screen:
             self._print_screen.stop()
             self._print_screen = None
-            hotkey_manager.unlist(PRINT_SCREEN)
             logger.log("Impr. écran rendue à Windows.")
+        if self._print_screen:
+            self._print_screen.callback, self._print_screen.ctrl_callback = snip, helper
+        listed = {e["combo"] for e in hotkey_manager.registered}
+        for combo, action, label in (
+                (PRINT_SCREEN, snip, "Capturer une zone de l'écran (onglet Captures)"),
+                (CTRL_PRINT_SCREEN, helper, "Aide contextuelle sur la fenêtre active (Conversations)")):
+            if not action:
+                hotkey_manager.unlist(combo)
+            elif combo not in listed:
+                hotkey_manager.list_external(combo, action, label=label)
+
+    def help_window(self):
+        """Capture la fenêtre active et ouvre une conversation d'aide à son sujet.
+        Appelé par Ctrl+Impr. écran : la capture est prise avant d'afficher Boostache."""
+        window = active_window()
+        image = window_screenshot(window["hwnd"]) if window else None
+        if image is None:
+            window = None
+            try:
+                from PIL import ImageGrab
+                image = ImageGrab.grab()
+            except Exception as e:
+                logger.log(f"Aide contextuelle : capture impossible ({e})")
+        if self.chat is None or image is None:
+            reason = (f"Conversations indisponibles ({self._chat_reason})" if self.chat is None
+                      else "capture de l'écran impossible")
+            self.bridge.emit("toast", {"text": f"Aide contextuelle : {reason}.", "kind": "error"})
+            self.show()
+            return
+        title, app = (window["title"], window["app"]) if window else ("", "")
+        logger.log(f"Aide contextuelle : {title or 'écran entier'} ({image.width} × {image.height} px)")
+        self.chat.open_help(image, title, app)
+        self.show()
 
     # ─────────────────────────────────────────
     #  Événements fenêtre
@@ -388,7 +424,8 @@ class BoostacheApp:
             "settings": {k: settings.get(k) for k in (
                 "system_prompt", "clipboard_max_items", "always_on_top", "window_opacity",
                 "console_shell", "tts_mode_chat", "tts_mode_console", "tts_mode_note",
-                "sidebar_collapsed", "print_screen_capture", "assist_model", "layout")},
+                "sidebar_collapsed", "print_screen_capture", "help_capture", "assist_model",
+                "layout")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": self._chat_reason},
@@ -427,10 +464,9 @@ class BoostacheApp:
                 return settings.get(key)
             settings.set(key, value)
             self._set_opacity(value)
-        elif key == "print_screen_capture":
-            value = bool(value)
-            settings.set(key, value)
-            self._set_print_screen(value)
+        elif key in ("print_screen_capture", "help_capture"):
+            settings.set(key, bool(value))
+            self._set_screen_keys()
         elif key == "console_shell":
             if value not in self.terminals.shells:
                 return settings.get(key)

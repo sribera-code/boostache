@@ -147,6 +147,9 @@ class Api:
     def chat_screenshot(self, tab_id):
         self._app.chat.screenshot(tab_id)
 
+    def chat_help_suggest(self, tab_id):
+        self._app.chat.help_suggest(tab_id)
+
     def chat_copy_message(self, tab_id, index):
         return self._app.chat.copy_message(tab_id, int(index))
 

@@ -64,18 +64,23 @@ export function createSettingsView(ctx, state) {
   });
 
   // ── Captures ────────────────────────────────
-  const printSwitch = h("button", { class: `switch${settings.print_screen_capture ? " on" : ""}`, type: "button",
-    role: "switch", "aria-checked": String(!!settings.print_screen_capture), "aria-label": "Touche Impr. écran" });
-  printSwitch.addEventListener("click", async () => {
-    await ctx.saveSetting("print_screen_capture", !settings.print_screen_capture);
-    printSwitch.classList.toggle("on", !!settings.print_screen_capture);
-    printSwitch.setAttribute("aria-checked", String(!!settings.print_screen_capture));
-  });
+  const settingSwitch = (key, label) => {
+    const sw = h("button", { class: `switch${settings[key] ? " on" : ""}`, type: "button",
+      role: "switch", "aria-checked": String(!!settings[key]), "aria-label": label });
+    sw.addEventListener("click", async () => {
+      await ctx.saveSetting(key, !settings[key]);
+      syncSwitch(sw, settings[key]);
+    });
+    return sw;
+  };
+  const printSwitch = settingSwitch("print_screen_capture", "Touche Impr. écran");
+  const helpSwitch = settingSwitch("help_capture", "Ctrl+Impr. écran");
 
   // ── Raccourcis de l'interface ───────────────
   const shortcuts = [
     ["ctrl+shift+d", "Afficher Boostache (raccourci global, bindings.py)"],
     ["print screen", "Capturer une zone de l'écran (raccourci global, onglet Captures)"],
+    ["ctrl+print screen", "Aide contextuelle sur la fenêtre active (raccourci global, Conversations)"],
     ["ctrl+1", "Aller à une section (Ctrl+1 à Ctrl+9)"],
     ["ctrl+,", "Paramètres"],
     ["f2", "Renommer l'onglet sélectionné (ou double-clic)"],
@@ -102,7 +107,12 @@ export function createSettingsView(ctx, state) {
           h("div", {}, h("div", {}, "Capturer avec la touche ", ...kbdCombo("print screen")),
             h("div", { class: "hint-text",
               text: "Sélection d'une zone de l'écran, ouverte dans l'onglet Captures. Désactivé, la touche retrouve son effet Windows habituel." })),
-          printSwitch)),
+          printSwitch),
+        h("div", { class: "row", style: { marginTop: "16px" } },
+          h("div", {}, h("div", {}, "Aide contextuelle avec ", ...kbdCombo("ctrl+print screen")),
+            h("div", { class: "hint-text",
+              text: "Capture la fenêtre active et lit son texte ; un modèle Ollama propose des questions d'aide, puis répond à celle choisie ou écrite, dans Conversations." })),
+          helpSwitch)),
       card("pin", "Fenêtre", null,
         h("div", { class: "row" },
           h("div", {}, h("div", { text: "Toujours au premier plan" }),
@@ -117,17 +127,18 @@ export function createSettingsView(ctx, state) {
           h("div", {}, ...kbdCombo(combo)), h("div", { text: label })]))),
     )));
 
-  // Réglages modifiables ailleurs (panneau « premier plan » de la barre latérale)
-  const syncSwitch = (sw, value) => {
-    sw.classList.toggle("on", !!value);
-    sw.setAttribute("aria-checked", String(!!value));
-  };
-
   return {
     el,
+    // Réglages modifiables ailleurs (panneau « premier plan » de la barre latérale)
     onShow() {
       syncSwitch(topSwitch, settings.always_on_top);
       syncSwitch(printSwitch, settings.print_screen_capture);
+      syncSwitch(helpSwitch, settings.help_capture);
     },
   };
+}
+
+function syncSwitch(sw, value) {
+  sw.classList.toggle("on", !!value);
+  sw.setAttribute("aria-checked", String(!!value));
 }

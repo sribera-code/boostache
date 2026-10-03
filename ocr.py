@@ -1,0 +1,65 @@
+"""
+ocr.py – Texte d'une image, lu par l'OCR intégré à Windows (Windows.Media.Ocr).
+
+Appelé via PowerShell (accès natif aux API WinRT) : rien à installer. La
+langue est celle du profil Windows. Sert à l'aide contextuelle : les petits
+modèles Ollama voient les captures en basse résolution et ne lisent pas le
+texte d'une fenêtre, on le leur donne donc à part.
+"""
+
+import base64
+import os
+import subprocess
+
+from engine import logger
+
+TIMEOUT = 20                # secondes
+
+_SCRIPT = r"""
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+$asTask = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+  $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' })[0]
+function Await($op, [Type]$type) {
+  $task = $asTask.MakeGenericMethod($type).Invoke($null, @($op))
+  $null = $task.Wait(-1)
+  $task.Result
+}
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { exit 3 }
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($Path)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+$result.Lines | ForEach-Object { $_.Text }
+"""
+
+
+def read_text(path: str) -> str:
+    """Lignes de texte de l'image (PNG, JPEG…), dans l'ordre de lecture.
+    Chaîne vide si l'OCR est indisponible (aucune langue OCR installée) ou échoue."""
+    # GetFileFromPathAsync n'accepte que des chemins absolus à barres obliques inverses
+    path = os.path.abspath(path)
+    script = f"$Path = '{path.replace(chr(39), chr(39) * 2)}'\n{_SCRIPT}"
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-EncodedCommand", base64.b64encode(script.encode("utf-16-le")).decode("ascii")],
+            capture_output=True, encoding="utf-8", errors="replace", timeout=TIMEOUT,
+            creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception as e:
+        logger.log(f"OCR : lecture impossible ({e})")
+        return ""
+    if result.returncode == 3:
+        logger.log("OCR : aucune langue de reconnaissance installée dans Windows.")
+        return ""
+    if result.returncode:
+        logger.log(f"OCR : échec ({(result.stderr or '').strip().splitlines()[:1]})")
+        return ""
+    return "\n".join(line.strip() for line in result.stdout.splitlines() if line.strip())

@@ -17,7 +17,7 @@ export function createHotkeysView(ctx, state) {
         tbody)),
     h("div", { class: "foot-note" }, ico("info", 13),
       h("span", {}, "Définis dans ", h("code", { text: "bindings.py" }),
-        " (Impr. écran : Paramètres → Captures) — actifs même quand la fenêtre est masquée (lancer en administrateur).")));
+        " (Impr. écran et Ctrl+Impr. écran : Paramètres → Captures) — actifs même quand la fenêtre est masquée (lancer en administrateur).")));
 
   function run(r) {
     api.hotkey_run(r.idx);

@@ -20,6 +20,14 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Pré-prompt système configurable
 - Persistance automatique des conversations et restauration des onglets au redémarrage
 
+### Aide contextuelle (Ctrl+Impr. écran)
+- **Ctrl+Impr. écran**, n'importe où dans Windows : capture de la fenêtre active (même en partie cachée) et ouverture d'une conversation **Aide** dans Boostache
+- Le texte de la fenêtre est lu par l'OCR intégré à Windows : les petits modèles locaux voient les images en basse résolution et ne pourraient pas lire un message d'erreur
+- Le modèle propose 4 questions d'aide adaptées à ce qui est affiché (erreur, tâche en cours…) ; un clic sur une proposition la pose, clic droit pour la modifier avant, ou écrire sa propre question
+- La question part avec la capture et le texte de la fenêtre ; la suite de la conversation garde ce contexte, les autres propositions restent disponibles (bouton **Autres propositions** pour en générer de nouvelles)
+- Modèle choisi de préférence parmi ceux qui lisent les images (gemma3, gemma4, llava, qwen2.5vl…) et retenu pour les aides suivantes ; un modèle texte seul reçoit uniquement le texte de la fenêtre
+- Désactivable dans les **Paramètres** (Captures) : Ctrl+Impr. écran retrouve alors son effet Windows
+
 ### Consoles
 - Vrais terminaux (ConPTY + xterm.js) : couleurs, barres de progression, programmes interactifs, historique ↑/↓ du shell, Ctrl+C
 - PowerShell ou Invite de commandes, au choix par console (PowerShell 7 détecté s'il est installé)
@@ -69,7 +77,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 ### Historique, tâches et raccourcis
 - **Historique** : journal de l'application
 - **Tâches** : tâches de `tasks.py` + tâches créées depuis l'interface (intervalle ou heure fixe, code Python avec accès au `logger`), exécution manuelle
-- **Raccourcis** : raccourcis globaux de `bindings.py` (et Impr. écran), actifs même fenêtre masquée, déclenchables à la main
+- **Raccourcis** : raccourcis globaux de `bindings.py` (et Impr. écran, Ctrl+Impr. écran), actifs même fenêtre masquée, déclenchables à la main
 
 ### Interface
 - Barre latérale repliable, onglets renommables (double-clic ou F2), menus contextuels
@@ -154,7 +162,8 @@ boostache/
 ├── app.py                # Fenêtre pywebview, cycle de vie, état initial de l'interface
 ├── api.py                # Méthodes Python appelées par l'interface
 ├── bridge.py             # Événements Python → interface (file + regroupement)
-├── chat.py               # Conversations Ollama (streaming, réflexion, pièces jointes)
+├── chat.py               # Conversations Ollama (streaming, réflexion, pièces jointes, aide contextuelle)
+├── ocr.py                # Texte d'une image (OCR de Windows, via PowerShell)
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
@@ -163,7 +172,7 @@ boostache/
 ├── gmail.py              # Gmail (lecture du fil, éditeur de réponse)
 ├── custom_tasks.py       # Tâches créées depuis l'interface, raccourcis
 ├── clipboard_listener.py # Presse-papiers Win32 (écoute push, lecture, écriture)
-├── winutil.py            # Utilitaires Win32 (premier plan, icônes et miniatures des fenêtres, explorateur, liens, touche Impr. écran)
+├── winutil.py            # Utilitaires Win32 (premier plan, fenêtre active, icônes, miniatures et captures des fenêtres, explorateur, liens, touche Impr. écran)
 ├── engine.py             # Logger, TaskManager, HotkeyManager, TTSEngine
 ├── storage.py            # Persistance (réglages, conversations, consoles, notes, captures)
 ├── tasks.py              # Tâches planifiées (à personnaliser)

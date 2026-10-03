@@ -44,7 +44,8 @@ export function createChatView(ctx, state) {
   ttsBtn.dataset.tipIdle = "Lire (clic droit : mode)";
   ttsBtn.addEventListener("contextmenu", (ev) => ctx.ttsModeMenu(ev, "tts_mode_chat",
     [["last", "Lire la dernière réponse"], ["all", "Lire toute la conversation"]]));
-  const sendBtn = h("button", { class: "send-btn", type: "button", onClick: send });
+  const sendBtn = h("button", { class: "send-btn", type: "button", onClick: () => send() });
+  const helpBar = h("div", { class: "help-bar", hidden: true });   // aide contextuelle : propositions
   const composer = h("div", { class: "composer" },
     attRow,
     input,
@@ -60,14 +61,15 @@ export function createChatView(ctx, state) {
   const el = h("section", {},
     h("header", { class: "view-head" }, strip.el),
     body,
-    h("div", { class: "composer-wrap" }, composer));
+    h("div", { class: "composer-wrap" }, helpBar, composer));
 
   // ── Onglets ─────────────────────────────────
   const activeTab = () => S.tabs.get(S.active);
 
   function makeTab(data) {
     const pane = h("div", { class: "chat-pane" });
-    const t = { id: data.id, data, pane, stick: true, draft: "", stream: null, partial: null };
+    const t = { id: data.id, data, pane, stick: true, draft: "", stream: null, partial: null,
+      helpHidden: false, helpUsed: new Set() };
     t.renderPartial = throttle(() => {
       if (t.stream && t.partial) t.stream.update(t.partial.content, t.partial.thinking, true);
       autoScroll(t);
@@ -100,6 +102,7 @@ export function createChatView(ctx, state) {
     renderStrip();
     renderAttachments();
     updateComposer();
+    renderHelp();
     toBottom.hidden = t.stick;
     if (ctx.isFocused("chat")) input.focus();
   }
@@ -121,6 +124,7 @@ export function createChatView(ctx, state) {
     if (res.reset) {
       t.data = res.reset;
       t.draft = "";
+      t.helpUsed.clear();
       if (S.active === id) input.value = "";
       renderPane(t);
       toast("Conversation effacée.", "info");
@@ -133,6 +137,7 @@ export function createChatView(ctx, state) {
     }
     renderStrip();
     updateComposer();
+    renderHelp();
   }
 
   async function rename(id, label) {
@@ -163,6 +168,18 @@ export function createChatView(ctx, state) {
         h("span", {}, ico("paperclip", 13), "Glissez-déposez des fichiers"),
         h("span", {}, ico("scan", 13), "Capture d'écran"),
         h("span", {}, ...kbdCombo("shift+enter"), " nouvelle ligne")));
+  }
+
+  /** Conversation d'aide pas encore commencée : la fenêtre capturée. */
+  function helpIntro(t) {
+    const { help } = t.data;
+    const shot = t.data.attachments.find((a) => a.type === "image" && a.thumb);
+    return h("div", { class: "empty help-intro" },
+      shot ? h("img", { class: "help-shot", src: shot.thumb, alt: "" })
+        : h("div", { class: "glyph" }, ico("scan", 22)),
+      h("h3", { text: help.window || help.app || "Écran entier" }),
+      h("p", { text: "Choisissez une des propositions ci-dessous ou décrivez l'aide souhaitée : "
+        + "la capture et le texte de la fenêtre accompagnent votre question." }));
   }
 
   /** index : position du message dans la conversation (sert à le retrouver côté Python). */
@@ -281,7 +298,7 @@ export function createChatView(ctx, state) {
     const d = t.data;
     t.stream = null;
     if (!d.messages.length && !d.streaming) {
-      t.pane.replaceChildren(emptyState());
+      t.pane.replaceChildren(d.help ? helpIntro(t) : emptyState());
       return;
     }
     const thread = h("div", { class: "thread" });
@@ -345,6 +362,8 @@ export function createChatView(ctx, state) {
     if (streaming) delete sendBtn.dataset.kbd; else sendBtn.dataset.kbd = "Entrée";
     const model = effectiveModel(t);
     modelName.textContent = model || (S.modelsError ? "Aucun modèle" : "Chargement…");
+    input.placeholder = t?.data.help && !t.data.messages.length
+      ? "Ou décrivez l'aide souhaitée…" : "Écrivez un message…";
     const source = t ? `chat:${t.id}` : "";
     if (ttsBtn.dataset.speakSource !== source) {
       ttsBtn.dataset.speakSource = source;
@@ -376,23 +395,28 @@ export function createChatView(ctx, state) {
     updateComposer();
   }
 
-  async function send() {
+  /** chosen : texte d'une proposition d'aide, envoyé sans toucher à la saisie. */
+  async function send(chosen = null) {
     const t = activeTab();
     if (!t) return;
-    if (t.data.streaming) { api.chat_stop(t.id); return; }
-    const text = input.value;
+    if (t.data.streaming) { if (chosen === null) api.chat_stop(t.id); return; }
+    const text = chosen ?? input.value;
     if (!text.trim() && !t.data.attachments.length) return;
     const model = effectiveModel(t);
     if (!model) { toast(S.modelsError || "Aucun modèle disponible.", "error"); return; }
-    input.value = "";
-    t.draft = "";
-    autosize();
+    if (chosen === null) {
+      input.value = "";
+      t.draft = "";
+      autosize();
+    }
     updateComposer();
     const res = await api.chat_send(t.id, text, model);
     if (!res?.ok) {
       if (res?.error) toast(res.error, "error");
-      if (!input.value) { input.value = text; t.draft = text; autosize(); updateComposer(); }
+      if (chosen === null && !input.value) { input.value = text; t.draft = text; autosize(); updateComposer(); }
+      return false;
     }
+    return true;
   }
 
   async function attachDialog() {
@@ -419,8 +443,69 @@ export function createChatView(ctx, state) {
   function setModel(t, model) {
     if (!t) return;
     t.data.model = model;
-    S.defaultModel = model;
-    api.chat_set_model(t.id, model);
+    if (!t.data.help) S.defaultModel = model;   // modèle de l'aide : retenu à part
+    api.chat_set_model(t.id, model).then(() => {
+      // Propositions impossibles avec l'ancien modèle : nouvel essai avec celui-ci
+      if (t.data.help?.status === "error" && !t.data.messages.length) api.chat_help_suggest(t.id);
+    });
+    updateComposer();
+  }
+
+  // ── Aide contextuelle (Ctrl+Impr. écran) ────
+  function renderHelp() {
+    const t = activeTab();
+    const help = t?.data.help;
+    helpBar.hidden = !help || t.helpHidden;
+    if (helpBar.hidden) { helpBar.replaceChildren(); return; }
+    const loading = help.status === "loading";
+    const head = h("div", { class: "help-head" },
+      ico("scan", 14),
+      h("span", { class: "help-title", text: `Aide sur « ${help.window || help.app || "l'écran"} »` }),
+      h("div", { class: "head-spacer" }),
+      loading ? null : iconButton("refresh-cw", `Autres propositions (${effectiveModel(t)})`,
+        () => api.chat_help_suggest(t.id), { size: 14, cls: "sm" }),
+      iconButton("x", "Masquer les propositions", () => { t.helpHidden = true; renderHelp(); },
+        { size: 14, cls: "sm" }));
+    let content;
+    if (loading) {
+      content = h("span", { class: "pane-status" }, h("span", { class: "pane-busy" }),
+        `Lecture de la fenêtre et propositions avec ${help.model}…`);
+    } else if (help.status === "error") {
+      content = h("span", { class: "pane-status error" }, ico("triangle-alert", 14), help.error || "Échec.");
+    } else {
+      content = h("div", { class: "help-list" }, ...help.suggestions.map((text) => {
+        const chip = h("button", { class: `pane-reply${t.helpUsed.has(text) ? " used" : ""}`, type: "button",
+          text, disabled: t.data.streaming, dataset: { tip: "Clic : demander · clic droit : modifier avant" },
+          onClick: () => askHelp(t, text) });
+        chip.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openMenu([
+            { label: "Demander", icon: "arrow-up", disabled: t.data.streaming, onSelect: () => askHelp(t, text) },
+            { label: "Modifier avant d'envoyer", icon: "pencil", onSelect: () => editHelp(text) },
+          ], ev.clientX, ev.clientY);
+        });
+        return chip;
+      }));
+    }
+    helpBar.replaceChildren(head, content);
+  }
+
+  async function askHelp(t, text) {
+    if (t.data.streaming || t !== activeTab()) return;
+    if (await send(text)) {
+      t.helpUsed.add(text);
+      renderHelp();
+    }
+  }
+
+  function editHelp(text) {
+    input.value = text;
+    autosize();
+    input.focus();
+    input.setSelectionRange(text.length, text.length);
+    const t = activeTab();
+    if (t) t.draft = text;
     updateComposer();
   }
 
@@ -509,7 +594,7 @@ export function createChatView(ctx, state) {
       renderPane(t);
     }
     renderStrip();
-    if (t.id === S.active) { renderAttachments(); updateComposer(); }
+    if (t.id === S.active) { renderAttachments(); updateComposer(); renderHelp(); }
   });
 
   on("chat:delta", ({ tab, content, thinking }) => {
@@ -539,7 +624,7 @@ export function createChatView(ctx, state) {
     else if (stopped) appendNotice(t, message ? "Réponse interrompue." : "Génération interrompue.");
     if (title !== undefined) t.data.title = title;
     renderStrip();
-    if (t.id === S.active) updateComposer();
+    if (t.id === S.active) { updateComposer(); renderHelp(); }
     autoScroll(t);
   });
 
@@ -561,6 +646,22 @@ export function createChatView(ctx, state) {
   });
 
   on("layout", () => { const t = activeTab(); if (t) autoScroll(t); });
+
+  // Aide contextuelle : nouvelle conversation sur la capture de la fenêtre active
+  on("chat:help-open", (data) => {
+    if (S.tabs.has(data.id)) return;
+    const t = makeTab(data);
+    S.order.push(t.id);
+    ctx.navigate("chat");
+    select(t.id);
+  });
+
+  on("chat:help", ({ tab, help }) => {
+    const t = S.tabs.get(tab);
+    if (!t) return;
+    t.data.help = help;
+    if (t.id === S.active) renderHelp();
+  });
 
   // Image envoyée depuis l'onglet Captures
   on("chat:attach", ({ paths }) => {
