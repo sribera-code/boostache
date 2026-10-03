@@ -16,6 +16,9 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Choix du modèle par onglet (sélecteur dans la zone de saisie ou clic droit)
 - Pièces jointes : texte/code et images (bouton trombone, collage presse-papiers, capture d'écran, glisser-déposer), avec aperçu
 - Copier un message envoyé avec ses images (pleine résolution), ou une réponse en Markdown + mise en forme (collée telle quelle dans Word, Outlook…) ; clic droit sur une image jointe : copier, ouvrir dans Captures
+- Clic sur une image (envoyée ou jointe) : visionneuse plein écran, clic sur l'image pour la taille réelle
+- **Modifier** la dernière question (pièces jointes gardées) : la réponse est regénérée
+- **Fork** depuis n'importe quelle question : nouvel onglet avec la conversation jusqu'à cette question et sa réponse, pour repartir dans une autre direction
 - Dictée vocale (Win+H) et lecture TTS des réponses (SAPI5)
 - Pré-prompt système configurable
 - Persistance automatique des conversations et restauration des onglets au redémarrage

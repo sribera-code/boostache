@@ -295,6 +295,94 @@ export function openModal({ title, subtitle, body, actions = [], width, onClose 
 }
 
 // ─────────────────────────────────────────────
+//  Visionneuse d'image : ajustée à la fenêtre, un clic sur l'image l'affiche
+//  en taille réelle (et inversement) ; Échap ou un clic à côté la ferme.
+// ─────────────────────────────────────────────
+/**
+ * src : URL de l'image, ou promesse d'URL (null : introuvable).
+ * preview : miniature affichée en attendant.
+ * actions : [{ label, icon, onSelect, close }] — boutons de la barre et menu contextuel
+ *           de l'image ; close : fermer la visionneuse après.
+ */
+export function openLightbox({ src, preview = "", title = "", actions = [] }) {
+  closeMenus();
+  closeTooltip();
+  const img = h("img", { class: "lightbox-img loading", alt: title, draggable: "false" });
+  if (preview) img.src = preview;
+  const run = async (action) => {
+    await action.onSelect();
+    if (action.close) close();
+  };
+  const bar = h("div", { class: "lightbox-bar" },
+    h("span", { class: "lightbox-title", text: title }),
+    ...actions.map((a) => iconButton(a.icon, a.label, () => run(a))),
+    iconButton("x", "Fermer", () => close(), { kbd: "Échap" }));
+  const stage = h("div", { class: "lightbox-stage" }, img);
+  const box = h("div", { class: "lightbox", role: "dialog", "aria-modal": "true", "aria-label": title || "Image" },
+    bar, stage);
+
+  let closed = false;
+  let zoomed = false;
+  const previousFocus = document.activeElement;
+  function close() {
+    if (closed) return;
+    closed = true;
+    box.remove();
+    document.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("resize", update);
+    previousFocus?.focus?.();
+  }
+  function onKey(ev) {
+    if (openMenus.length) return;
+    if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); close(); }
+  }
+  // Taille réelle : un pixel de l'image par pixel de l'écran
+  const realWidth = () => img.naturalWidth / (window.devicePixelRatio || 1);
+  function update() {
+    const reduced = !img.classList.contains("loading") && realWidth() > img.clientWidth + 1;
+    img.classList.toggle("zoomable", !zoomed && reduced);
+  }
+  function toggleZoom(ev) {
+    const r = img.getBoundingClientRect();
+    const fx = (ev.clientX - r.left) / r.width;
+    const fy = (ev.clientY - r.top) / r.height;
+    zoomed = !zoomed;
+    box.classList.toggle("zoomed", zoomed);
+    img.style.width = zoomed ? `${realWidth()}px` : "";
+    if (zoomed) {
+      // Le point cliqué reste sous la souris
+      const s = stage.getBoundingClientRect();
+      stage.scrollLeft = img.offsetLeft + fx * img.offsetWidth - (ev.clientX - s.left);
+      stage.scrollTop = img.offsetTop + fy * img.offsetHeight - (ev.clientY - s.top);
+    }
+    update();
+  }
+
+  img.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (zoomed || img.classList.contains("zoomable")) toggleZoom(ev);
+  });
+  img.addEventListener("contextmenu", (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    if (actions.length) openMenu(actions.map((a) => ({ ...a, onSelect: () => run(a) })), ev.clientX, ev.clientY);
+  });
+  stage.addEventListener("click", () => close());
+  document.addEventListener("keydown", onKey, true);
+  window.addEventListener("resize", update);
+  document.body.append(box);
+
+  Promise.resolve(src).then((url) => {
+    if (closed) return;
+    if (!url) { close(); toast("Image introuvable.", "error"); return; }
+    img.onload = () => { img.classList.remove("loading"); update(); };
+    img.onerror = () => { close(); toast("Image illisible.", "error"); };
+    img.src = url;
+  });
+  return { close };
+}
+
+// ─────────────────────────────────────────────
 //  Infobulles (attribut data-tip, raccourci optionnel data-kbd)
 // ─────────────────────────────────────────────
 let tipEl = null;

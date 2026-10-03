@@ -125,6 +125,12 @@ class Api:
     def chat_send(self, tab_id, text, model):
         return self._app.chat.send(tab_id, text, model)
 
+    def chat_edit(self, tab_id, index, text, model):
+        return self._app.chat.edit_last(tab_id, int(index), text, model)
+
+    def chat_fork(self, tab_id, index):
+        return self._app.chat.fork(tab_id, int(index))
+
     def chat_stop(self, tab_id):
         self._app.chat.stop(tab_id)
 
@@ -152,6 +158,12 @@ class Api:
 
     def chat_copy_message(self, tab_id, index):
         return self._app.chat.copy_message(tab_id, int(index))
+
+    def chat_image_url(self, tab_id, index, k):
+        return self._app.chat.image_url(tab_id, int(index), int(k))
+
+    def chat_attachment_url(self, tab_id, att_id):
+        return self._app.chat.attachment_url(tab_id, att_id)
 
     def chat_copy_image(self, tab_id, index, k):
         return self._app.chat.copy_image(tab_id, int(index), int(k))

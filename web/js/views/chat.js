@@ -1,6 +1,6 @@
 // Vue Conversations : chat avec les modèles Ollama.
 import { h, throttle, plural } from "../dom.js";
-import { ico, iconButton, openMenu, openMenuBelow, TabStrip, toast, kbdCombo } from "../ui.js";
+import { ico, iconButton, openLightbox, openMenu, openMenuBelow, TabStrip, toast, kbdCombo } from "../ui.js";
 import { renderMarkdown, renderMarkdownForCopy, splitThinking } from "../markdown.js";
 
 const wordCount = (s) => (s.trim().match(/\S+/g) || []).length;
@@ -69,7 +69,7 @@ export function createChatView(ctx, state) {
   function makeTab(data) {
     const pane = h("div", { class: "chat-pane" });
     const t = { id: data.id, data, pane, stick: true, draft: "", stream: null, partial: null,
-      helpHidden: false, helpUsed: new Set() };
+      helpHidden: false, helpUsed: new Set(), editing: false };
     t.renderPartial = throttle(() => {
       if (t.stream && t.partial) t.stream.update(t.partial.content, t.partial.thinking, true);
       autoScroll(t);
@@ -175,7 +175,8 @@ export function createChatView(ctx, state) {
     const { help } = t.data;
     const shot = t.data.attachments.find((a) => a.type === "image" && a.thumb);
     return h("div", { class: "empty help-intro" },
-      shot ? h("img", { class: "help-shot", src: shot.thumb, alt: "" })
+      shot ? h("img", { class: "help-shot zoomable", src: shot.thumb, alt: "",
+        onClick: () => openAttachment(t, shot) })
         : h("div", { class: "glyph" }, ico("scan", 22)),
       h("h3", { text: help.window || help.app || "Écran entier" }),
       h("p", { text: "Choisissez une des propositions ci-dessous ou décrivez l'aide souhaitée : "
@@ -193,17 +194,30 @@ export function createChatView(ctx, state) {
           h("span", { class: "name", text: a.name }));
       if (a.type === "image") {
         const k = images++;   // rang parmi les images du message
-        el.addEventListener("contextmenu", (ev) => imageMenu(t, index, k, a.name, ev));
+        el.classList.add("zoomable");
+        el.addEventListener("click", () => openLightbox({ src: api.chat_image_url(t.id, index, k),
+          preview: a.thumb, title: a.name, actions: imageActions(t, index, k, a.name) }));
+        el.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          openMenu(imageActions(t, index, k, a.name), ev.clientX, ev.clientY);
+        });
       }
       return el;
     });
     const copy = () => copyUserMessage(t, index);
+    const fork = () => forkAt(t, index);
+    const edit = () => editMessage(t, root, m, index);
+    const editBtn = iconButton("pencil", "Modifier la question", edit, { size: 15, cls: "sm" });
+    const forkBtn = iconButton("git-branch", "Fork dans un nouvel onglet", fork, { size: 15, cls: "sm" });
     const root = h("div", { class: "msg msg-user" },
       files.length ? h("div", { class: "msg-files" }, files) : null,
       m.text ? h("div", { class: "bubble", text: m.text }) : null,
       h("div", { class: "msg-actions" },
+        editBtn,
+        forkBtn,
         iconButton("copy", images ? "Copier le message et ses images" : "Copier", copy, { size: 15, cls: "sm" })));
-    root.copyMessage = copy;
+    Object.assign(root, { copyMessage: copy, forkMessage: fork, editMessage: edit, editBtn, forkBtn });
     return root;
   }
 
@@ -212,18 +226,95 @@ export function createChatView(ctx, state) {
     else toast("Copie impossible : le presse-papiers est occupé.", "error");
   }
 
-  function imageMenu(t, index, k, name, ev) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    openMenu([
+  /** Actions sur une image envoyée : menu contextuel et barre de la visionneuse. */
+  function imageActions(t, index, k, name) {
+    return [
       { label: "Copier l'image", icon: "copy", onSelect: async () => {
         if (await api.chat_copy_image(t.id, index, k)) toast("Image copiée");
         else toast("Image introuvable ou presse-papiers occupé.", "error");
       } },
-      { label: "Ouvrir dans Captures", icon: "palette", onSelect: async () => {
+      { label: "Ouvrir dans Captures", icon: "palette", close: true, onSelect: async () => {
         if (!await api.chat_image_to_captures(t.id, index, k, name)) toast("Image introuvable.", "error");
       } },
-    ], ev.clientX, ev.clientY);
+    ];
+  }
+
+  /** Image jointe pas encore envoyée, en grand. */
+  function openAttachment(t, a) {
+    openLightbox({ src: api.chat_attachment_url(t.id, a.id), preview: a.thumb, title: a.name,
+      actions: a.path ? [{ label: "Afficher dans l'explorateur", icon: "folder-open",
+        onSelect: () => api.reveal_path(a.path) }] : [] });
+  }
+
+  /** Modification de la dernière question, à la place de sa bulle : la réponse est regénérée. */
+  function editMessage(t, root, m, index) {
+    if (t.data.streaming || t.editing || root.editBtn.hidden) return;
+    const area = h("textarea", { rows: "1", spellcheck: "true", "aria-label": "Modifier la question" });
+    area.value = m.text;
+    const fit = () => {
+      area.style.height = "auto";
+      area.style.height = `${Math.min(area.scrollHeight, 300)}px`;
+    };
+    const submitBtn = h("button", { class: "btn primary sm", type: "button", dataset: { kbd: "Entrée" },
+      onClick: () => submit() }, "Envoyer");
+    const box = h("div", { class: "msg-edit" }, area,
+      h("div", { class: "msg-edit-bar" },
+        h("button", { class: "btn ghost sm", type: "button", dataset: { kbd: "Échap" }, onClick: () => cancel() },
+          "Annuler"),
+        submitBtn));
+    // Les pièces jointes restent affichées : elles repartent avec la question
+    const replaced = [...root.children].filter((c) => !c.classList.contains("msg-files"));
+    for (const c of replaced) c.hidden = true;
+    root.classList.add("editing");
+    root.append(box);
+    t.editing = true;
+
+    function cancel() {
+      box.remove();
+      for (const c of replaced) c.hidden = false;
+      root.classList.remove("editing");
+      t.editing = false;
+    }
+    async function submit() {
+      const text = area.value;
+      if (!text.trim() && !m.attachments?.length) { toast("La question est vide.", "error"); return; }
+      const model = effectiveModel(t);
+      if (!model) { toast(S.modelsError || "Aucun modèle disponible.", "error"); return; }
+      submitBtn.disabled = true;
+      const res = await api.chat_edit(t.id, index, text, model);
+      submitBtn.disabled = false;
+      // Réussite : chat:tab reconstruit la conversation
+      if (!res?.ok && res?.error) toast(res.error, "error");
+    }
+    area.addEventListener("input", fit);
+    area.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); submit(); }
+      else if (ev.key === "Escape") { ev.preventDefault(); ev.stopPropagation(); cancel(); }
+    });
+    requestAnimationFrame(() => {
+      fit();
+      area.focus();
+      area.setSelectionRange(area.value.length, area.value.length);
+    });
+  }
+
+  /** Nouvel onglet avec la conversation jusqu'à cette question et sa réponse. */
+  async function forkAt(t, index) {
+    const data = await api.chat_fork(t.id, index);
+    if (!data) { toast("Fork impossible : la conversation a changé entre-temps.", "error"); return; }
+    const nt = makeTab(data);
+    S.order.splice(S.order.indexOf(t.id) + 1, 0, nt.id);
+    select(nt.id);
+  }
+
+  /** Seule la dernière question se modifie ; pendant une réponse, ni elle ni son fork. */
+  function refreshActions(t) {
+    const users = [...t.pane.querySelectorAll(".thread > .msg-user")];
+    users.forEach((el, i) => {
+      const last = i === users.length - 1;
+      el.editBtn.hidden = !last || t.data.streaming;
+      el.forkBtn.hidden = last && t.data.streaming;
+    });
   }
 
   function botMessage(t, m, live = false) {
@@ -297,6 +388,7 @@ export function createChatView(ctx, state) {
   function renderPane(t) {
     const d = t.data;
     t.stream = null;
+    t.editing = false;
     if (!d.messages.length && !d.streaming) {
       t.pane.replaceChildren(d.help ? helpIntro(t) : emptyState());
       return;
@@ -311,6 +403,7 @@ export function createChatView(ctx, state) {
       thread.append(t.stream.root);
     }
     t.pane.replaceChildren(thread);
+    refreshActions(t);
     scrollToBottom(t, true);
     ctx.emit("speak-sources-changed");
   }
@@ -376,14 +469,19 @@ export function createChatView(ctx, state) {
     const list = t?.data.attachments || [];
     attRow.hidden = !list.length;
     attRow.replaceChildren(...list.map((a) => {
-      const chip = h("span", { class: "chip", dataset: { tip: a.path || a.name } },
-        a.type === "image" && a.thumb ? h("img", { class: "thumb", src: a.thumb, alt: "" })
-          : h("span", { class: "chip-icon" }, ico(a.type === "image" ? "image" : "file-text", 13)),
+      const image = a.type === "image";
+      const chip = h("span", { class: `chip${image ? " zoomable" : ""}`, dataset: { tip: a.path || a.name } },
+        image && a.thumb ? h("img", { class: "thumb", src: a.thumb, alt: "" })
+          : h("span", { class: "chip-icon" }, ico(image ? "image" : "file-text", 13)),
         h("span", { class: "name", text: a.name }),
         iconButton("x", "Retirer", () => api.chat_detach(t.id, a.id), { size: 13, cls: "sm" }));
+      if (image) {
+        chip.addEventListener("click", (ev) => { if (!ev.target.closest(".icon-btn")) openAttachment(t, a); });
+      }
       chip.addEventListener("contextmenu", (ev) => {
         ev.preventDefault();
         openMenu([
+          image ? { label: "Ouvrir", icon: "image", onSelect: () => openAttachment(t, a) } : null,
           { label: "Afficher dans l'explorateur", icon: "folder-open", disabled: !a.path,
             onSelect: () => api.reveal_path(a.path) },
           "-",
@@ -542,6 +640,10 @@ export function createChatView(ctx, state) {
       { label: "Copier la sélection", icon: "copy", hint: "Ctrl+C", disabled: !sel, onSelect: () => ctx.copy(sel) },
       msg?.copyMessage ? { label: msg.classList.contains("msg-user") ? "Copier ce message" : "Copier cette réponse",
         icon: "copy", onSelect: msg.copyMessage } : null,
+      msg?.editBtn && !msg.editBtn.hidden && !t.editing
+        ? { label: "Modifier la question", icon: "pencil", onSelect: msg.editMessage } : null,
+      msg?.forkBtn && !msg.forkBtn.hidden
+        ? { label: "Fork dans un nouvel onglet", icon: "git-branch", onSelect: msg.forkMessage } : null,
       { label: "Copier toute la conversation", icon: "copy", disabled: !has,
         onSelect: () => ctx.copy(conversationText(t), "Conversation copiée") },
       "-",
@@ -582,13 +684,14 @@ export function createChatView(ctx, state) {
     const previous = t.data.messages.length;
     const thread = t.pane.querySelector(".thread");
     t.data = data;
-    if (thread && data.streaming && data.messages.length === previous + 1) {
+    if (thread && !t.editing && data.streaming && data.messages.length === previous + 1) {
       // Envoi d'un message : on ajoute la question et la bulle de réponse,
       // sans reconstruire toute la conversation
       thread.append(userMessage(t, data.messages[previous], previous));
       t.partial = { content: "", thinking: "" };
       t.stream = botMessage(t, { text: "", thinking: "", model: data.partial?.model || data.model }, true);
       thread.append(t.stream.root);
+      refreshActions(t);
       scrollToBottom(t, true);
     } else {
       renderPane(t);
@@ -622,6 +725,7 @@ export function createChatView(ctx, state) {
     }
     if (error) appendNotice(t, error, "error");
     else if (stopped) appendNotice(t, message ? "Réponse interrompue." : "Génération interrompue.");
+    refreshActions(t);
     if (title !== undefined) t.data.title = title;
     renderStrip();
     if (t.id === S.active) { updateComposer(); renderHelp(); }

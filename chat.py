@@ -11,6 +11,7 @@ de la capture et de son texte (OCR), puis répond à celle choisie ou écrite.
 """
 
 import base64
+import copy
 import functools
 import hashlib
 import html
@@ -71,6 +72,7 @@ HELP_SCHEMA = {
 HELP_ANSWER = ("Aide-moi en t'appuyant sur ce que montre cette fenêtre. Réponds en français, "
                "concrètement (étapes numérotées si c'est utile).")
 HELP_DEFAULT_QUESTION = "Que montre cette fenêtre, et que puis-je y faire ?"
+HELP_QUESTION = "Ma question : "   # précède la question dans un message d'aide
 
 _LEGACY_FILE_BLOCK = re.compile(r"\[Fichier : (.+?)\]\n```\n.*?\n```(?:\n\n)?", re.S)
 
@@ -141,6 +143,23 @@ def _load_image_ref(ref: str):
     with Image.open(source) as im:
         im.load()
         return im.copy()
+
+
+def _image_data_url(ref: str) -> str | None:
+    """Image en pleine résolution, en data URL : chemin d'un fichier, ou base64
+    (anciennes conversations). None si elle est illisible."""
+    from PIL import Image
+    try:
+        if os.path.isfile(ref):
+            with open(ref, "rb") as f:
+                data = f.read()
+        else:
+            data = base64.b64decode(ref)
+        with Image.open(io.BytesIO(data)) as im:
+            mime = Image.MIME.get(im.format or "", "image/png")
+    except Exception:
+        return None
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
 
 
 @functools.lru_cache(maxsize=16)
@@ -247,6 +266,20 @@ def _to_ollama(m: dict, sees_images: bool = True) -> dict:
     if images and (sees_images or not m.get("screen_text")):
         out["images"] = [_model_image(ref) for ref in images]
     return out
+
+
+def _edited_content(m: dict, text: str) -> str:
+    """Contenu envoyé au modèle pour une question modifiée : celui d'origine
+    (fichiers joints, contexte de l'aide), le nouveau texte à la place de l'ancien."""
+    content = m.get("content", "")
+    old = _ui_message(m)["text"]
+    if not old and content.endswith(HELP_QUESTION + HELP_DEFAULT_QUESTION):
+        old = HELP_DEFAULT_QUESTION
+    i = content.rfind(old) if old else -1
+    head = content[:i] if i >= 0 else (content + "\n\n" if content else "")
+    if head.endswith(HELP_QUESTION):
+        return head + (text or HELP_DEFAULT_QUESTION)
+    return head + text if text else head.rstrip()
 
 
 # ─────────────────────────────────────────────
@@ -423,20 +456,46 @@ class ChatService:
             settings.set("help_model" if tab.help else "last_model", model)
             self._save_meta()
 
-    # ── Envoi & streaming ─────────────────────
-    def send(self, tab_id: str, text: str, model: str) -> dict:
+    def fork(self, tab_id: str, index: int) -> dict | None:
+        """Nouvel onglet, juste après celui-ci, avec la conversation jusqu'à la question
+        à la position `index` (de la liste affichée) et sa réponse."""
         tab = self._find(tab_id)
         if not tab:
-            return {"ok": False, "error": "Conversation introuvable."}
+            return None
+        with self._lock:
+            pos = self._position(tab, index)
+            if tab not in self.tabs or pos is None or tab.messages[pos].get("role") != "user":
+                return None
+            end = next((i for i in range(pos + 1, len(tab.messages))
+                        if tab.messages[i].get("role") == "user"), len(tab.messages))
+            fork = ChatTab(model=tab.model or settings.get("last_model", ""))
+            fork.messages = copy.deepcopy(tab.messages[:end])
+            self.tabs.insert(self.tabs.index(tab) + 1, fork)
+        fork.conv_id = conversations.save(fork.messages, fork.model)
+        self._save_meta()
+        return fork.to_ui()
+
+    # ── Envoi & streaming ─────────────────────
+    def _send_error(self, tab: ChatTab | None, model: str) -> str | None:
+        """Raison pour laquelle une question ne peut pas partir, ou None."""
+        if not tab:
+            return "Conversation introuvable."
         if tab.streaming:
-            return {"ok": False, "error": "Une réponse est déjà en cours."}
+            return "Une réponse est déjà en cours."
+        if not self.models:
+            return self.models_error or "Aucun modèle disponible."
+        if not model or model not in self.models:
+            return "Sélectionne un modèle valide."
+        return None
+
+    def send(self, tab_id: str, text: str, model: str) -> dict:
+        tab = self._find(tab_id)
+        error = self._send_error(tab, model)
+        if error:
+            return {"ok": False, "error": error}
         text = (text or "").strip()
         if not text and not tab.pending:
             return {"ok": False, "error": ""}
-        if not self.models:
-            return {"ok": False, "error": self.models_error or "Aucun modèle disponible."}
-        if not model or model not in self.models:
-            return {"ok": False, "error": "Sélectionne un modèle valide."}
         # Aide contextuelle : la question part avec la capture et le texte de la fenêtre
         aid = tab.help
         screen = aid is not None and any(a["id"] == aid["att"] for a in tab.pending)
@@ -458,7 +517,7 @@ class ChatService:
         question = text
         if screen:
             question = (f"{self._help_context(aid)}\n\n{HELP_ANSWER}\n\n"
-                        f"Ma question : {text or HELP_DEFAULT_QUESTION}")
+                        f"{HELP_QUESTION}{text or HELP_DEFAULT_QUESTION}")
         content = "\n\n".join(blocks + ([question] if question else []))
         message = {"role": "user", "content": content, "display": text, "attachments": atts}
         if screen and aid["text"]:
@@ -467,7 +526,37 @@ class ChatService:
             message["images"] = images
 
         self._discard_pending(tab)
+        self._start(tab, message, model)
+        return {"ok": True}
+
+    def edit_last(self, tab_id: str, index: int, text: str, model: str) -> dict:
+        """Remplace la dernière question (à la position `index` de la liste affichée)
+        et regénère la réponse. Ses pièces jointes sont gardées."""
+        tab = self._find(tab_id)
+        error = self._send_error(tab, model)
+        if error:
+            return {"ok": False, "error": error}
         with self._lock:
+            pos = self._position(tab, index)
+            last = max((i for i, m in enumerate(tab.messages) if m.get("role") == "user"), default=None)
+            if pos is None or pos != last:
+                return {"ok": False, "error": "Seule la dernière question peut être modifiée."}
+            old = tab.messages[pos]
+        text = (text or "").strip()
+        shown = _ui_message(old)
+        if not text and not shown["attachments"]:
+            return {"ok": False, "error": "La question est vide."}
+        message = {**old, "content": _edited_content(old, text), "display": text,
+                   "attachments": shown["attachments"]}
+        self._start(tab, message, model, replace=pos)
+        return {"ok": True}
+
+    def _start(self, tab: ChatTab, message: dict, model: str, replace: int | None = None):
+        """Ajoute la question à la conversation (à la place des messages à partir de
+        la position `replace`, pour une question modifiée) et lance la réponse."""
+        with self._lock:
+            if replace is not None:
+                del tab.messages[replace:]
             tab.messages.append(message)
             tab.model = model
             tab.streaming = True
@@ -477,7 +566,6 @@ class ChatService:
         self._emit_tab(tab)
         threading.Thread(target=self._stream, args=(tab, model),
                          daemon=True, name=f"chat-{tab.id}").start()
-        return {"ok": True}
 
     def stop(self, tab_id: str):
         tab = self._find(tab_id)
@@ -756,14 +844,21 @@ class ChatService:
         return False
 
     # ── Copie des messages ────────────────────
+    @staticmethod
+    def _position(tab: ChatTab, index: int) -> int | None:
+        """Position dans tab.messages du message à la position `index` de la liste
+        affichée par l'interface. À appeler sous self._lock."""
+        visible = [i for i, m in enumerate(tab.messages) if _ui_message(m)]
+        return visible[index] if 0 <= index < len(visible) else None
+
     def _message(self, tab_id: str, index: int) -> dict | None:
         """Message à la position `index` de la liste affichée par l'interface."""
         tab = self._find(tab_id)
         if not tab:
             return None
         with self._lock:
-            visible = [m for m in tab.messages if _ui_message(m)]
-        return visible[index] if 0 <= index < len(visible) else None
+            pos = self._position(tab, index)
+            return tab.messages[pos] if pos is not None else None
 
     def _message_images(self, m: dict) -> list:
         images = []
@@ -795,6 +890,21 @@ class ChatService:
             return _load_image_ref(refs[k])
         except Exception:
             return None
+
+    def image_url(self, tab_id: str, index: int, k: int) -> str | None:
+        """k-ième image d'un message en pleine résolution (data URL), ou None."""
+        m = self._message(tab_id, index)
+        refs = (m or {}).get("images") or []
+        return _image_data_url(refs[k]) if 0 <= k < len(refs) else None
+
+    def attachment_url(self, tab_id: str, att_id: str) -> str | None:
+        """Image jointe pas encore envoyée, en pleine résolution (data URL), ou None."""
+        tab = self._find(tab_id)
+        if not tab:
+            return None
+        with self._lock:
+            att = next((a for a in tab.pending if a["id"] == att_id and a["type"] == "image"), None)
+        return _image_data_url(att["path"]) if att else None
 
     def copy_image(self, tab_id: str, index: int, k: int) -> bool:
         image = self.message_image(tab_id, index, k)
