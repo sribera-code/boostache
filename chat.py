@@ -8,6 +8,13 @@ conversations et des onglets ouverts.
 Aide contextuelle (Ctrl+Impr. écran) : une conversation s'ouvre avec la
 capture de la fenêtre active ; le modèle propose des questions d'aide à partir
 de la capture et de son texte (OCR), puis répond à celle choisie ou écrite.
+
+Présence d'Ollama : testée au démarrage sans le retarder, puis à intervalles
+croissants tant qu'il ne répond pas ; en ligne, toutes les 30 s tant que la
+fenêtre est affichée, sinon seulement quand il va servir (fenêtre affichée,
+aide contextuelle) ou quand un appel échoue faute de serveur. Tout ce qui a
+besoin d'Ollama (onglet, aide contextuelle, assistants) n'est proposé que
+pendant qu'il répond.
 """
 
 import base64
@@ -19,11 +26,9 @@ import io
 import json
 import os
 import re
-import socket
 import threading
 import time
 import uuid
-from urllib.parse import urlparse
 
 import ocr
 from clipboard_listener import set_clipboard_content, set_clipboard_image
@@ -32,9 +37,11 @@ from storage import settings, conversations, chat_meta, ATTACHMENTS_DIR, CACHE_D
 
 try:
     import ollama as _ollama
+    from httpx import ReadTimeout as _ReadTimeout, TransportError as _TransportError   # dépendance d'ollama
     OLLAMA_OK = True
 except ImportError:
     _ollama = None
+    _ReadTimeout = _TransportError = ()    # aucune exception : sans la librairie, aucun appel
     OLLAMA_OK = False
 
 
@@ -76,21 +83,20 @@ HELP_QUESTION = "Ma question : "   # précède la question dans un message d'aid
 
 _LEGACY_FILE_BLOCK = re.compile(r"\[Fichier : (.+?)\]\n```\n.*?\n```(?:\n\n)?", re.S)
 
+# Présence d'Ollama. Un test liste les modèles : la liste est à jour dès qu'il répond.
+# (Sous Windows, une connexion refusée met ~2 s à échouer : jamais dans le thread de l'interface.)
+PROBE_TIMEOUT = 3.0                       # secondes
+RETRY_DELAYS  = (2, 4, 8, 15, 30, 60)     # injoignable : attente avant chaque nouvel essai (s)
+RECHECK_AFTER = 15                        # en ligne : pas de nouveau test avant (s), sauf échec
+VISIBLE_EVERY = 30                        # fenêtre affichée : au moins un test toutes les 30 s
+NO_MODELS     = "Aucun modèle installé (ollama pull <modèle>)."
+UNREACHABLE   = "Ollama ne répond pas : il sera détecté dès son lancement."
 
-def ollama_server_running(timeout: float = 0.6) -> bool:
-    """Vérifie qu'un serveur Ollama répond sur OLLAMA_HOST (défaut localhost:11434)."""
-    if not OLLAMA_OK:
-        return False
-    host_url = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-    if "://" not in host_url:
-        host_url = "http://" + host_url
-    parsed = urlparse(host_url)
-    try:
-        with socket.create_connection((parsed.hostname or "localhost", parsed.port or 11434),
-                                      timeout=timeout):
-            return True
-    except OSError:
-        return False
+
+def _unreachable(e: Exception) -> bool:
+    """L'erreur vient-elle d'un serveur injoignable (arrêté, pas encore lancé, coupé) ?"""
+    error = str(e).lower()
+    return isinstance(e, (ConnectionError, _TransportError)) or "connect" in error or "10061" in error
 
 
 # ─────────────────────────────────────────────
@@ -186,7 +192,7 @@ def _model_image(ref: str):
 def _ollama_error(e: Exception) -> str:
     """Message d'une erreur Ollama, pour l'interface."""
     error = str(e)
-    if "connect" in error.lower() or "10061" in error:
+    if _unreachable(e):
         return "Ollama injoignable. Vérifie que le serveur est lancé."
     if "exceed_context_size" in error or "exceeds the available context" in error:
         return ("Trop long pour le contexte du modèle : ouvre une nouvelle conversation "
@@ -340,7 +346,10 @@ class ChatTab:
 #  Service
 # ─────────────────────────────────────────────
 class ChatService:
-    """snipper : captures.Snipper, pour joindre une capture d'une zone de l'écran."""
+    """snipper : captures.Snipper, pour joindre une capture d'une zone de l'écran.
+
+    on_available : appelé (sans argument, depuis le thread de surveillance) quand
+    Ollama se met à répondre ou cesse de le faire."""
 
     def __init__(self, bridge, snipper):
         self._bridge = bridge
@@ -349,9 +358,16 @@ class ChatService:
         self.tabs: list[ChatTab] = []
         self.models: list[str] = []
         self.models_error = ""
+        self.online: bool | None = None      # None : pas encore testé
+        self.on_available = None
+        self.visible = False                 # fenêtre affichée (set_visible)
+        self._client = _ollama.Client(timeout=PROBE_TIMEOUT)
+        self._probe_lock = threading.Lock()
+        self._checked = float("-inf")        # fin du dernier test (time.monotonic)
+        self._wake = threading.Event()
         self._vision: dict[str, bool] = {}   # modèle → lit les images
         self._restore()
-        self.refresh_models()
+        threading.Thread(target=self._watch, daemon=True, name="ollama-watch").start()
 
     # ── Restauration / persistance ────────────
     def _restore(self):
@@ -389,29 +405,100 @@ class ChatService:
     def _emit_attachments(self, tab: ChatTab):
         self._bridge.emit("chat:attachments", {"tab": tab.id, "attachments": tab.ui_attachments()})
 
-    # ── Snapshot & modèles ────────────────────
+    # ── Snapshot ──────────────────────────────
     def snapshot(self) -> dict:
         with self._lock:
             return {
-                "available":     True,
+                "available":     self.available,
+                "online":        self.online,
                 "models":        self.models,
                 "models_error":  self.models_error,
                 "default_model": settings.get("last_model", ""),
                 "tabs":          [t.to_ui() for t in self.tabs],
             }
 
-    def refresh_models(self):
-        def fetch():
+    # ── Présence d'Ollama & modèles ───────────
+    @property
+    def available(self) -> bool:
+        """Ollama répond : ce qui a besoin de lui est proposé."""
+        return self.online is True
+
+    def _watch(self):
+        """Teste Ollama au démarrage, puis à intervalles croissants tant qu'il ne
+        répond pas ; en ligne, à la demande (check) et, fenêtre affichée, toutes
+        les VISIBLE_EVERY secondes : ce qu'elle montre doit rester juste."""
+        misses = 0
+        while True:
+            if self.probe():
+                misses, delay = 0, None
+            else:
+                delay = RETRY_DELAYS[min(misses, len(RETRY_DELAYS) - 1)]
+                misses += 1
+            if self.visible:
+                delay = min(delay or VISIBLE_EVERY, VISIBLE_EVERY)
+            if self._wake.wait(delay):
+                misses = 0              # demandé (fenêtre affichée…) : retour aux essais rapprochés
+            self._wake.clear()
+
+    def set_visible(self, visible: bool):
+        """Fenêtre affichée ou masquée. À l'affichage, Ollama est testé tout de suite
+        (lancé ou arrêté pendant qu'elle était masquée ?), puis régulièrement."""
+        was, self.visible = self.visible, visible
+        if visible and not was:
+            self.check(force=True)
+
+    def check(self, force: bool = False):
+        """Fait tester Ollama tout de suite, en arrière-plan. Sans force, rien si
+        Ollama a répondu il y a moins de RECHECK_AFTER secondes."""
+        if force or not self.online or time.monotonic() - self._checked >= RECHECK_AFTER:
+            self._wake.set()
+
+    def probe(self) -> bool:
+        """Teste Ollama en listant ses modèles (bloquant : jusqu'à PROBE_TIMEOUT) et
+        met l'interface à jour. Un test terminé pendant l'attente en tient lieu."""
+        asked = time.monotonic()
+        with self._probe_lock:
+            if self._checked >= asked:
+                return self.available
             try:
-                result = _ollama.list()
-                self.models = [m.model for m in result.models]
-                self.models_error = "" if self.models else "Aucun modèle installé (ollama pull <modèle>)."
+                models = [m.model for m in self._client.list().models]
+                online, error = True, "" if models else NO_MODELS
+            except _ReadTimeout:
+                # Connexion acceptée mais réponse lente (Ollama occupé) : rien ne disparaît pour ça
+                self._checked = time.monotonic()
+                return self.available
             except Exception as e:
-                self.models = []
-                self.models_error = f"Ollama injoignable : {e}"
-            self._bridge.emit("chat:models", {"models": self.models, "error": self.models_error,
+                models, online = [], False
+                error = UNREACHABLE if _unreachable(e) else f"Ollama en erreur : {e}"
+            self._checked = time.monotonic()
+            with self._lock:
+                was_online, had_models = self.online, bool(self.models)
+                changed = (online, models, error) != (self.online, self.models, self.models_error)
+                self.online, self.models, self.models_error = online, models, error
+        if online and not was_online:
+            logger.log(f"Ollama détecté : {len(models)} modèle{'s' if len(models) > 1 else ''}.")
+        elif not online and was_online is not False:
+            logger.log("Ollama injoignable : nouveaux essais en arrière-plan." if error == UNREACHABLE
+                       else f"{error} (nouveaux essais en arrière-plan)")
+        if changed:
+            self._bridge.emit("chat:models", {"models": models, "error": error, "online": online,
                                               "default_model": settings.get("last_model", "")})
-        threading.Thread(target=fetch, daemon=True, name="ollama-models").start()
+        if online != (was_online is True):
+            self._bridge.emit("chat:available", self.snapshot())
+            try:
+                if self.on_available:
+                    self.on_available()
+            except Exception as e:
+                logger.log(f"Ollama : mise à jour des fonctions qui en dépendent impossible ({e})")
+        if models and not had_models:
+            self._resume_help()
+        return online
+
+    def failure(self, e: Exception) -> str:
+        """Message d'un appel à Ollama en échec ; serveur injoignable : nouveau test."""
+        if _unreachable(e):
+            self.check(force=True)
+        return _ollama_error(e)
 
     # ── Onglets ───────────────────────────────
     def new_tab(self, after_id: str | None = None) -> dict:
@@ -483,6 +570,7 @@ class ChatService:
         if tab.streaming:
             return "Une réponse est déjà en cours."
         if not self.models:
+            self.check()            # lancé depuis le dernier test ?
             return self.models_error or "Aucun modèle disponible."
         if not model or model not in self.models:
             return "Sélectionne un modèle valide."
@@ -612,7 +700,7 @@ class ChatService:
                 if time.monotonic() - last_flush >= DELTA_INTERVAL:
                     flush()
         except Exception as e:
-            error = _ollama_error(e)
+            error = self.failure(e)
             logger.log(f"Chat ({model}) : {error}")
         finally:
             if stream is not None and hasattr(stream, "close"):
@@ -711,6 +799,15 @@ class ChatService:
         threading.Thread(target=self._help_run, args=(tab, aid, gen),
                          daemon=True, name=f"help-{tab.id}").start()
 
+    def _resume_help(self):
+        """Des modèles sont enfin là (Ollama lancé, modèle installé) : propositions
+        des aides ouvertes sans modèle ou en échec, pas encore commencées."""
+        with self._lock:
+            waiting = [t.id for t in self.tabs if t.help and not t.messages
+                       and (t.help["status"] == "error" or not t.help["model"])]
+        for tab_id in waiting:
+            self.help_suggest(tab_id)
+
     @staticmethod
     def _help_context(aid: dict) -> str:
         """Description de la fenêtre capturée, pour le modèle."""
@@ -749,7 +846,7 @@ class ChatService:
                 else:
                     update["error"] = "Le modèle n'a rien proposé."
             except Exception as e:
-                error = _ollama_error(e)
+                error = self.failure(e)
                 logger.log(f"Aide contextuelle ({model}) : {error}")
                 update["error"] = error
         with self._lock:

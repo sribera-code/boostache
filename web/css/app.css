@@ -78,6 +78,7 @@ button { cursor: pointer; }
 ::selection { background: rgba(255, 255, 255, .2); }
 .icon { display: block; flex-shrink: 0; }
 [hidden] { display: none !important; }
+#app:not(.ollama) [data-ollama] { display: none !important; }   /* a besoin d'Ollama, qui ne répond pas */
 
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: transparent; }

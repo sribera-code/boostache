@@ -30,9 +30,12 @@ const NAV = [
 ];
 const SETTINGS = { id: "settings", label: "Paramètres", icon: "settings", create: createSettingsView };
 
-const store = { settings: {}, tts: { speaking: false, source: null }, active: null, dataDir: "" };
+const store = { settings: {}, tts: { speaking: false, source: null }, active: null, dataDir: "", ollama: false };
 const views = new Map();          // id → { view, nav, item }
 let layout = null;                // une section ou deux côte à côte (layout.js)
+let bootState = null;             // état initial (ui_ready), pour une section ajoutée ensuite
+let chatEntry = null;             // section Conversations, gardée quand Ollama ne répond plus
+let lateChat = null;              // Ollama apparu ou disparu pendant le démarrage
 let pendingDrop = null;
 
 // ─────────────────────────────────────────────
@@ -127,15 +130,14 @@ function buildSidebar() {
     h("div", { class: "brand-mark" }, ico("zap", 15, 2)),
     h("span", { class: "brand-name", text: "Boostache" }), splitButtons[0]));
 
-  let shortcut = 1;
   for (const item of NAV) {
     if (item === "-") { sidebar.append(h("div", { class: "nav-sep" })); continue; }
     const entry = views.get(item.id);
     if (!entry) continue;
     entry.nav = navItem(item);
-    entry.shortcut = shortcut++;
     sidebar.append(entry.nav);
   }
+  numberShortcuts();
   sidebar.append(h("div", { class: "sidebar-spacer" }));
   const settingsEntry = views.get("settings");
   settingsEntry.nav = navItem(SETTINGS);
@@ -163,16 +165,67 @@ function buildSidebar() {
     $("#app").classList.toggle("collapsed", collapsed);
     collapse.replaceChildren(ico(collapsed ? "panel-left-open" : "panel-left-close", 15));
     collapse.dataset.tip = collapsed ? "Déplier la barre latérale" : "Replier la barre latérale";
-    for (const [id, entry] of views) {
-      if (collapsed) entry.nav.dataset.tip = entry.item.label;
-      else delete entry.nav.dataset.tip;
-      if (collapsed && entry.shortcut) entry.nav.dataset.kbd = `Ctrl+${entry.shortcut}`;
-      else delete entry.nav.dataset.kbd;
-    }
+    navTips();
     if (persist) ctx.saveSetting("sidebar_collapsed", collapsed);
     setTimeout(() => emit("layout"), 200);
   }
   setCollapsed(!!store.settings.sidebar_collapsed, false);
+}
+
+/** Ctrl+1…9 : sections présentes, dans l'ordre de la barre latérale. */
+function numberShortcuts() {
+  let n = 1;
+  for (const item of NAV) {
+    if (item !== "-" && views.has(item.id)) views.get(item.id).shortcut = n++;
+  }
+}
+
+/** Barre repliée : nom et raccourci de chaque section en infobulle. */
+function navTips() {
+  const collapsed = $("#app").classList.contains("collapsed");
+  for (const entry of views.values()) {
+    if (collapsed) entry.nav.dataset.tip = entry.item.label;
+    else delete entry.nav.dataset.tip;
+    if (collapsed && entry.shortcut) entry.nav.dataset.kbd = `Ctrl+${entry.shortcut}`;
+    else delete entry.nav.dataset.kbd;
+  }
+}
+
+function createView(item, state) {
+  const view = item.create(ctx, state);
+  view.el.classList.add("view");
+  view.el.dataset.view = item.id;
+  $("#main").append(view.el);
+  return { view, item, nav: null, shortcut: 0 };
+}
+
+/** Ollama répond ou non : tout ce qui a besoin de lui est affiché ou masqué
+ *  (section Conversations ici ; ailleurs, les éléments [data-ollama] et store.ollama). */
+function setOllama(chat) {
+  if (!layout) { lateChat = chat; return; }
+  store.ollama = !!chat.available;
+  $("#app").classList.toggle("ollama", store.ollama);
+  if (store.ollama === views.has("chat")) return;
+  if (store.ollama) {
+    // Créée une seule fois : masquée puis rendue, elle garde ses brouillons
+    if (!chatEntry) {
+      const item = NAV.find((x) => x.id === "chat");
+      chatEntry = createView(item, { ...bootState, chat });
+      chatEntry.nav = navItem(item);
+    }
+    const ids = [...NAV, SETTINGS].filter((x) => x !== "-").map((x) => x.id);
+    const next = ids.slice(ids.indexOf("chat") + 1).find((id) => views.has(id));
+    $("#sidebar").insertBefore(chatEntry.nav, views.get(next).nav);
+    const all = new Map([...views, ["chat", chatEntry]]);
+    views.clear();
+    for (const id of ids) if (all.has(id)) views.set(id, all.get(id));
+  } else {
+    layout.evict("chat", { persist: false });   // la disposition enregistrée la garde
+    views.delete("chat");
+    chatEntry.nav.remove();
+  }
+  numberShortcuts();
+  navTips();
 }
 
 /** Ctrl+1…9, Ctrl+, , Ctrl+Maj+S (« split ») et F6 (clavier de l'interface ou relayé
@@ -324,6 +377,7 @@ function setupGlobalHandlers() {
 // ─────────────────────────────────────────────
 async function boot() {
   setErrorHandler((msg) => toast(msg, "error"));
+  on("chat:available", setOllama);
   window.__bootStage = "attente de pywebview";
   await ready();
   window.__bootStage = "polices";
@@ -336,20 +390,21 @@ async function boot() {
   store.dataDir = state.data_dir;
   store.winBuild = state.win_build;
 
-  const main = $("#main");
+  bootState = state;
+  store.ollama = !!state.chat?.available;
+  $("#app").classList.toggle("ollama", store.ollama);
   for (const item of [...NAV, SETTINGS]) {
     if (item === "-") continue;
-    if (item.id === "chat" && !state.chat?.available) continue;
-    const view = item.create(ctx, state);
-    view.el.classList.add("view");
-    view.el.dataset.view = item.id;
-    main.append(view.el);
-    views.set(item.id, { view, item, nav: null, shortcut: 0 });
+    if (item.id === "chat" && !store.ollama) continue;
+    views.set(item.id, createView(item, state));
   }
-  layout = createLayout(ctx, views, main);
+  chatEntry = views.get("chat") || null;
+  layout = createLayout(ctx, views, $("#main"));
   buildSidebar();
   setupTts();
   setupGlobalHandlers();
+  // Changement reçu avant la fin du démarrage : rejoué pour toutes les vues
+  if (lateChat) emit("chat:available", lateChat);
 
   layout.restore(store.settings.layout, state.visible);
   // (pas de requestAnimationFrame : il ne s'exécute pas tant que la fenêtre est masquée)

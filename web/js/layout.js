@@ -161,13 +161,13 @@ export function createLayout(ctx, views, main) {
     focusView(focused());
   }
 
-  /** Retire une section de l'écran (fenêtre masquée : presse-papiers). */
-  function evict(id) {
+  /** Retire une section de l'écran (fenêtre masquée : presse-papiers ; Ollama arrêté : Conversations). */
+  function evict(id, { persist = true } = {}) {
     const i = L.panes.indexOf(id);
     if (i < 0) return;
     const panes = [...L.panes];
     panes[i] = [...views.keys()].find((v) => !panes.includes(v) && v !== "clipboard" && v !== "settings");
-    show(panes, L.focus, { giveFocus: false });
+    show(panes, L.focus, { giveFocus: false, persist });
   }
 
   /** Démarrage : écran partagé de la session précédente, sinon la première section.

@@ -279,7 +279,7 @@ export function createChatView(ctx, state) {
       const text = area.value;
       if (!text.trim() && !m.attachments?.length) { toast("La question est vide.", "error"); return; }
       const model = effectiveModel(t);
-      if (!model) { toast(S.modelsError || "Aucun modèle disponible.", "error"); return; }
+      if (!model) { noModel(); return; }
       submitBtn.disabled = true;
       const res = await api.chat_edit(t.id, index, text, model);
       submitBtn.disabled = false;
@@ -444,6 +444,12 @@ export function createChatView(ctx, state) {
     return S.models[0] || "";
   }
 
+  /** Envoi impossible faute de modèle : un modèle vient peut-être d'être installé, Ollama est retesté. */
+  function noModel() {
+    toast(S.modelsError || "Aucun modèle disponible.", "error");
+    api.chat_check();
+  }
+
   function updateComposer() {
     const t = activeTab();
     const streaming = !!t?.data.streaming;
@@ -501,7 +507,7 @@ export function createChatView(ctx, state) {
     const text = chosen ?? input.value;
     if (!text.trim() && !t.data.attachments.length) return;
     const model = effectiveModel(t);
-    if (!model) { toast(S.modelsError || "Aucun modèle disponible.", "error"); return; }
+    if (!model) { noModel(); return; }
     if (chosen === null) {
       input.value = "";
       t.draft = "";
@@ -788,6 +794,7 @@ export function createChatView(ctx, state) {
     onShow() {
       const t = activeTab();
       if (t) autoScroll(t);
+      api.chat_check();     // Ollama retesté s'il n'a pas répondu récemment
     },
     focus() { input.focus(); },
     onDrop(paths) {

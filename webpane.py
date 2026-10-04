@@ -146,11 +146,12 @@ class WebPane:
     # ─────────────────────────────────────────
     def _generate(self, model: str, hint: str, fn) -> dict:
         chat = self._app.chat
-        if chat is None or _ollama is None:
+        if chat is None or not chat.available:
             return {"ok": False, "error": "Ollama est indisponible."}
         if model not in chat.models:
             model = chat.models[0] if chat.models else ""
         if not model:
+            chat.check()            # lancé depuis le dernier test ?
             return {"ok": False, "error": chat.models_error or "Aucun modèle Ollama installé."}
         if not self._busy.acquire(blocking=False):
             return {"ok": False, "error": "Une génération est déjà en cours."}
@@ -161,7 +162,7 @@ class WebPane:
             return fn(model, page, (hint or "").strip()[:500])
         except Exception as e:
             logger.log(f"{self.name} : assistant ({model}) en échec : {e}")
-            return {"ok": False, "error": f"Échec de la génération : {e}"}
+            return {"ok": False, "error": f"Échec de la génération : {chat.failure(e)}"}
         finally:
             self._busy.release()
 

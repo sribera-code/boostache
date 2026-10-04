@@ -120,7 +120,11 @@ class Api:
         self._app.chat.set_model(tab_id, model)
 
     def chat_refresh_models(self):
-        self._app.chat.refresh_models()
+        self._app.chat.check(force=True)
+
+    def chat_check(self):
+        """Onglet ouvert, envoi sans modèle : Ollama est testé s'il n'a pas répondu récemment."""
+        self._app.chat.check()
 
     def chat_send(self, tab_id, text, model):
         return self._app.chat.send(tab_id, text, model)

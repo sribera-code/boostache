@@ -18,7 +18,7 @@ import custom_tasks
 from api import Api
 from bridge import Bridge
 from captures import CapturesService, Snipper
-from chat import ChatService, OLLAMA_OK, ollama_server_running
+from chat import ChatService, OLLAMA_OK
 from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from gmail import GmailPane
@@ -36,6 +36,7 @@ TITLEBAR_RGB = (20, 20, 20)
 PREVIEW_LEN = 2000
 PRINT_SCREEN = "print screen"
 CTRL_PRINT_SCREEN = "ctrl+print screen"
+NO_OLLAMA_LIB = "librairie 'ollama' absente (pip install ollama)"
 
 
 def _force_dark_titlebar():
@@ -113,14 +114,10 @@ class BoostacheApp:
             "tts", {"speaking": speaking, "source": source}))
 
         self.snipper = Snipper(hooks=self)
-        if OLLAMA_OK and ollama_server_running():
-            self.chat = ChatService(self.bridge, self.snipper)
-            self._chat_reason = ""
-        else:
-            self.chat = None
-            self._chat_reason = ("librairie 'ollama' absente (pip install ollama)"
-                                 if not OLLAMA_OK else "serveur Ollama injoignable")
-            logger.log(f"Onglet Conversations masqué : {self._chat_reason}.")
+        # Le service surveille lui-même le serveur Ollama (fonctions affichées tant qu'il répond)
+        self.chat = ChatService(self.bridge, self.snipper) if OLLAMA_OK else None
+        if not OLLAMA_OK:
+            logger.log(f"Onglet Conversations masqué : {NO_OLLAMA_LIB}.")
         self.terminals = TerminalService(self.bridge)
         self.notes = NotesService()
         self.captures = CapturesService(self.bridge, self.snipper, show_window=self.show)
@@ -128,6 +125,7 @@ class BoostacheApp:
         self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
         self._clip_listener: ClipboardListener | None = None
         self._print_screen: PrintScreenHook | None = None
+        self._keys_lock = threading.Lock()     # réglages (API) et Ollama (surveillance)
         self.api = Api(self)
 
     # ─────────────────────────────────────────
@@ -137,6 +135,8 @@ class BoostacheApp:
         """Crée la fenêtre et lance la boucle d'interface (bloquant)."""
         custom_tasks.load_persisted()
         self._start_clipboard_listener()
+        if self.chat:
+            self.chat.on_available = self._set_screen_keys   # Ctrl+Impr. écran suit Ollama
         self._set_screen_keys()
         _force_dark_titlebar()
 
@@ -189,30 +189,33 @@ class BoostacheApp:
     def _set_screen_keys(self):
         """Impr. écran → capture d'une zone, ouverte dans l'onglet Captures ;
         Ctrl+Impr. écran → aide contextuelle sur la fenêtre active. Chacune
-        désactivable dans les paramètres (la touche retrouve alors son effet Windows)."""
-        snip = self.captures.snip if settings.get("print_screen_capture", True) else None
-        helper = self.help_window if settings.get("help_capture", True) else None
-        if (snip or helper) and not self._print_screen:
-            hook = PrintScreenHook()
-            if not hook.start():
-                logger.log("Impr. écran : interception de la touche impossible.")
-                snip = helper = None
-            else:
-                self._print_screen = hook
-        elif not (snip or helper) and self._print_screen:
-            self._print_screen.stop()
-            self._print_screen = None
-            logger.log("Impr. écran rendue à Windows.")
-        if self._print_screen:
-            self._print_screen.callback, self._print_screen.ctrl_callback = snip, helper
-        listed = {e["combo"] for e in hotkey_manager.registered}
-        for combo, action, label in (
-                (PRINT_SCREEN, snip, "Capturer une zone de l'écran (onglet Captures)"),
-                (CTRL_PRINT_SCREEN, helper, "Aide contextuelle sur la fenêtre active (Conversations)")):
-            if not action:
-                hotkey_manager.unlist(combo)
-            elif combo not in listed:
-                hotkey_manager.list_external(combo, action, label=label)
+        désactivable dans les paramètres (la touche retrouve alors son effet Windows).
+        L'aide n'est proposée que si Ollama répond : sinon, Ctrl+Impr. écran revient à Windows."""
+        with self._keys_lock:
+            snip = self.captures.snip if settings.get("print_screen_capture", True) else None
+            helper = (self.help_window if settings.get("help_capture", True)
+                      and self.chat is not None and self.chat.available else None)
+            if (snip or helper) and not self._print_screen:
+                hook = PrintScreenHook()
+                if not hook.start():
+                    logger.log("Impr. écran : interception de la touche impossible.")
+                    snip = helper = None
+                else:
+                    self._print_screen = hook
+            elif not (snip or helper) and self._print_screen:
+                self._print_screen.stop()
+                self._print_screen = None
+                logger.log("Impr. écran rendue à Windows.")
+            if self._print_screen:
+                self._print_screen.callback, self._print_screen.ctrl_callback = snip, helper
+            listed = {e["combo"] for e in hotkey_manager.registered}
+            for combo, action, label in (
+                    (PRINT_SCREEN, snip, "Capturer une zone de l'écran (onglet Captures)"),
+                    (CTRL_PRINT_SCREEN, helper, "Aide contextuelle sur la fenêtre active (Conversations)")):
+                if not action:
+                    hotkey_manager.unlist(combo)
+                elif combo not in listed:
+                    hotkey_manager.list_external(combo, action, label=label)
 
     def help_window(self):
         """Capture la fenêtre active et ouvre une conversation d'aide à son sujet.
@@ -226,15 +229,18 @@ class BoostacheApp:
                 image = ImageGrab.grab()
             except Exception as e:
                 logger.log(f"Aide contextuelle : capture impossible ({e})")
-        if self.chat is None or image is None:
-            reason = (f"Conversations indisponibles ({self._chat_reason})" if self.chat is None
-                      else "capture de l'écran impossible")
+        chat = self.chat
+        # Ollama arrêté depuis le dernier test ? (vérification rapide s'il répond)
+        usable = chat is not None and chat.probe()
+        if not usable or image is None:
+            cause = NO_OLLAMA_LIB if chat is None else "Ollama injoignable"
+            reason = f"Conversations indisponibles ({cause})" if not usable else "capture de l'écran impossible"
             self.bridge.emit("toast", {"text": f"Aide contextuelle : {reason}.", "kind": "error"})
             self.show()
             return
         title, app = (window["title"], window["app"]) if window else ("", "")
         logger.log(f"Aide contextuelle : {title or 'écran entier'} ({image.width} × {image.height} px)")
-        self.chat.open_help(image, title, app)
+        chat.open_help(image, title, app)
         self.show()
 
     # ─────────────────────────────────────────
@@ -309,6 +315,8 @@ class BoostacheApp:
             self.bridge.emit("window:shown")
         except Exception as e:
             logger.log(f"Affichage de la fenêtre impossible : {e}")
+        if self.chat:
+            self.chat.set_visible(self._visible)
 
     def hide(self):
         if not self.window:
@@ -319,6 +327,8 @@ class BoostacheApp:
         except Exception:
             pass
         self._visible = False
+        if self.chat:
+            self.chat.set_visible(False)
         self._save_size()
 
     def quit(self):
@@ -428,7 +438,7 @@ class BoostacheApp:
                 "layout")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
-                         {"available": False, "reason": self._chat_reason},
+                         {"available": False, "reason": NO_OLLAMA_LIB},
             "consoles":  self.terminals.snapshot(),
             "notes":     self.notes.snapshot(),
             "captures":  self.captures.snapshot(),

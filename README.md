@@ -22,6 +22,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Dictée vocale (Win+H) et lecture TTS des réponses (SAPI5)
 - Pré-prompt système configurable
 - Persistance automatique des conversations et restauration des onglets au redémarrage
+- Présence d'Ollama surveillée : lancé après Boostache, arrêté puis relancé, il est détecté tout seul (essais de plus en plus espacés tant qu'il ne répond pas ; en ligne, test à l'affichage de la fenêtre, toutes les 30 s tant qu'elle est affichée et quand un appel échoue). Tant qu'il ne répond pas, tout ce qui a besoin de lui est masqué : onglet Conversations, aide contextuelle (Ctrl+Impr. écran rendu à Windows), « Joindre à la conversation » dans Captures, assistant de réponse de WhatsApp et Gmail, pré-prompt dans les paramètres
 
 ### Aide contextuelle (Ctrl+Impr. écran)
 - **Ctrl+Impr. écran**, n'importe où dans Windows : capture de la fenêtre active (même en partie cachée) et ouverture d'une conversation **Aide** dans Boostache
@@ -69,7 +70,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - WhatsApp Web et Gmail directement dans la fenêtre (sections **WhatsApp** et **Gmail**) : QR code à scanner (WhatsApp) ou connexion Google (Gmail) une seule fois, la session est conservée entre les lancements
 - Chargés à la première ouverture de leur section, puis gardés en arrière-plan : le nombre de non-lus s'affiche dans la barre latérale
 - Liens des messages ouverts dans le navigateur par défaut ; Ctrl+1 à Ctrl+9 restent actifs
-- **Assistant de réponse** (Ollama, en local — si Ollama est disponible) sous le site :
+- **Assistant de réponse** (Ollama, en local — affiché tant qu'Ollama répond) sous le site :
   - **Suggérer des réponses** : trois propositions adaptées à la discussion ou à l'e-mail ouvert ; un clic place la réponse dans la zone de saisie (Gmail : la réponse s'ouvre si besoin, signature et citation sont conservées)
   - **Améliorer le brouillon** : corrige et reformule le message en cours de saisie (bouton **Rétablir l'original**)
   - Un brouillon remplacé par une proposition peut être récupéré (**Rétablir mon brouillon**)
@@ -95,7 +96,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 
 - Python 3.11+
 - Windows 10/11 avec le runtime [WebView2] (installé d'office avec Edge ; sinon, le télécharger)
-- [Ollama](https://ollama.com) installé et au moins un modèle téléchargé (sinon l'onglet Conversations est masqué)
+- [Ollama](https://ollama.com) installé et au moins un modèle téléchargé (les fonctions qui en ont besoin n'apparaissent que lorsque son serveur répond)
 - Lancer en **administrateur** pour activer les hotkeys globaux dans toutes les applications
 
 ---

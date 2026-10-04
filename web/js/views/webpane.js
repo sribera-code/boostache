@@ -31,19 +31,19 @@ function createPaneView(ctx, state, cfg) {
   const sub = h("span", { class: "view-sub" });
   const status = h("div", { class: "empty" });
   const host = h("div", { class: "pane-host" }, status);
-  const assist = state.chat?.available ? createAssistBar(ctx, state, cfg) : null;
+  const assist = createAssistBar(ctx, state, cfg);
   const el = h("section", {},
     h("header", { class: "view-head" },
       h("span", { class: "view-title", text: cfg.title }), sub,
       h("div", { class: "head-spacer" }),
       iconButton("refresh-cw", `Recharger ${cfg.title}`, () => api.pane_reload(cfg.id))),
     host,
-    assist?.el);
+    assist.el);
 
   function render() {
     sub.textContent = site.unread ? plural(site.unread, ...cfg.unread) : "";
     ctx.setBadge(cfg.id, site.unread, "unread");
-    assist?.setReady(site.state === "ready");
+    assist.setReady(site.state === "ready");
     if (site.state === "error") {
       status.replaceChildren(
         h("div", { class: "glyph" }, ico("triangle-alert", 22)),
@@ -131,7 +131,7 @@ function createAssistBar(ctx, state, cfg) {
   const modelBtn = h("button", { class: "model-pill", type: "button", "aria-label": "Modèle de l'assistant",
     onClick: (ev) => openMenuBelow(modelItems(), ev.currentTarget, "right") },
     modelName, ico("chevron-down", 14));
-  const el = h("div", { class: "pane-assist" }, results,
+  const el = h("div", { class: "pane-assist", dataset: { ollama: "" } }, results,
     h("div", { class: "pane-tools" }, suggestBtn, improveBtn, hint, modelBtn));
 
   function model() {

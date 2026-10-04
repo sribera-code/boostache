@@ -77,10 +77,11 @@ export function createSettingsView(ctx, state) {
   const helpSwitch = settingSwitch("help_capture", "Ctrl+Impr. écran");
 
   // ── Raccourcis de l'interface ───────────────
+  // (3e valeur : a besoin d'Ollama, masqué quand il ne répond pas)
   const shortcuts = [
     ["ctrl+shift+d", "Afficher Boostache (raccourci global, bindings.py)"],
     ["print screen", "Capturer une zone de l'écran (raccourci global, onglet Captures)"],
-    ["ctrl+print screen", "Aide contextuelle sur la fenêtre active (raccourci global, Conversations)"],
+    ["ctrl+print screen", "Aide contextuelle sur la fenêtre active (raccourci global, Conversations)", true],
     ["ctrl+1", "Aller à une section (Ctrl+1 à Ctrl+9)"],
     ["ctrl+,", "Paramètres"],
     ["f2", "Renommer l'onglet sélectionné (ou double-clic)"],
@@ -92,10 +93,10 @@ export function createSettingsView(ctx, state) {
   const el = h("section", {},
     h("header", { class: "view-head" }, h("span", { class: "view-title", text: "Paramètres" })),
     h("div", { class: "settings" }, h("div", { class: "settings-inner" },
-      card("sparkles", "Pré-prompt système",
+      needsOllama(card("sparkles", "Pré-prompt système",
         "Envoyé au modèle comme message système au début de chaque conversation.",
         prompt,
-        h("div", { class: "card-actions" }, savedFlag, saveBtn)),
+        h("div", { class: "card-actions" }, savedFlag, saveBtn))),
       card("clipboard-list", "Presse-papiers",
         "Nombre maximal d'éléments conservés. L'historique reste en mémoire et disparaît à la fermeture.",
         h("div", { class: "row" }, h("span", { class: "muted", text: "Taille maximale de l'historique" }), maxItems)),
@@ -108,7 +109,7 @@ export function createSettingsView(ctx, state) {
             h("div", { class: "hint-text",
               text: "Sélection d'une zone de l'écran, ouverte dans l'onglet Captures. Désactivé, la touche retrouve son effet Windows habituel." })),
           printSwitch),
-        h("div", { class: "row", style: { marginTop: "16px" } },
+        h("div", { class: "row", style: { marginTop: "16px" }, dataset: { ollama: "" } },
           h("div", {}, h("div", {}, "Aide contextuelle avec ", ...kbdCombo("ctrl+print screen")),
             h("div", { class: "hint-text",
               text: "Capture la fenêtre active et lit son texte ; un modèle Ollama propose des questions d'aide, puis répond à celle choisie ou écrite, dans Conversations." })),
@@ -123,8 +124,9 @@ export function createSettingsView(ctx, state) {
           h("button", { class: "btn sm", type: "button", onClick: () => api.open_data_dir() },
             ico("folder-open", 14), "Ouvrir"))),
       card("keyboard", "Raccourcis clavier", null,
-        h("div", { class: "shortcut-list" }, ...shortcuts.flatMap(([combo, label]) => [
-          h("div", {}, ...kbdCombo(combo)), h("div", { text: label })]))),
+        h("div", { class: "shortcut-list" }, ...shortcuts.flatMap(([combo, label, ollama]) => [
+          h("div", { dataset: { ollama: ollama ? "" : null } }, ...kbdCombo(combo)),
+          h("div", { text: label, dataset: { ollama: ollama ? "" : null } })]))),
     )));
 
   return {
@@ -136,6 +138,12 @@ export function createSettingsView(ctx, state) {
       syncSwitch(helpSwitch, settings.help_capture);
     },
   };
+}
+
+/** Masqué tant qu'Ollama ne répond pas (règle [data-ollama] de app.css). */
+function needsOllama(el) {
+  el.dataset.ollama = "";
+  return el;
 }
 
 function syncSwitch(sw, value) {
