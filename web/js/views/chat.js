@@ -115,6 +115,31 @@ export function createChatView(ctx, state) {
     if (idx >= 0) S.order.splice(idx + 1, 0, t.id);
     else S.order.push(t.id);
     select(t.id);
+    return t;
+  }
+
+  // ── Destination d'un envoi (Captures, Enregistreur…) ──
+  const tabName = (t) => t.data.label || t.data.title || "Nouvelle conversation";
+
+  /** Onglet sans rien dedans (ni message, ni brouillon, ni pièce jointe) : équivaut à une nouvelle conversation. */
+  function isBlank(t) {
+    const draft = t.id === S.active ? input.value : t.draft;
+    return !t.data.messages.length && !t.data.streaming && !t.data.help
+      && !(t.data.attachments || []).length && !(draft || "").trim();
+  }
+
+  ctx.targets.chat = {
+    list: () => S.order.map((id) => S.tabs.get(id)).filter((t) => !isBlank(t))
+      .map((t) => ({ id: t.id, name: tabName(t), shown: t.id === S.active && ctx.isActive("chat") })),
+  };
+
+  /** Onglet choisi, ou pour "new" un onglet vide (celui affiché de préférence), sinon un nouveau. */
+  async function destination(id) {
+    if (id && id !== "new") return S.tabs.get(id) || null;
+    const active = activeTab();
+    if (active && isBlank(active)) return active;
+    const blank = S.order.map((x) => S.tabs.get(x)).find(isBlank);
+    return blank || await newTab();
   }
 
   async function closeTab(id) {
@@ -773,13 +798,15 @@ export function createChatView(ctx, state) {
     if (t.id === S.active) renderHelp();
   });
 
-  // Image envoyée depuis l'onglet Captures
-  on("chat:attach", ({ paths }) => {
-    const t = activeTab();
-    if (!t) return;
-    api.chat_attach_paths(t.id, paths).then((res) => {
-      for (const err of res?.errors || []) toast(err, "error");
-    });
+  // Fichiers envoyés depuis une autre section (capture, transcription…) :
+  // tab = onglet choisi, "new" (onglet vide ou nouveau) ou absent (onglet affiché)
+  on("chat:attach", async ({ paths, tab }) => {
+    const t = tab ? await destination(tab) : activeTab();
+    if (!t) { toast("Cette conversation n'existe plus.", "error"); return; }
+    ctx.navigate("chat");
+    select(t.id);
+    const res = await api.chat_attach_paths(t.id, paths);
+    for (const err of res?.errors || []) toast(err, "error");
   });
 
   // ── Initialisation ──────────────────────────

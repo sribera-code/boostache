@@ -1,7 +1,7 @@
 // Point d'entrée de l'interface : barre latérale, navigation, comportements globaux.
 import { api, on, emit, ready, setErrorHandler, onCollect } from "./bridge.js";
 import { $, h, isTyping } from "./dom.js";
-import { ico, iconButton, toast, closeMenus, openMenu, setSpeakingButton } from "./ui.js";
+import { ico, iconButton, toast, closeMenus, openMenu, openMenuBelow, setSpeakingButton } from "./ui.js";
 import { togglePinPanel } from "./pin.js";
 import { createLayout } from "./layout.js";
 import { createChatView } from "./views/chat.js";
@@ -9,6 +9,7 @@ import { createConsolesView } from "./views/consoles.js";
 import { createNotesView } from "./views/notes.js";
 import { createClipboardView } from "./views/clipboard.js";
 import { createCapturesView } from "./views/captures.js";
+import { createRecorderView } from "./views/recorder.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
@@ -23,6 +24,7 @@ const NAV = [
   { id: "captures",  label: "Captures",       icon: "palette",         create: createCapturesView },
   { id: "whatsapp",  label: "WhatsApp",       icon: "message-circle",  create: createWhatsAppView },
   { id: "gmail",     label: "Gmail",          icon: "mail",            create: createGmailView },
+  { id: "recorder",  label: "Enregistreur",   icon: "audio-lines",     create: createRecorderView },
   "-",
   { id: "logs",      label: "Historique",     icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
@@ -51,13 +53,14 @@ const ctx = {
   /** Section du volet actif : celle qui reçoit le clavier. */
   isFocused: (id) => !!layout?.isFocused(id),
 
-  /** kind "unread" : pastille verte, visible aussi barre latérale repliée. */
+  /** kind "unread" : pastille verte, visible aussi barre latérale repliée ;
+   *  "rec" : point rouge (enregistrement en cours). */
   setBadge(id, value, kind = "") {
     const entry = views.get(id);
     if (!entry?.nav) return;
     const slot = entry.nav.querySelector(".nav-extra");
     slot.replaceChildren();
-    if (value === "dot") slot.append(h("span", { class: "nav-dot" }));
+    if (value === "dot") slot.append(h("span", { class: `nav-dot ${kind}`.trim() }));
     else if (typeof value === "number" && value > 0) {
       slot.append(h("span", { class: `nav-badge ${kind}`.trim(), text: value > 999 ? "999+" : String(value) }));
     }
@@ -97,6 +100,44 @@ const ctx = {
       label, checked: current === value, onSelect: () => ctx.saveSetting(key, value),
     }))], ev.clientX, ev.clientY);
   },
+
+  // ── Envoi vers une conversation ou une note ──
+  // Les vues Conversations et Notes s'inscrivent dans targets :
+  // { list() → [{ id, name, shown }] } (onglets non vides ; « Nouvelle… » réutilise un onglet vide).
+  // Le destinataire reçoit l'id choisi, ou "new".
+  targets: {},
+
+  /** Menu des destinations : « Nouvelle… » en tête (choix par défaut), puis les onglets existants. */
+  destinationItems(kind, onPick) {
+    const cfg = DESTINATIONS[kind];
+    const existing = ctx.targets[kind]?.list() || [];
+    return [
+      { label: cfg.newLabel, icon: "plus", onSelect: () => onPick("new") },
+      ...(existing.length ? ["-", { section: cfg.section }] : []),
+      ...existing.map((t) => ({ label: t.name, icon: cfg.icon, hint: t.shown ? "affichée" : "",
+        onSelect: () => onPick(t.id) })),
+    ];
+  },
+
+  /** Bouton : menu des destinations sous le bouton, « Nouvelle… » présélectionnée
+   *  (Entrée) ; envoi direct s'il n'existe aucun autre onglet. */
+  pickDestination(kind, anchor, onPick) {
+    if (!ctx.targets[kind]?.list().length) { onPick("new"); return; }
+    const menu = openMenuBelow(ctx.destinationItems(kind, onPick), anchor);
+    menu.focusEntry(menu.entries[0]);
+  },
+
+  /** Entrée de menu contextuel : sous-menu des destinations, ou entrée simple
+   *  (newLabel) quand seule une nouvelle est possible. */
+  destinationMenuItem(kind, { label, newLabel, icon }, onPick) {
+    if (!ctx.targets[kind]?.list().length) return { label: newLabel, icon, onSelect: () => onPick("new") };
+    return { label, icon, submenu: ctx.destinationItems(kind, onPick) };
+  },
+};
+
+const DESTINATIONS = {
+  chat:  { newLabel: "Nouvelle conversation", section: "Conversations", icon: "message-square" },
+  notes: { newLabel: "Nouvelle note",         section: "Notes",         icon: "notebook-pen" },
 };
 
 // ─────────────────────────────────────────────

@@ -2,7 +2,7 @@
 app.py – Fenêtre principale de Boostache (interface web via pywebview/WebView2).
 
 Assemble les services (conversations, consoles, notes, captures,
-presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
+enregistreur, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
 fermée, rappelée depuis le tray ou un raccourci) et fournit l'état initial à
 l'interface.
 """
@@ -23,6 +23,8 @@ from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from gmail import GmailPane
 from notes import NotesService
+from recorder import FORMATS as AUDIO_FORMATS, RecorderService
+from transcriber import LANGUAGES, MODELS
 from storage import DATA_DIR, settings, clipboard_history
 from terminals import TerminalService
 from whatsapp import WhatsAppPane
@@ -31,6 +33,7 @@ from winutil import (MIN_OPACITY, PrintScreenHook, active_window, bring_to_front
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 VIRTUAL_HOST = "boostache.example"
+AUDIO_HOST = "recordings.boostache.example"     # dossier des enregistrements (lecture dans la page)
 MIN_SIZE = (760, 520)
 TITLEBAR_RGB = (20, 20, 20)
 PREVIEW_LEN = 2000
@@ -49,13 +52,15 @@ def _force_dark_titlebar():
         pass
 
 
-def _interface_url() -> str:
+def _interface_url(on_core=None) -> str:
     """URL de l'interface.
 
     WebView2 sert le dossier web/ directement depuis le disque via un hôte
     virtuel (https://boostache.example/), sans serveur HTTP : le serveur
     intégré de pywebview perd des requêtes quand le navigateur charge les
-    modules en rafale. Repli sur un serveur local si l'accroche échoue."""
+    modules en rafale. Repli sur un serveur local si l'accroche échoue.
+    on_core(CoreWebView2) est appelé dans le thread de l'interface une fois
+    le navigateur prêt (autres hôtes virtuels)."""
     try:
         from webview.platforms import edgechromium
         from Microsoft.Web.WebView2.Core import CoreWebView2HostResourceAccessKind
@@ -66,6 +71,8 @@ def _interface_url() -> str:
             if args.IsSuccess:
                 sender.CoreWebView2.SetVirtualHostNameToFolderMapping(
                     VIRTUAL_HOST, str(WEB_DIR), CoreWebView2HostResourceAccessKind.Allow)
+                if on_core:
+                    on_core(sender.CoreWebView2)
             return original(self, sender, args)
 
         edgechromium.EdgeChrome.on_webview_ready = on_webview_ready
@@ -121,6 +128,7 @@ class BoostacheApp:
         self.terminals = TerminalService(self.bridge)
         self.notes = NotesService()
         self.captures = CapturesService(self.bridge, self.snipper, show_window=self.show)
+        self.recorder = RecorderService(self.bridge, is_visible=self.is_visible)
         # Sites intégrés, par clé (whatsapp, gmail)
         self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
         self._clip_listener: ClipboardListener | None = None
@@ -143,7 +151,7 @@ class BoostacheApp:
         w, h = self._initial_size()
         self.window = webview.create_window(
             "Boostache",
-            url=_interface_url(),
+            url=_interface_url(on_core=self._on_core_ready),
             js_api=self.api,
             width=w,
             height=h,
@@ -246,6 +254,16 @@ class BoostacheApp:
     # ─────────────────────────────────────────
     #  Événements fenêtre
     # ─────────────────────────────────────────
+    def _on_core_ready(self, core):
+        """Dossier des enregistrements servi à la page (lecture avec <audio>)."""
+        try:
+            from Microsoft.Web.WebView2.Core import CoreWebView2HostResourceAccessKind
+            core.SetVirtualHostNameToFolderMapping(
+                AUDIO_HOST, str(self.recorder.served_folder()), CoreWebView2HostResourceAccessKind.Allow)
+            self.recorder.playback_host = AUDIO_HOST
+        except Exception as e:
+            logger.log(f"Enregistreur : lecture dans la fenêtre indisponible ({e})")
+
     def _on_before_show(self, window):
         # Thread de l'interface : on peut lire le handle natif sans risque
         try:
@@ -419,6 +437,7 @@ class BoostacheApp:
             except Exception:
                 pass
         self.terminals.shutdown()
+        self.recorder.shutdown()
         try:
             tts.stop()
         except Exception:
@@ -442,6 +461,7 @@ class BoostacheApp:
             "consoles":  self.terminals.snapshot(),
             "notes":     self.notes.snapshot(),
             "captures":  self.captures.snapshot(),
+            "recorder":  self.recorder.snapshot(),
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
             "clipboard": self.clipboard_items(),
             "logs":      logger.recent(),
@@ -485,6 +505,16 @@ class BoostacheApp:
             if value not in ("last", "all", "sel"):
                 return settings.get(key)
             settings.set(key, value)
+        elif key == "audio_format":
+            if value not in AUDIO_FORMATS:
+                return settings.get(key)
+            settings.set(key, value)
+        elif key in ("transcribe_model", "transcribe_language"):
+            if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
+                return settings.get(key)
+            settings.set(key, value)
+        elif key == "audio_transcribe":
+            settings.set(key, bool(value))
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
         elif key == "layout":

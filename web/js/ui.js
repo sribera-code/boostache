@@ -222,8 +222,9 @@ document.addEventListener("keydown", (ev) => {
 // ─────────────────────────────────────────────
 /**
  * openModal({ title, subtitle, body, actions, width, onClose })
- * actions : [{ label, kind: "primary" | "ghost" | "danger", left, onClick }]
- * onClick peut retourner false (ou une promesse de false) pour garder la modale ouverte.
+ * actions : [{ label, icon, kind: "primary" | "ghost" | "danger", left, iconOnly, onClick }]
+ * iconOnly : bouton réduit à son icône, le libellé en infobulle (actions secondaires).
+ * onClick(bouton) peut retourner false (ou une promesse de false) pour garder la modale ouverte.
  */
 export function openModal({ title, subtitle, body, actions = [], width, onClose }) {
   closeMenus();
@@ -251,15 +252,17 @@ export function openModal({ title, subtitle, body, actions = [], width, onClose 
   }
 
   for (const action of actions) {
+    const iconOnly = action.iconOnly && action.icon;
     const btn = h("button", {
-      class: `btn ${action.kind || ""} ${action.left ? "left" : ""}`.trim(),
+      class: `btn ${action.kind || ""} ${action.left ? "left" : ""} ${iconOnly ? "icon-only" : ""}`.replace(/\s+/g, " ").trim(),
       type: "button",
-    }, action.icon ? ico(action.icon, 15) : null, action.label);
+      ...(iconOnly ? { "aria-label": action.label, dataset: { tip: action.label } } : {}),
+    }, action.icon ? ico(action.icon, 15) : null, iconOnly ? null : action.label);
     btn.addEventListener("click", async () => {
       if (!action.onClick) return close();
       btn.disabled = true;
       try {
-        const keep = await action.onClick();
+        const keep = await action.onClick(btn);
         if (keep !== false) close();
       } finally {
         btn.disabled = false;

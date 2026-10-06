@@ -19,6 +19,7 @@ WM_DESTROY         = 0x0002
 HWND_MESSAGE       = wintypes.HWND(-3)
 CF_DIB             = 8
 CF_UNICODETEXT     = 13
+CF_HDROP           = 15
 GMEM_MOVEABLE      = 0x0002
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_long, wintypes.HWND, wintypes.UINT,
@@ -202,6 +203,17 @@ def _set_clipboard(items: list[tuple[int, bytes]]) -> bool:
 def set_clipboard_text(text: str) -> bool:
     """Place du texte dans le presse-papiers Windows (CF_UNICODETEXT)."""
     return _set_clipboard([(CF_UNICODETEXT, text.encode("utf-16-le", "surrogatepass") + b"\0\0")])
+
+
+def set_clipboard_files(paths: list[str]) -> bool:
+    """Fichiers copiés comme dans l'explorateur (CF_HDROP) : à coller dans un
+    dossier, un e-mail, une discussion…"""
+    if not paths:
+        return False
+    # DROPFILES : décalage de la liste, point de dépôt, zone non cliente, chemins Unicode
+    header = (20).to_bytes(4, "little") + bytes(12) + (1).to_bytes(4, "little")
+    names = "".join(f"{p}\0" for p in paths) + "\0"
+    return _set_clipboard([(CF_HDROP, header + names.encode("utf-16-le", "surrogatepass"))])
 
 
 def _image_formats(image) -> list[tuple[int, bytes]]:

@@ -108,6 +108,13 @@ _DEFAULTS = {
     "help_capture":         True,          # Ctrl+Impr. écran → aide sur la fenêtre active
     "help_model":           "",            # modèle de l'aide contextuelle (de préférence lisant les images)
     "capture_save_dir":     "",            # dernier dossier de « Enregistrer sous »
+    "audio_dir":            "",            # enregistrements ("" : Musique\Boostache)
+    "audio_format":         "mp3",         # "mp3" | "m4a" | "wav"
+    "audio_device":         "",            # sortie enregistrée ("" : sortie par défaut)
+    "audio_mic":            False,         # micro mixé à l'enregistrement
+    "audio_transcribe":     False,         # transcription automatique après chaque enregistrement
+    "transcribe_model":     "small",       # modèle Whisper : "base" | "small" | "large-v3-turbo"
+    "transcribe_language":  "",            # "" : détection automatique
 }
 
 

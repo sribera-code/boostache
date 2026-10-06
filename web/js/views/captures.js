@@ -214,7 +214,8 @@ export function createCapturesView(ctx, state) {
 
   const undoBtn = iconButton("undo-2", "Annuler", () => undo(activeTab()), { kbd: "Ctrl+Z" });
   const redoBtn = iconButton("redo-2", "Rétablir", () => redo(activeTab()), { kbd: "Ctrl+Y" });
-  const chatBtn = iconButton("message-square", "Joindre à la conversation", () => toChat(activeTab()));
+  const chatBtn = iconButton("message-square", "Joindre à une conversation",
+    (ev) => ctx.pickDestination("chat", ev.currentTarget, (tab) => toChat(activeTab(), tab)));
   chatBtn.dataset.ollama = "";      // masqué tant qu'Ollama ne répond pas
   const bar = h("div", { class: "paint-bar" },
     colorGroup,
@@ -467,7 +468,8 @@ export function createCapturesView(ctx, state) {
       "-",
       { label: "Copier l'image", icon: "copy", onSelect: () => copyImage(t) },
       { label: "Enregistrer sous…", icon: "download", onSelect: () => saveAs(t) },
-      ctx.store.ollama ? { label: "Joindre à la conversation", icon: "message-square", onSelect: () => toChat(t) } : null,
+      ctx.store.ollama ? ctx.destinationMenuItem("chat", { label: "Joindre à une conversation",
+        newLabel: "Joindre à une nouvelle conversation", icon: "message-square" }, (tab) => toChat(t, tab)) : null,
       "-",
       { label: "Fermer la capture", icon: "x", onSelect: () => closeTab(slot) },
     ], ev.clientX, ev.clientY);
@@ -1365,13 +1367,13 @@ export function createCapturesView(ctx, state) {
     if (path) toast(`Enregistrée : ${path.split(/[\\/]/).pop()}`);
   }
 
-  async function toChat(t) {
+  /** tab : conversation choisie, ou "new" (ctx.pickDestination). */
+  async function toChat(t, tab = "new") {
     const data = await imageData(t);
     if (!data) return;
     const path = await api.capture_temp_file(t.slot, data);
     if (!path) return;
-    ctx.emit("chat:attach", { paths: [path] });
-    ctx.navigate("chat");
+    ctx.emit("chat:attach", { paths: [path], tab });
   }
 
   function snip() {
@@ -1414,7 +1416,8 @@ export function createCapturesView(ctx, state) {
       "-",
       { label: "Copier l'image", icon: "copy", hint: t.sel ? "" : "Ctrl+C", onSelect: () => copyImage(t) },
       { label: "Enregistrer sous…", icon: "download", hint: "Ctrl+S", onSelect: () => saveAs(t) },
-      ctx.store.ollama ? { label: "Joindre à la conversation", icon: "message-square", onSelect: () => toChat(t) } : null,
+      ctx.store.ollama ? ctx.destinationMenuItem("chat", { label: "Joindre à une conversation",
+        newLabel: "Joindre à une nouvelle conversation", icon: "message-square" }, (tab) => toChat(t, tab)) : null,
       { label: "Tout sélectionner", icon: "square-dashed", hint: "Ctrl+A", onSelect: () => selectAll(t) },
       "-",
       { label: "Ajuster à la fenêtre", icon: "maximize", hint: "Ctrl+0", onSelect: () => fitZoom(t) },

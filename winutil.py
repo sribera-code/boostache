@@ -1,6 +1,6 @@
 """
 winutil.py – Petits utilitaires Win32 (premier plan et transparence, barre de
-titre sombre, explorateur, liens externes, icônes et miniatures des fenêtres,
+titre sombre, explorateur, corbeille, liens externes, icônes et miniatures des fenêtres,
 interception de la touche Impr. écran).
 """
 
@@ -116,6 +116,23 @@ def reveal_in_explorer(path: str):
         os.startfile(path)
     else:
         subprocess.Popen(f'explorer /select,"{path}"')
+
+
+class SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [("hwnd", wintypes.HWND), ("wFunc", wintypes.UINT), ("pFrom", wintypes.LPCWSTR),
+                ("pTo", wintypes.LPCWSTR), ("fFlags", ctypes.c_ushort), ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", ctypes.c_void_p), ("lpszProgressTitle", wintypes.LPCWSTR)]
+
+
+FO_DELETE = 3
+FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 0x4, 0x10, 0x40, 0x400
+
+
+def recycle(path: str) -> bool:
+    """Envoie un fichier à la corbeille (récupérable), sans confirmation."""
+    op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=os.path.abspath(path) + "\0",
+                         fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI)
+    return shell32.SHFileOperationW(ctypes.byref(op)) == 0 and not op.fAnyOperationsAborted
 
 
 def open_url(url: str) -> bool:

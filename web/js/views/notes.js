@@ -106,7 +106,39 @@ export function createNotesView(ctx, state) {
     if (idx >= 0) S.order.splice(idx + 1, 0, t.slot);
     else S.order.push(t.slot);
     select(t.slot);
+    return t;
   }
+
+  // ── Destination d'un envoi (texte d'un enregistrement…) ──
+  const isBlank = (t) => !t.editor.value.trim();
+
+  ctx.targets.notes = {
+    list: () => S.order.map((slot) => S.tabs.get(slot)).filter((t) => !isBlank(t))
+      .map((t) => ({ id: t.slot, name: t.data.label || t.data.title || "Note sans titre",
+        shown: t.slot === S.active && ctx.isActive("notes") })),
+  };
+
+  /** Note choisie, ou pour "new" une note vide (celle affichée de préférence), sinon une nouvelle. */
+  async function destination(slot) {
+    if (slot !== "new") return S.tabs.get(slot) || null;
+    const active = activeTab();
+    if (active && isBlank(active)) return active;
+    return S.order.map((x) => S.tabs.get(x)).find(isBlank) || await newTab();
+  }
+
+  // Texte envoyé depuis une autre section : ajouté à la fin de la note choisie
+  ctx.on("note:insert", async ({ text, slot }) => {
+    const t = await destination(slot ?? "new");
+    if (!t) { toast("Cette note n'existe plus.", "error"); return; }
+    const before = t.editor.value.replace(/\s+$/, "");
+    t.editor.value = before ? `${before}\n\n${text}` : text;
+    t.save();
+    ctx.navigate("notes");
+    select(t.slot);
+    t.editor.setSelectionRange(t.editor.value.length, t.editor.value.length);
+    t.editor.scrollTop = t.editor.scrollHeight;
+    toast(`Ajouté à la note « ${t.data.label || t.data.title || "nouvelle note"} »`);
+  });
 
   async function closeTab(slot) {
     const t = S.tabs.get(slot);

@@ -1,6 +1,6 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, WhatsApp Web et Gmail avec un assistant de réponse, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte, WhatsApp Web et Gmail avec un assistant de réponse, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
 
 L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview] ; toute la logique reste en Python.
 
@@ -62,7 +62,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - **Sélection** d'un cadre, déplaçable et redimensionnable directement sur l'image (poignées, flèches du clavier) : copier (Ctrl+C), **rogner** l'image (Ctrl+Maj+X), enregistrer, pixelliser ou effacer la zone (Suppr) ; Ctrl+A sélectionne tout
 - Palette de couleurs + couleur libre, quatre épaisseurs, formes et texte pleins
 - Annuler / Rétablir (Ctrl+Z, Ctrl+Y), zoom (Ctrl+molette ; Ctrl+0 ajuste l'image à la fenêtre, petites captures comprises), déplacement (Espace ou clic molette + glisser)
-- Copier l'image (Ctrl+C sans sélection), **Enregistrer sous** (PNG, JPEG, WebP, BMP ; Ctrl+S), joindre à une conversation
+- Copier l'image (Ctrl+C sans sélection), **Enregistrer sous** (PNG, JPEG, WebP, BMP ; Ctrl+S), joindre à une conversation (nouvelle ou existante, au choix)
 - Le bouton **+** ouvre un onglet vierge : capturer une zone, coller une image (Ctrl+V) ou en ouvrir une ; elle prend la place de l'onglet. Glisser-déposer des images fonctionne aussi
 - Onglets et retouches conservés entre les sessions ; la touche Impr. écran peut être rendue à Windows dans les **Paramètres**
 
@@ -78,6 +78,19 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
   - Rien n'est jamais envoyé automatiquement : il reste à relire et envoyer
 - Bouton **Recharger** (ou **Réessayer** si le site s'est arrêté)
 
+### Enregistreur
+- Enregistre **le son qui sort du PC** (musique, vidéo, appel, réunion…) directement depuis la sortie audio : la qualité ne dépend pas d'un micro, et les bruits de la pièce ne sont pas captés
+- Sortie par défaut ou une sortie précise (casque, écran HDMI…) ; si la sortie change pendant l'enregistrement (casque branché), la capture reprend toute seule
+- **Ajouter le micro** : votre voix est mêlée au son du PC, pour garder les deux côtés d'un appel
+- Pause / reprise, chronomètre et jauges de niveau (PC et micro) ; point rouge dans la barre latérale tant qu'un enregistrement tourne, même fenêtre masquée
+- Fichiers en **MP3**, **M4A** (encodeur intégré à Windows, rien à installer) ou **WAV**, rangés dans `Musique\Boostache` (dossier modifiable) et nommés d'après la date
+- Liste des enregistrements du dossier : écoute dans la fenêtre avec barre de position, renommer (F2), copier le fichier pour le coller dans un e-mail, une discussion ou un dossier (Ctrl+C), afficher dans l'explorateur, supprimer (corbeille)
+- Le WAV est écrit au fil de l'eau : un arrêt brutal de l'application laisse un fichier lisible
+- **Transcrire en texte** (bouton de la ligne, touche T ou clic droit) : Whisper, en local sur le processeur, rien n'est envoyé en ligne. Avancement affiché, annulable ; le texte est rangé à côté de l'audio (`nom.txt`, renommé et supprimé avec lui)
+  - Fenêtre du texte : copier, ouvrir dans le Bloc-notes, lire à voix haute, ajouter à une note, joindre à une conversation (pour le résumer avec Ollama, par exemple), transcrire à nouveau ; aussi depuis le clic droit sur l'enregistrement
+  - Réglages (bouton **Texte** au-dessus de la liste) : modèle **Rapide** (150 Mo), **Équilibré** (480 Mo, conseillé — environ 4 fois plus rapide que la durée de l'audio sur un processeur de bureau) ou **Précis** (1,6 Go, plus lent) ; langue parlée (détection automatique par défaut) ; transcription automatique de chaque nouvel enregistrement
+  - Le modèle est téléchargé à la première transcription (connexion Internet requise une fois), dans le cache Hugging Face de l'utilisateur
+
 ### Historique, tâches et raccourcis
 - **Historique** : journal de l'application
 - **Tâches** : tâches de `tasks.py` + tâches créées depuis l'interface (intervalle ou heure fixe, code Python avec accès au `logger`), exécution manuelle
@@ -88,6 +101,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Navigation au clavier : Ctrl+1 à Ctrl+9 pour les sections, Ctrl+, pour les paramètres
 - **Écran partagé** : deux sections côte à côte (Conversations et Consoles, par exemple) — bouton en haut de la barre latérale ou `Ctrl+Shift+S`. La barre latérale ouvre les sections dans le volet actif (souligné en haut) ; `Ctrl+clic` ou clic du milieu sur une section l'ouvre dans l'autre volet ; clic droit : « Ouvrir à gauche / à droite », ou glisser la section vers une moitié de l'écran. Séparateur redimensionnable (double-clic : parts égales ; clic droit : inverser, fermer un volet), `F6` pour passer d'un volet à l'autre ; la disposition est retrouvée au démarrage
 - Fermer ou réduire la fenêtre la range dans le tray ; `Ctrl+Shift+D` la rappelle
+- **Envoyer vers une conversation ou une note** (capture, texte d'un enregistrement) : un menu propose « Nouvelle conversation » / « Nouvelle note », présélectionnée (Entrée), puis les conversations ou notes existantes ; une conversation ou une note vide est réutilisée plutôt que d'en ouvrir une autre, et le texte envoyé à une note s'ajoute à sa fin
 - Bouton **épingle** (bas de la barre latérale) : garder n'importe quelle fenêtre ouverte au premier plan, Boostache compris — chaque fenêtre avec l'icône de son application, une miniature et son titre complet ; un curseur règle sa transparence (20 à 100 %, double-clic pour la rendre opaque ; celle de Boostache est mémorisée) ; filtre au clavier et « Tout libérer »
 
 ---
@@ -171,12 +185,15 @@ boostache/
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
+├── recorder.py           # Enregistreur : son du PC (+ micro), WAV, conversion MP3/M4A, fichiers
+├── wasapi.py             # Audio Windows (WASAPI) : périphériques, capture loopback et micro
+├── transcriber.py        # Transcription en texte (Whisper via faster-whisper), file d'attente
 ├── webpane.py           # Sites intégrés : contrôle WebView2 posé sur la fenêtre, assistant de réponse
 ├── whatsapp.py           # WhatsApp Web (lecture de la discussion, zone de saisie)
 ├── gmail.py              # Gmail (lecture du fil, éditeur de réponse)
 ├── custom_tasks.py       # Tâches créées depuis l'interface, raccourcis
 ├── clipboard_listener.py # Presse-papiers Win32 (écoute push, lecture, écriture)
-├── winutil.py            # Utilitaires Win32 (premier plan, fenêtre active, icônes, miniatures et captures des fenêtres, explorateur, liens, touche Impr. écran)
+├── winutil.py            # Utilitaires Win32 (premier plan, fenêtre active, icônes, miniatures et captures des fenêtres, explorateur, corbeille, liens, touche Impr. écran)
 ├── engine.py             # Logger, TaskManager, HotkeyManager, TTSEngine
 ├── storage.py            # Persistance (réglages, conversations, consoles, notes, captures)
 ├── tasks.py              # Tâches planifiées (à personnaliser)
@@ -189,7 +206,7 @@ boostache/
 └── requirements.txt
 ```
 
-Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte). La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
+Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte). Les enregistrements audio sont à part, dans `Musique\Boostache` par défaut. La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
 
 ---
 
@@ -206,6 +223,10 @@ Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **
 | `keyboard` | Hotkeys globaux système |
 | `platformdirs` | Chemin de données utilisateur |
 | `pyttsx3` | Text-to-speech (SAPI5 Windows) |
+| `comtypes` | API audio de Windows (WASAPI) pour l'enregistreur |
+| `numpy` | Mixage et niveaux de l'enregistreur |
+| `faster-whisper` | Transcription des enregistrements en texte (Whisper, local) |
+| `truststore` | Téléchargement des modèles avec les certificats de Windows |
 
 Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight.js], [xterm.js], icônes [Lucide], polices Inter et JetBrains Mono.
 

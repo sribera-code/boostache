@@ -227,6 +227,52 @@ class Api:
         return self._app.captures.temp_file(int(slot), image)
 
     # ─────────────────────────────────────────
+    #  Enregistreur (son qui sort du PC)
+    # ─────────────────────────────────────────
+    def rec_devices(self):
+        return self._app.recorder.devices()
+
+    def rec_start(self, device_id="", mic=False):
+        return self._app.recorder.start(str(device_id or ""), bool(mic))
+
+    def rec_pause(self, paused):
+        self._app.recorder.pause(bool(paused))
+
+    def rec_stop(self):
+        return self._app.recorder.stop()
+
+    def rec_files(self):
+        return self._app.recorder.files()
+
+    def rec_rename(self, name, title):
+        return self._app.recorder.rename(name, str(title or ""))
+
+    def rec_delete(self, name):
+        return self._app.recorder.delete(name)
+
+    def rec_reveal(self, name=None):
+        self._app.recorder.reveal(name)
+
+    def rec_copy_file(self, name):
+        return self._app.recorder.copy_file(name)
+
+    def rec_transcribe(self, name):
+        return self._app.recorder.transcribe(name)
+
+    def rec_transcribe_cancel(self, name):
+        return self._app.recorder.cancel_transcription(name)
+
+    def rec_transcript(self, name):
+        return self._app.recorder.transcript(name)
+
+    def rec_open_transcript(self, name):
+        return self._app.recorder.open_transcript(name)
+
+    def rec_pick_folder(self):
+        path = self.pick_folder(str(self._app.recorder.folder()))
+        return self._app.recorder.set_folder(path) if path else None
+
+    # ─────────────────────────────────────────
     #  Consoles
     # ─────────────────────────────────────────
     def term_new(self, after_slot=None):
