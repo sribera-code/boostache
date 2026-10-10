@@ -7,6 +7,7 @@ conservée dans DATA_DIR/gmail.
 
 import json
 import re
+import threading
 import time
 
 from engine import logger
@@ -125,6 +126,130 @@ DRAFT_JS = "(() => {" + HELPERS_JS + r"""
 })()
 """
 
+# Boutons utiles (WATCH_JS) : un e-mail ouvert (message déplié affiché) pour
+# « Suggérer », un brouillon écrit (avant signature et citation) pour « Améliorer »
+CONTEXT_JS = "(() => {" + HELPERS_JS + r"""
+  const shown = (e) => e.offsetParent !== null;
+  return { reply: [...document.querySelectorAll('div[role="main"] div.adn')].some(shown),
+    improve: [...document.querySelectorAll('div[contenteditable="true"][g_editable="true"]')]
+      .some((e) => shown(e) && !!draftOf(e)) };
+})"""
+
+# Fils de la liste affichée dans Gmail (boîte de réception, libellé, recherche… ;
+# tr.zA, dans l'ordre de la liste). Pas de liste (fil ouvert, paramètres) :
+# list: false, ou avec go la boîte de réception est ouverte (rows: null, pas
+# encore affichée). zE = non lu, x7 ou case cochée = sélectionné, .yW [email] =
+# participants, .bog = objet, .y2 = extrait, .xW = date, .Dj = « 1–50 sur 312 ».
+LIST_JS = r"""
+((go) => {
+  const h = location.hash;
+  if (!h || /^#settings/.test(h) || /\/([0-9a-f]{16}|[A-Za-z0-9]{30,})$/.test(h)) {
+    if (!go) return { ok: true, list: false };
+    location.hash = "#inbox";
+    return { ok: true, list: true, rows: null };
+  }
+  const shown = (e) => e && e.offsetParent !== null;
+  const text = (e) => (e?.textContent || "").trim();
+  const rows = [...document.querySelectorAll('div[role="main"] tr.zA')].filter(shown).map((r) => {
+    const ids = r.querySelector("[data-legacy-thread-id]");
+    const when = r.querySelector(".xW [title]") || r.querySelector(".xW");
+    const names = [...r.querySelectorAll(".yW [email]")]
+      .map((e) => (e.getAttribute("name") || e.textContent || e.getAttribute("email") || "").trim());
+    return {
+      id: ids?.getAttribute("data-legacy-thread-id") || "",
+      last: ids?.getAttribute("data-legacy-last-message-id") || "",
+      unread: r.classList.contains("zE"),
+      selected: r.classList.contains("x7") || r.querySelector('[role="checkbox"]')?.getAttribute("aria-checked") === "true",
+      from: [...new Set(names.filter(Boolean))].join(", "),
+      subject: text(r.querySelector(".bog")),
+      snippet: text(r.querySelector(".y2")).replace(/^-\s*/, ""),
+      date: (when?.getAttribute("title") || "").trim(),
+      when: text(when),
+    };
+  }).filter((r) => r.id);
+  return { ok: true, list: true, rows, base: h, pager: text([...document.querySelectorAll(".Dj")].find(shown)),
+    view: document.title.split(" - ")[0].replace(/\s*\(\d[\d\s.,]*\)$/, "").trim(),
+    search: (/^#(spam|trash)(\/|$)/.exec(h) || [])[1] || "all" };   // vue « imprimer » : où chercher le fil
+})
+"""
+
+# E-mail ouvert, résumé seul : fil = h2.hP[data-legacy-thread-id] (objet), dernier
+# message déplié = div.adn[data-legacy-message-id] ; base = la liste d'où il est ouvert
+CURRENT_JS = r"""
+(() => {
+  const shown = (e) => !!e && e.offsetParent !== null;
+  const head = [...document.querySelectorAll("h2.hP[data-legacy-thread-id]")].find(shown);
+  if (!head) return { ok: false, error: "Ouvrez d'abord un e-mail dans Gmail." };
+  const msgs = [...document.querySelectorAll('div[role="main"] div.adn')].filter(shown);
+  const last = msgs[msgs.length - 1];
+  const when = last?.querySelector(".g3");
+  const names = msgs.map((m) => m.querySelector(".gD")).filter(Boolean)
+    .map((e) => (e.getAttribute("name") || e.textContent || e.getAttribute("email") || "").trim());
+  const h = location.hash;
+  return { ok: true, base: h.replace(/\/[^\/]*$/, "") || "#inbox",
+    search: (/^#(spam|trash)(\/|$)/.exec(h) || [])[1] || "all",
+    row: { id: head.getAttribute("data-legacy-thread-id"),
+      last: last?.getAttribute("data-legacy-message-id") || String(msgs.length), unread: false,
+      from: [...new Set(names.filter(Boolean))].join(", "), subject: (head.textContent || "").trim(),
+      snippet: (last?.querySelector(".a3s")?.textContent || "").trim().slice(0, 200),
+      date: (when?.getAttribute("title") || "").trim(), when: (when?.textContent || "").trim() } };
+})()
+"""
+
+# Fil complet par la vue « imprimer » de Gmail, chargée en arrière-plan : la page
+# affichée ne change pas et le fil n'est pas marqué comme lu. La réponse est lue
+# par XHR « document » (DOMParser est refusé par la politique Trusted Types de
+# Gmail). Un message = table.message : rows[0] expéditeur + date, dernière ligne
+# le corps. Les classes des e-mails y sont préfixées (m_123gmail_quote).
+THREAD_JS = r"""
+(async (id, search) => {
+  const ik = window.GLOBALS && GLOBALS[9];
+  if (!ik) return { ok: false, error: "Gmail n'est pas prêt." };
+  const doc = await new Promise((resolve) => {
+    const x = new XMLHttpRequest();
+    x.open("GET", `${location.pathname}?ik=${ik}&view=pt&search=${search}&th=${id}`);
+    x.responseType = "document";
+    x.timeout = 15000;
+    x.onload = () => resolve(x.status === 200 ? x.response : null);
+    x.onerror = x.ontimeout = () => resolve(null);
+    x.send();
+  });
+  const main = doc?.querySelector(".maincontent");
+  if (!main) return { ok: false, error: "Fil illisible." };
+  const SKIP = 'style, script, title, blockquote, [class*="gmail_quote"], [class*="gmail_signature"],'
+    + ' [style*="display:none" i], [style*="display: none" i]';
+  const BLOCKS = new Set(["P", "DIV", "LI", "TR", "TABLE", "UL", "OL", "H1", "H2", "H3", "H4", "H5", "H6", "HR"]);
+  const flat = (el) => {
+    let s = "";
+    for (const n of el.childNodes) {
+      if (n.nodeType === 3) s += n.nodeValue.replace(/\s+/g, " ");
+      else if (n.nodeName === "BR") s += "\n";
+      else if (n.nodeType === 1 && !n.matches(SKIP)) {
+        // Un bloc commence et finit une ligne ; les cellules sont séparées par une espace
+        if (!BLOCKS.has(n.nodeName)) s += flat(n) + (n.nodeName === "TD" ? " " : "");
+        else s += (s && !s.endsWith("\n") ? "\n" : "") + flat(n) + "\n";
+      }
+    }
+    return s;
+  };
+  // Citation en texte brut : lignes « > » et tout ce qui suit l'en-tête de réponse
+  const REPLY = /^(Le .{4,160} a écrit ?:|On .{4,160} wrote:|-{3,} ?(Original Message|Message d'origine)|(De|From) ?: .+\n(Envoyé|Sent|Date) ?: )/m;
+  const account = ((document.title.match(/[\w.+-]+@[\w-]+(\.[\w-]+)+/) || [""])[0]).toLowerCase();
+  const messages = [...main.querySelectorAll("table.message")].map((m) => {
+    const head = m.rows[0]?.cells || [];
+    const from = (head[0]?.textContent || "").replace(/\s+/g, " ").trim();
+    const [, author = from, email = ""] = from.match(/^(.*?)\s*<([^<>]+)>$/) || [];
+    let text = flat(m.rows[m.rows.length - 1]).split("\n").map((l) => l.trim())
+      .filter((l) => !l.startsWith(">")).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    const cut = text.search(REPLY);
+    if (cut > 0) text = text.slice(0, cut).trim();
+    return { mine: !!account && email.toLowerCase() === account, author: author.trim(),
+      email: email.toLowerCase(), date: (head[1]?.textContent || "").trim(), text: text.slice(0, 4000) };
+  }).filter((m) => m.text);
+  return { ok: true, subject: (main.querySelector("font b")?.textContent || "").trim(), messages: messages.slice(-20) };
+})
+"""
+
 SUGGEST_SYSTEM = (
     "Tu aides l'utilisateur à répondre à un e-mail ; ses propres messages sont marqués « Moi ». "
     "Propose trois réponses différentes au dernier message du fil (par exemple accepter, demander une "
@@ -144,16 +269,55 @@ IMPROVE_SYSTEM = (
     "Si une consigne est donnée, applique-la. "
     'Réponds uniquement en JSON : {"text": "…"}.'
 )
+DIGEST_ME = "Vous (l'utilisateur)"
+DIGEST_SYSTEM = (
+    "Tu résumes pour l'utilisateur un fil d'e-mails de sa boîte de réception ; les messages qu'il a "
+    "lui-même envoyés sont marqués « Vous (l'utilisateur) ». Désigne-le par « vous ». summary : une ou "
+    "deux phrases courtes en français : qui écrit et ce qu'il dit ou demande, avec les dates, montants et "
+    "noms importants, sans recopier le texte et sans commencer par « Ce fil » ni « Cet e-mail ». "
+    "action : ce que le fil attend de l'utilisateur, en quelques mots, avec l'échéance s'il y en a une — "
+    "par exemple répondre à une question qu'on lui pose, choisir un créneau, payer une facture, confirmer "
+    "sa présence, envoyer un document. S'il n'attend rien de lui (publicité, lettre d'information, avis "
+    "d'expédition, simple information), action est vide. N'invente rien. "
+    'Réponds uniquement en JSON : {"summary": "…", "action": "…"}.'
+)
+# « Aucune », « Rien »… : pas d'action
+NO_ACTION_RE = re.compile(r"(aucune?( action)?|rien( à faire)?|néant|n/?a|none|-+)\.?", re.IGNORECASE)
+DIGEST_SCHEMA = {
+    "type": "object",
+    "properties": {"summary": {"type": "string"}, "action": {"type": "string"}},
+    "required": ["summary", "action"],
+}
+OVERVIEW_SYSTEM = (
+    "Tu fais le point sur des e-mails de l'utilisateur à partir du résumé de chacun. "
+    "overview : 2 à 4 phrases en français où tu t'adresses à l'utilisateur comme son assistant "
+    "(« Vous avez… », « Pensez à… »), jamais au nom des expéditeurs : d'abord ce qui demande une action "
+    "ou semble urgent, puis le reste, en regroupant les e-mails semblables (publicités, notifications, "
+    "lettres d'information…) s'il y en a. Ne parle que des e-mails de la liste, ne la recopie pas et "
+    "n'invente rien. "
+    "Si une consigne est donnée, respecte-la. "
+    'Réponds uniquement en JSON : {"overview": "…"}.'
+)
+OVERVIEW_SCHEMA = {"type": "object", "properties": {"overview": {"type": "string"}}, "required": ["overview"]}
+DIGEST_MAX = 50            # fils résumés au plus : une page de Gmail
+DIGEST_SCOPES = ("current", "selection", "unread", "all")    # current : l'e-mail ouvert
+CURRENT_VIEW = "E-mail ouvert"
+LIST_WAIT = 8              # attente de la liste à l'ouverture de la boîte (secondes)
+LIST_HASH_RE = re.compile(r"#[^\"'\\<>\s]{1,200}")
+DIGEST_FAILURES = 3        # échecs du modèle d'affilée avant abandon
+SUMMARY_CACHE = 500        # résumés gardés (fil, dernier message, modèle)
+THREAD_ID_RE = re.compile(r"[0-9a-f]{6,24}")
+PAGER_TOTAL_RE = re.compile(r"(?:sur|of)\s+([\d\s.,]+)$")
 CONTEXT_CHARS = 8000
 MESSAGE_CHARS = 3000
 
 
-def _transcript(subject: str, messages: list[dict]) -> str:
+def _transcript(subject: str, messages: list[dict], me: str = "Moi") -> str:
     """Derniers e-mails du fil ; les plus anciens sont coupés au-delà de CONTEXT_CHARS."""
     blocks, size = [], 0
     for m in reversed(messages):
         if m.get("mine"):
-            who = "Moi"
+            who = me
         elif m.get("email") and m.get("author") and m["author"].lower() != m["email"]:
             who = f"{m['author']} <{m['email']}>"
         else:
@@ -174,6 +338,16 @@ class GmailPane(WebPane):
     url = "https://mail.google.com/mail/"
     hosts = ("google.com", "gstatic.com", "googleusercontent.com", "googleapis.com", "youtube.com")
     read_js = READ_THREAD_JS
+    context_js = CONTEXT_JS
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._digest = {"state": "idle"}      # résumé de la boîte (voir digest)
+        self._digest_stop = threading.Event()
+        self._summaries = {}                  # (fil, dernier message, modèle) → {summary, action}
+
+    def snapshot(self) -> dict:
+        return {**super().snapshot(), "digest": self._digest_view()}
 
     def allowed_host(self, host: str) -> bool:
         # La connexion passe par les domaines Google nationaux (google.fr…)
@@ -238,3 +412,174 @@ class GmailPane(WebPane):
         if hint:
             prompt += f"\n\nConsigne de l'utilisateur : {hint}"
         return self._improved(model, draft, self._ask(model, IMPROVE_SYSTEM, prompt, IMPROVE_SCHEMA).get("text"))
+
+    # ─────────────────────────────────────────
+    #  Résumé des e-mails (liste affichée dans Gmail)
+    # ─────────────────────────────────────────
+    def digest_scopes(self) -> dict:
+        """Ce que « Résumer » peut proposer pour la liste affichée dans Gmail : nombre
+        d'e-mails sélectionnés, non lus et en tout. list: false quand aucune liste
+        n'est affichée (fil ouvert…) : le résumé portera sur la boîte de réception."""
+        res = self._eval(f"{LIST_JS}(false)")
+        if not res.get("ok") or not res.get("list"):
+            return {**res, "view": "Boîte de réception"} if res.get("ok") else res
+        rows = res.get("rows") or []
+        return {"ok": True, "list": True, "view": res.get("view") or "Gmail", "all": len(rows),
+                "unread": sum(1 for r in rows if r.get("unread")),
+                "selection": sum(1 for r in rows if r.get("selected"))}
+
+    def digest(self, model: str, hint: str = "", scope: str = "all") -> dict:
+        """Lit chaque fil de la liste affichée dans Gmail — tous, les non lus ou les
+        sélectionnés — et le résume, puis fait le point ; ou (current) seulement
+        l'e-mail ouvert. En arrière-plan : progression par l'événement gmail:digest."""
+        model, error = self._model(model)
+        if error:
+            return error
+        if not self._busy.acquire(blocking=False):
+            return {"ok": False, "error": "Une génération est déjà en cours."}
+        scope = scope if scope in DIGEST_SCOPES else "all"
+        self._digest_stop.clear()
+        self._digest = {"state": "listing", "model": model, "scope": scope, "view": "", "base": "#inbox",
+                        "total": 0, "listed": 0, "items": [], "overview": "", "error": ""}
+        self._emit_digest()
+        threading.Thread(target=self._run_digest, args=(model, (hint or "").strip()[:500], scope),
+                         daemon=True, name="gmail-digest").start()
+        return {"ok": True}
+
+    def digest_stop(self):
+        self._digest_stop.set()
+
+    def open_thread(self, thread_id: str) -> dict:
+        """Affiche dans Gmail un fil du dernier résumé (dans sa liste : boîte, libellé…)."""
+        base = self._digest.get("base") or "#inbox"
+        if not THREAD_ID_RE.fullmatch(thread_id or "") or not LIST_HASH_RE.fullmatch(base):
+            return {"ok": False, "error": "E-mail introuvable."}
+        return self._eval(f"(() => {{ location.hash = {json.dumps(f'{base}/{thread_id}')}; return {{ ok: true }}; }})()")
+
+    def _digest_view(self) -> dict:
+        """Copie de l'état du résumé (envoyée à l'interface pendant que le travail continue)."""
+        return {**self._digest, "items": [dict(i) for i in self._digest.get("items", [])]}
+
+    def _emit_digest(self):
+        self._app.bridge.emit("gmail:digest", self._digest_view())
+
+    def _run_digest(self, model: str, hint: str, scope: str):
+        d = self._digest
+        try:
+            if scope == "current":
+                listing = self._eval(CURRENT_JS)
+                if listing.get("ok"):
+                    listing = {**listing, "rows": [listing["row"]], "view": CURRENT_VIEW}
+            else:
+                listing = self._list()
+            if not listing.get("ok"):
+                d["state"], d["error"] = ("cancelled", "") if listing.get("cancelled") else ("error", listing.get("error", ""))
+                return
+            rows = [r for r in listing["rows"] if scope in ("all", "current")
+                    or (scope == "unread" and r.get("unread")) or (scope == "selection" and r.get("selected"))]
+            m = PAGER_TOTAL_RE.search(listing.get("pager") or "")
+            d["view"] = listing.get("view") or "Gmail"
+            base = re.sub(r"/p\d+$", "", listing.get("base") or "")
+            d["base"] = base if LIST_HASH_RE.fullmatch(base) else "#inbox"
+            d["listed"] = max(len(rows), int(re.sub(r"\D", "", m.group(1)) or 0) if m and scope == "all" else 0)
+            d["total"] = min(len(rows), DIGEST_MAX)
+            d["state"] = "reading"
+            self._emit_digest()
+            search = listing.get("search") if listing.get("search") in ("spam", "trash") else "all"
+            failures, failure = 0, ""
+            for row in rows[:DIGEST_MAX]:
+                if self._digest_stop.is_set():
+                    break
+                item = {k: row.get(k) or "" for k in ("id", "from", "subject", "date", "when")}
+                item["unread"] = bool(row.get("unread"))
+                key = (row["id"], row.get("last", ""), model)
+                found = self._summaries.get(key)
+                if found is None:
+                    found, failure = self._summarize(model, row, search)
+                    failures = 0 if found else failures + 1
+                    if found:
+                        self._summaries[key] = found
+                        while len(self._summaries) > SUMMARY_CACHE:
+                            self._summaries.pop(next(iter(self._summaries)))
+                # Fil illisible ou échec du modèle : l'extrait de la liste
+                item.update(found or {"summary": row.get("snippet") or "", "action": "", "failed": True})
+                d["items"].append(item)
+                self._emit_digest()
+                if failures >= DIGEST_FAILURES:
+                    d["state"], d["error"] = "error", failure
+                    return
+            if self._digest_stop.is_set():
+                d["state"] = "cancelled"
+                return
+            if d["items"] and all(i.get("failed") for i in d["items"]):
+                d["state"], d["error"] = "error", failure
+                return
+            if len(d["items"]) > 1:      # un seul e-mail : son résumé suffit
+                d["state"] = "overview"
+                self._emit_digest()
+                prompt = self._overview_prompt(d["items"], d["view"], scope, d["listed"])
+                if hint:
+                    prompt += f"\n\nConsigne de l'utilisateur : {hint}"
+                d["overview"] = clean(self._ask(model, OVERVIEW_SYSTEM, prompt, OVERVIEW_SCHEMA, 0.3).get("overview"))
+            d["state"] = "done"
+        except Exception as e:
+            logger.log(f"Gmail : résumé des e-mails ({model}) en échec : {e}")
+            d["state"], d["error"] = "error", f"Échec du résumé : {self._app.chat.failure(e)}"
+        finally:
+            self._busy.release()
+            self._emit_digest()
+
+    def _list(self) -> dict:
+        """Fils de la liste affichée dans Gmail (page affichée) ; aucune liste (fil
+        ouvert…) : la boîte de réception est ouverte, le temps qu'elle s'affiche."""
+        deadline = time.monotonic() + LIST_WAIT
+        while True:
+            res = self._eval(f"{LIST_JS}(true)")
+            if not res.get("ok"):
+                return res
+            rows = res.get("rows")
+            if rows or (rows is not None and time.monotonic() > deadline):
+                return {**res, "rows": rows, "base": (res.get("base") or "")}
+            if time.monotonic() > deadline:
+                return {"ok": False, "error": "La boîte de réception ne s'affiche pas dans Gmail."}
+            if self._digest_stop.wait(0.3):
+                return {"ok": False, "cancelled": True}
+
+    def _summarize(self, model: str, row: dict, search: str = "all") -> tuple[dict | None, str]:
+        """Résumé d'un fil : ({summary, action}, "") ou (None, raison de l'échec)."""
+        if not THREAD_ID_RE.fullmatch(row.get("id") or ""):
+            return None, "E-mail illisible."
+        thread = self._eval(f"{THREAD_JS}({json.dumps(row['id'])}, {json.dumps(search)})", timeout=20, awaits=True)
+        messages = thread.get("messages") or []
+        if not messages:
+            logger.log(f"Gmail : fil {row['id']} illisible ({thread.get('error') or 'vide'})")
+            return None, thread.get("error") or "E-mail illisible."
+        try:
+            found = self._summary(model, thread.get("subject") or row.get("subject", ""), messages)
+        except Exception as e:
+            logger.log(f"Gmail : résumé du fil {row['id']} ({model}) en échec : {e}")
+            return None, f"Échec du résumé : {self._app.chat.failure(e)}"
+        return (found, "") if found else (None, "Le modèle n'a rien résumé.")
+
+    @classmethod
+    def _summary(cls, model: str, subject: str, messages: list[dict]) -> dict | None:
+        data = cls._ask(model, DIGEST_SYSTEM, _transcript(subject, messages, DIGEST_ME), DIGEST_SCHEMA, 0.3)
+        summary, action = clean(data.get("summary")), clean(data.get("action"))
+        if not summary:
+            return None
+        # Dernier message envoyé par l'utilisateur : la balle est dans l'autre camp
+        if messages[-1].get("mine") or NO_ACTION_RE.fullmatch(action):
+            action = ""
+        return {"summary": summary, "action": action[:1].upper() + action[1:]}
+
+    @staticmethod
+    def _overview_prompt(items: list[dict], view: str, scope: str = "all", listed: int = 0) -> str:
+        lines = []
+        for n, item in enumerate(items, 1):
+            head = " — ".join(x for x in (item["from"], f"« {item['subject']} »" if item["subject"] else "", item["when"]) if x)
+            lines.append(f"{n}. {'[non lu] ' if item['unread'] else ''}{head}\n   {item['summary']}"
+                         + (f"\n   À faire : {item['action']}" if item.get("action") else ""))
+        which = {"unread": "Les e-mails non lus de", "selection": "Les e-mails choisis par l'utilisateur dans"}
+        more = f" (les {len(items)} plus récents sur {listed})" if listed > len(items) else ""
+        return (f"{which.get(scope, 'Les e-mails de')} « {view} »{more}, du plus récent au plus ancien :\n\n"
+                + "\n".join(lines))

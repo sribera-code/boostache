@@ -391,10 +391,12 @@ export function openLightbox({ src, preview = "", title = "", actions = [] }) {
 let tipEl = null;
 let tipTimer = null;
 let tipTarget = null;
+let tipWatch = null;      // infobulle affichée : fermée si son élément quitte la page (liste redessinée)
 
 export function closeTooltip() {
   clearTimeout(tipTimer);
-  tipTimer = null;
+  clearInterval(tipWatch);
+  tipTimer = tipWatch = null;
   tipTarget = null;
   tipEl?.remove();
   tipEl = null;
@@ -408,7 +410,8 @@ document.addEventListener("mouseover", (ev) => {
   tipTarget = target;
   tipTimer = setTimeout(() => {
     if (!document.body.contains(target)) return;
-    tipEl = h("div", { class: "tooltip" }, target.dataset.tip,
+    if (!target.dataset.tip) return;
+    tipEl = h("div", { class: target.dataset.tipWrap !== undefined ? "tooltip wrap" : "tooltip" }, target.dataset.tip,
       target.dataset.kbd ? h("span", { class: "tip-kbd", text: target.dataset.kbd }) : null);
     document.body.append(tipEl);
     const r = target.getBoundingClientRect();
@@ -419,6 +422,7 @@ document.addEventListener("mouseover", (ev) => {
     left = Math.min(Math.max(6, left), window.innerWidth - t.width - 6);
     tipEl.style.top = `${top}px`;
     tipEl.style.left = `${left}px`;
+    tipWatch = setInterval(() => { if (!target.isConnected) closeTooltip(); }, 250);
   }, 480);
 });
 document.addEventListener("mousedown", closeTooltip, true);
@@ -537,6 +541,15 @@ export class TabStrip {
 // ─────────────────────────────────────────────
 //  Divers
 // ─────────────────────────────────────────────
+/** Carte des pages de réglages (Paramètres, Ollama) : icône, titre, description, contenu. */
+export function card(iconName, title, desc, ...content) {
+  return h("div", { class: "card" },
+    h("div", { class: "card-head" },
+      h("div", { class: "card-icon" }, ico(iconName, 16)),
+      h("div", { class: "card-title" }, h("h3", { text: title }), desc ? h("p", { class: "desc", text: desc }) : null)),
+    h("div", { class: "card-body" }, ...content));
+}
+
 /** Affiche une combinaison "ctrl+shift+d" sous forme de touches. */
 export function kbdCombo(combo) {
   const names = { ctrl: "Ctrl", shift: "Maj", alt: "Alt", win: "Win", windows: "Win", cmd: "Cmd",

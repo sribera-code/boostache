@@ -85,6 +85,13 @@ COMPOSER_JS = r"""
   return { ok: !!box, text: box ? box.innerText : "" };
 })()
 """
+# Boutons utiles (voir webpane.WATCH_JS) : discussion ouverte, message en cours d'écriture
+CONTEXT_JS = r"""
+(() => {
+  const main = document.querySelector("#main");
+  const box = main?.querySelector("footer [contenteditable='true']");
+  return { reply: !!main, improve: !!box && !!box.textContent.trim() };
+})"""
 
 SUGGEST_SYSTEM = (
     "Tu aides l'utilisateur à répondre sur WhatsApp ; il est « Moi » dans la discussion. "
@@ -128,6 +135,7 @@ class WhatsAppPane(WebPane):
     url = "https://web.whatsapp.com/"
     hosts = ("whatsapp.com", "whatsapp.net")
     read_js = READ_CHAT_JS
+    context_js = CONTEXT_JS
 
     def unread_from_title(self, title: str) -> int:
         m = UNREAD_RE.match(title)

@@ -1,6 +1,6 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte, WhatsApp Web et Gmail avec un assistant de réponse, un planificateur de tâches et un gestionnaire de raccourcis clavier globaux — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte, WhatsApp Web et Gmail avec un assistant de réponse, un planificateur de tâches, un gestionnaire de raccourcis clavier globaux et une section pour gérer Ollama (modèles, téléchargements, options) — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
 
 L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview] ; toute la logique reste en Python.
 
@@ -14,12 +14,13 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Réflexion des modèles « thinking » (gemma, qwen3, deepseek-r1…) affichée en direct dans un bloc repliable
 - Rendu Markdown complet : titres, listes, tableaux, citations, liens, blocs de code avec coloration syntaxique et bouton **Copier**
 - Choix du modèle par onglet (sélecteur dans la zone de saisie ou clic droit)
+- Heure de chaque question (envoi) et de chaque réponse (fin de la génération), date complète au survol ; séparateur de jour (« Hier », « Lundi 5 octobre »…) quand une conversation s'étale sur plusieurs jours ; heures reprises dans **Copier toute la conversation**
 - Pièces jointes : texte/code et images (bouton trombone, collage presse-papiers, capture d'écran, glisser-déposer), avec aperçu
 - Copier un message envoyé avec ses images (pleine résolution), ou une réponse en Markdown + mise en forme (collée telle quelle dans Word, Outlook…) ; clic droit sur une image jointe : copier, ouvrir dans Captures
 - Clic sur une image (envoyée ou jointe) : visionneuse plein écran, clic sur l'image pour la taille réelle
 - **Modifier** la dernière question (pièces jointes gardées) : la réponse est regénérée
 - **Fork** depuis n'importe quelle question : nouvel onglet avec la conversation jusqu'à cette question et sa réponse, pour repartir dans une autre direction
-- Dictée vocale (Win+H) et lecture TTS des réponses (SAPI5)
+- Dictée vocale (Win+H) et lecture à voix haute des réponses (voir **Lecture à voix haute**)
 - Pré-prompt système configurable
 - Persistance automatique des conversations et restauration des onglets au redémarrage
 - Présence d'Ollama surveillée : lancé après Boostache, arrêté puis relancé, il est détecté tout seul (essais de plus en plus espacés tant qu'il ne répond pas ; en ligne, test à l'affichage de la fenêtre, toutes les 30 s tant qu'elle est affichée et quand un appel échoue). Tant qu'il ne répond pas, tout ce qui a besoin de lui est masqué : onglet Conversations, aide contextuelle (Ctrl+Impr. écran rendu à Windows), « Joindre à la conversation » dans Captures, assistant de réponse de WhatsApp et Gmail, pré-prompt dans les paramètres
@@ -36,17 +37,18 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Vrais terminaux (ConPTY + xterm.js) : couleurs, barres de progression, programmes interactifs, historique ↑/↓ du shell, Ctrl+C
 - PowerShell ou Invite de commandes, au choix par console (PowerShell 7 détecté s'il est installé)
 - Suivi du répertoire courant, affiché dans la barre et utilisé comme titre d'onglet
+- Heure en tête de l'invite (`[14:32:05] PS C:\…>`) : celle de son affichage, donc de la fin de la commande précédente ; le prompt du profil PowerShell (oh-my-posh…) est gardé
 - Changer de dossier : clic sur le chemin, ou glisser-déposer d'un dossier dessus
 - Glisser-déposer de fichiers dans le terminal : insère leurs chemins
 - Ouverture dans un terminal externe (Ctrl+T, Windows Terminal si présent)
-- Lecture TTS de la dernière sortie ou de tout le contenu
+- Lecture à voix haute de la dernière sortie ou de tout le contenu
 - Persistance entre les sessions (répertoire, contenu, nom de l'onglet)
 
 ### Notes
 - Éditeur de texte multi-onglets, un onglet = une note
 - Titre automatique tiré de la première ligne tant que l'onglet n'est pas renommé
 - Compteur de mots et de caractères, sauvegarde automatique
-- Lecture TTS de la sélection ou de toute la note, dictée vocale
+- Lecture à voix haute de la sélection ou de toute la note, dictée vocale
 
 ### Presse-papiers
 - Capture automatique de chaque copie texte (notification Win32 `AddClipboardFormatListener`, sans polling)
@@ -70,12 +72,19 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - WhatsApp Web et Gmail directement dans la fenêtre (sections **WhatsApp** et **Gmail**) : QR code à scanner (WhatsApp) ou connexion Google (Gmail) une seule fois, la session est conservée entre les lancements
 - Chargés à la première ouverture de leur section, puis gardés en arrière-plan : le nombre de non-lus s'affiche dans la barre latérale
 - Liens des messages ouverts dans le navigateur par défaut ; Ctrl+1 à Ctrl+9 restent actifs
-- **Assistant de réponse** (Ollama, en local — affiché tant qu'Ollama répond) sous le site :
-  - **Suggérer des réponses** : trois propositions adaptées à la discussion ou à l'e-mail ouvert ; un clic place la réponse dans la zone de saisie (Gmail : la réponse s'ouvre si besoin, signature et citation sont conservées)
-  - **Améliorer le brouillon** : corrige et reformule le message en cours de saisie (bouton **Rétablir l'original**)
+- Les menus, panneaux et infobulles de Boostache s'affichent par-dessus le site sans le masquer (le site est découpé à leur place) ; seule une fenêtre de dialogue le masque le temps de s'afficher
+- **Assistant de réponse** (Ollama, en local — affiché tant qu'Ollama répond) sous le site ; seuls les boutons utiles sur la page affichée apparaissent (suivi en direct de la page) :
+  - **Suggérer une réponse** (une discussion ou un e-mail ouvert) : trois propositions adaptées ; un clic place celle choisie dans la zone de saisie (Gmail : la réponse s'ouvre si besoin, signature et citation sont conservées)
+  - **Améliorer le brouillon** (un message en cours d'écriture) : corrige et reformule le message (bouton **Rétablir l'original**)
   - Un brouillon remplacé par une proposition peut être récupéré (**Rétablir mon brouillon**)
   - Consigne facultative (« plus formel », « décline poliment », « accepte mardi 14 h »…) et choix du modèle
   - Rien n'est jamais envoyé automatiquement : il reste à relire et envoyer
+- **Résumer les e-mails** (Gmail) : chaque fil de la liste affichée dans Gmail (boîte de réception, libellé, recherche… ; page affichée, 50 au plus) est lu en entier en arrière-plan — par la vue « imprimer » de Gmail, donc **sans être marqué comme lu** — puis résumé par Ollama, avec ce qu'il attend de vous (répondre, payer, confirmer…) ; une synthèse fait ensuite le point (à partir de deux e-mails), la consigne facultative s'y applique
+  - Choix proposé selon la liste : **les e-mails sélectionnés** (cases cochées dans Gmail) s'il y en a, **les non lus** s'il y en a, ou **tous** — le plus précis est présélectionné (Entrée) ; sans sélection ni non-lus, tous sont résumés directement
+  - Un e-mail ouvert : le bouton devient **Résumer cet e-mail** et ne résume que lui (tout le fil, y compris les messages repliés)
+  - Les résumés s'affichent au fur et à mesure (bouton **Arrêter**) ; un clic sur un e-mail l'ouvre dans Gmail ; **Copier** ou **Ajouter à une note**
+  - Hauteur du panneau réglable par la poignée de son bord haut (gardée d'une fois sur l'autre ; double-clic : hauteur automatique ; flèches haut/bas au clavier) — Gmail reste visible au-dessus
+  - Résumés gardés pendant la session : une relance ne refait que les nouveaux fils et ceux qui ont reçu un message, puis la synthèse
 - Bouton **Recharger** (ou **Réessayer** si le site s'est arrêté)
 
 ### Enregistreur
@@ -90,6 +99,38 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
   - Fenêtre du texte : copier, ouvrir dans le Bloc-notes, lire à voix haute, ajouter à une note, joindre à une conversation (pour le résumer avec Ollama, par exemple), transcrire à nouveau ; aussi depuis le clic droit sur l'enregistrement
   - Réglages (bouton **Texte** au-dessus de la liste) : modèle **Rapide** (150 Mo), **Équilibré** (480 Mo, conseillé — environ 4 fois plus rapide que la durée de l'audio sur un processeur de bureau) ou **Précis** (1,6 Go, plus lent) ; langue parlée (détection automatique par défaut) ; transcription automatique de chaque nouvel enregistrement
   - Le modèle est téléchargé à la première transcription (connexion Internet requise une fois), dans le cache Hugging Face de l'utilisateur
+
+### Assistant live
+- Un mode à activer d'un clic : tant qu'il est actif, la fenêtre que vous utilisez est relue à intervalle régulier (15 s à 5 min) — capture et texte lu par l'OCR de Windows — et un modèle Ollama fait dessus la tâche choisie :
+  - **Répondre** : une réponse au dernier message reçu (Messenger, Teams, Discord, e-mail…), prête à copier, avec le message auquel elle répond
+  - **Résumer** : les points clés de ce que vous lisez
+  - **Expliquer** : l'erreur affichée (cause probable, étapes pour la résoudre) ou ce qui peut poser question
+  - **Corriger** : le texte que vous êtes en train d'écrire, corrigé, avec la liste des corrections ; la carte se met à jour pendant que vous écrivez
+  - **Libre** : votre propre consigne (« traduis en anglais », « liste les dates et rendez-vous »…)
+- **En direct** : le résultat pour la fenêtre du moment, avec **Copier** et **Autre réponse** / **Refaire** ; il suit la fenêtre utilisée (en revenant sur une conversation, sa réponse revient sans nouvelle analyse). Les résultats précédents restent en dessous : copier, lire à voix haute, **Approfondir dans Conversations** (aide contextuelle sur la capture), ouvrir la capture dans Captures, retirer
+- **Question sur la fenêtre du moment** (champ en bas) et **Analyser maintenant**, même assistant arrêté
+- Fenêtre masquée : **notification Windows** pour chaque nouveau résultat (désactivable) ; option **Voix** pour l'entendre ; pastille verte dans la barre latérale tant qu'il tourne, compteur des résultats pas encore vus
+- Économe : le modèle n'est sollicité que lorsque du nouveau texte apparaît dans la fenêtre (un survol, une heure qui change ne comptent pas) et un résultat déjà donné n'est pas répété (même dernier message, même sujet) ; rien n'est capturé après 5 min sans clavier ni souris ou tant qu'Ollama ne répond pas ; les analyses ne s'empilent jamais
+- Les captures ne quittent pas le PC (Ollama en local) et sont effacées à la fermeture. Modèle choisi de préférence parmi ceux qui lisent les images (gemma4:e2b : quelques secondes par analyse une fois chargé) ; un modèle plus gros donne des résultats plus fiables
+
+### Lecture à voix haute
+- Boutons **Lire** des conversations, consoles, notes, du presse-papiers, des transcriptions et de l'assistant live
+- Trois voix au choix dans les **Paramètres** (même choix que le projet audio-report) :
+  - **Voix naturelle** (par défaut) : voix neuronales de Microsoft, celles de « Lire à voix haute » d'Edge, via [edge-tts] — gratuites, sans clé, très expressives (13 voix françaises : France, Québec, Belgique, Suisse ; Sylvie par défaut). Le texte lu est **envoyé à Microsoft** : il faut une connexion
+  - **Hors ligne** : voix neuronale [Piper], calculée sur le PC (siwis par défaut ; autres voix avec `python -m piper.download_voices fr_FR-tom-medium`, rangées dans `%USERPROFILE%\.local\share\piper\voices`)
+  - **Windows** : voix SAPI installées (Hortense…), toujours disponibles
+- Une voix qui ne répond pas (connexion coupée, voix absente) passe la main à la suivante — voix naturelle → hors ligne → Windows, jamais dans l'autre sens — avec une notification ; la voix naturelle n'est pas retentée pendant une minute
+- Démarrage rapide même sur un long texte : découpé en phrases, la suivante est préparée pendant que la précédente est lue ; liens réduits au nom du site, émojis et séparateurs ignorés, courte pause entre les paragraphes
+- **Lecteur** dans la barre latérale pendant la lecture : voix et position (phrase 3/12, phrase en cours au survol), pause / reprise, phrase précédente (ou début de la phrase en cours) et suivante, arrêt, vitesse de 0,75× à 2× (changée en cours de lecture)
+- Bouton **Écouter** pour essayer une voix avant de la choisir
+
+### Ollama
+- **Serveur** : en marche ou non (et sa version), bouton **Lancer Ollama** quand il ne répond pas (son application, sinon `ollama serve` sans fenêtre) ou **Installer Ollama** s'il manque ; adresse, carte graphique et mémoire utilisées, dossier des modèles (place prise, place libre, bouton Ouvrir). Option **Lancer Ollama avec Boostache** : s'il ne répond toujours pas 15 s après le démarrage de Boostache (arrêté, ou fermé par une mise à jour d'Ollama qui a échoué)
+- **Modèles installés** : taille, paramètres, quantification, contexte maximal, capacités (images, réflexion, outils, audio, embeddings) et fonctions de Boostache qui l'utilisent ; modèles **en mémoire** (part sur la carte graphique, heure de libération) avec **Libérer** ; menu : utiliser pour une fonction, mettre à jour, copier le nom, fiche sur ollama.com, **supprimer** (après confirmation). **Vérifier les mises à jour** compare chaque modèle à sa version publiée (Ollama 0.40 et plus garde une variante par moteur de calcul : elles comptent dans la taille)
+- **Télécharger un modèle** : bibliothèque d'ollama.com dans la fenêtre — suggestions pour Boostache (modèles qui lisent les images, bons en français), les plus téléchargés, recherche instantanée (nom, description, « vision »…). Filtre **Adaptés à ce PC** (par défaut) : seuls les modèles qui conversent et dont une taille tient dans la carte graphique ; chaque taille est colorée (vert : rapide, jaune : déborde sur le processeur, barré : trop gros), d'après sa taille exacte, la mémoire de la carte graphique disponible pour Ollama (lue dans son journal) et le contexte choisi ; la **variante conseillée** (la plus grande qui reste rapide) se télécharge d'un clic depuis la ligne. Un modèle déplié montre ses variantes : taille, contexte et si elle **tient dans la carte graphique**, déborde sur le processeur (plus lent) ou est trop grosse pour ce PC ; toutes les quantifications à la demande. Un nom exact (`gemma4:e4b`, `ollama run …` ou une adresse ollama.com / Hugging Face collés) se télécharge directement (Entrée)
+- Téléchargements en arrière-plan : progression, débit, temps restant, **annulation** (Ollama reprend plus tard ce qui a été reçu) ; place sur le disque vérifiée avant de commencer ; pastille dans la barre latérale et notification Windows à la fin si la fenêtre est masquée
+- **Options** de tous les appels de Boostache : **contexte** (4K à 64K tokens, 8K par défaut), durée pendant laquelle un modèle reste **en mémoire** après un appel (de « aussitôt » à « jamais », 5 min par défaut), **modèle de chaque fonction** (Conversations, aide contextuelle, WhatsApp et Gmail, assistant live)
+- Les modèles d'embeddings (qui ne conversent pas) et les entrées internes d'Ollama ne sont pas proposés dans les listes de modèles ; « Gérer les modèles… » dans ces listes ouvre la section
 
 ### Historique, tâches et raccourcis
 - **Historique** : journal de l'application
@@ -110,7 +151,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 
 - Python 3.11+
 - Windows 10/11 avec le runtime [WebView2] (installé d'office avec Edge ; sinon, le télécharger)
-- [Ollama](https://ollama.com) installé et au moins un modèle téléchargé (les fonctions qui en ont besoin n'apparaissent que lorsque son serveur répond)
+- [Ollama](https://ollama.com) installé et au moins un modèle téléchargé — depuis la section **Ollama** de Boostache, par exemple (les fonctions qui en ont besoin n'apparaissent que lorsque son serveur répond)
 - Lancer en **administrateur** pour activer les hotkeys globaux dans toutes les applications
 
 ---
@@ -182,19 +223,22 @@ boostache/
 ├── bridge.py             # Événements Python → interface (file + regroupement)
 ├── chat.py               # Conversations Ollama (streaming, réflexion, pièces jointes, aide contextuelle)
 ├── ocr.py                # Texte d'une image (OCR de Windows, via PowerShell)
+├── live.py               # Assistant live : fenêtre utilisée relue régulièrement, tâche du mode (répondre, résumer…) par Ollama
+├── ollama_admin.py       # Section Ollama : serveur, modèles installés, mises à jour, téléchargements, bibliothèque d'ollama.com
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
 ├── recorder.py           # Enregistreur : son du PC (+ micro), WAV, conversion MP3/M4A, fichiers
-├── wasapi.py             # Audio Windows (WASAPI) : périphériques, capture loopback et micro
+├── wasapi.py             # Audio Windows (WASAPI) : périphériques, capture loopback et micro, lecture
+├── speech.py             # Lecture à voix haute : edge-tts, Piper ou SAPI, phrase par phrase, lecteur
 ├── transcriber.py        # Transcription en texte (Whisper via faster-whisper), file d'attente
 ├── webpane.py           # Sites intégrés : contrôle WebView2 posé sur la fenêtre, assistant de réponse
 ├── whatsapp.py           # WhatsApp Web (lecture de la discussion, zone de saisie)
-├── gmail.py              # Gmail (lecture du fil, éditeur de réponse)
+├── gmail.py              # Gmail (lecture du fil, éditeur de réponse, résumé de la boîte)
 ├── custom_tasks.py       # Tâches créées depuis l'interface, raccourcis
 ├── clipboard_listener.py # Presse-papiers Win32 (écoute push, lecture, écriture)
-├── winutil.py            # Utilitaires Win32 (premier plan, fenêtre active, icônes, miniatures et captures des fenêtres, explorateur, corbeille, liens, touche Impr. écran)
-├── engine.py             # Logger, TaskManager, HotkeyManager, TTSEngine
+├── winutil.py            # Utilitaires Win32 (premier plan, fenêtre active, icônes, miniatures et captures des fenêtres, explorateur, corbeille, liens, touche Impr. écran, inactivité)
+├── engine.py             # Logger, TaskManager, HotkeyManager, instance de lecture (tts)
 ├── storage.py            # Persistance (réglages, conversations, consoles, notes, captures)
 ├── tasks.py              # Tâches planifiées (à personnaliser)
 ├── bindings.py           # Raccourcis clavier (à personnaliser)
@@ -222,11 +266,12 @@ Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **
 | `schedule` | Planification des tâches |
 | `keyboard` | Hotkeys globaux système |
 | `platformdirs` | Chemin de données utilisateur |
-| `pyttsx3` | Text-to-speech (SAPI5 Windows) |
-| `comtypes` | API audio de Windows (WASAPI) pour l'enregistreur |
+| `edge-tts` | Lecture à voix haute avec les voix naturelles de Microsoft (en ligne) |
+| `piper-tts` | Lecture à voix haute hors ligne (voix neuronale locale) |
+| `comtypes` | API audio de Windows (WASAPI) pour l'enregistreur et la lecture ; voix SAPI |
 | `numpy` | Mixage et niveaux de l'enregistreur |
 | `faster-whisper` | Transcription des enregistrements en texte (Whisper, local) |
-| `truststore` | Téléchargement des modèles avec les certificats de Windows |
+| `truststore` | Connexions HTTPS (modèles Whisper, voix naturelles) avec les certificats de Windows |
 
 Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight.js], [xterm.js], icônes [Lucide], polices Inter et JetBrains Mono.
 
@@ -236,3 +281,5 @@ Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight
 [highlight.js]: https://highlightjs.org
 [xterm.js]: https://xtermjs.org
 [Lucide]: https://lucide.dev
+[edge-tts]: https://github.com/rany2/edge-tts
+[Piper]: https://github.com/OHF-Voice/piper1-gpl

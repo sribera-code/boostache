@@ -21,7 +21,7 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from chat import NUM_CTX, _ollama
+from chat import _ollama, keep_alive, num_ctx
 from engine import logger
 from storage import DATA_DIR
 from winutil import open_url
@@ -48,6 +48,32 @@ SHORTCUTS_JS = r"""
 })();
 """
 RELAYED_KEYS = (*"123456789,", "split", "F6")
+
+# Ce que l'assistant peut faire sur la page affichée : { reply: discussion ou e-mail
+# ouvert, improve: brouillon non vide }. __CONTEXT__ = context_js du site ; envoyé
+# à chaque changement (vérifié au plus toutes les 250 ms après une modification).
+WATCH_JS = r"""
+(() => {
+  if (window.top !== window) return;
+  const probe = __CONTEXT__;
+  let last = "", timer = 0;
+  const check = () => {
+    timer = 0;
+    let now;
+    try { now = probe(); } catch { return; }
+    const key = JSON.stringify(now);
+    if (key === last) return;
+    last = key;
+    window.chrome.webview.postMessage({ type: "context", reply: !!now.reply, improve: !!now.improve });
+  };
+  const soon = () => { if (!timer) timer = setTimeout(check, 250); };
+  new MutationObserver(soon).observe(document, { subtree: true, childList: true, characterData: true,
+    attributes: true, attributeFilter: ["style", "class", "hidden"] });
+  addEventListener("input", soon, true);
+  addEventListener("hashchange", soon);
+})();
+"""
+NO_CONTEXT = {"reply": False, "improve": False}
 
 STYLE_RULES = (
     "N'utilise que l'alphabet et la langue des messages (aucun mot ni caractère d'une autre langue). "
@@ -83,6 +109,7 @@ class WebPane:
     url = ""
     hosts: tuple = ()        # domaines autorisés en navigation (et leurs sous-domaines)
     read_js = ""             # lecture de la conversation ouverte : { ok, …, draft }
+    context_js = ""          # fonction de la page → { reply, improve } (voir WATCH_JS)
 
     def __init__(self, app):
         self._app = app
@@ -91,12 +118,15 @@ class WebPane:
         self._message = ""
         self._unread = 0
         self._bounds = None
+        self._holes = []              # zones percées pour les menus de l'interface (show)
         self._wanted = False          # la vue du site est affichée dans l'interface
         self._focus = False           # donner le clavier au site à son affichage
         self._busy = threading.Lock()  # une génération à la fois
+        self._context = dict(NO_CONTEXT)   # boutons de l'assistant utiles sur la page
 
     def snapshot(self) -> dict:
-        return {"state": self._state, "message": self._message, "unread": self._unread}
+        return {"state": self._state, "message": self._message, "unread": self._unread,
+                "context": dict(self._context)}
 
     # ─────────────────────────────────────────
     #  À préciser par site
@@ -120,8 +150,11 @@ class WebPane:
     # ─────────────────────────────────────────
     #  API (appelée depuis l'interface)
     # ─────────────────────────────────────────
-    def show(self, x: int, y: int, width: int, height: int, focus: bool = False):
+    def show(self, x: int, y: int, width: int, height: int, focus: bool = False, holes=None):
+        """holes : [x, y, largeur, hauteur] relatifs au contrôle, où un menu de
+        l'interface le chevauche — le contrôle y est percé pour laisser voir le menu."""
         self._bounds = (int(x), int(y), max(1, int(width)), max(1, int(height)))
+        self._holes = [tuple(int(v) for v in hole[:4]) for hole in holes or [] if len(hole) >= 4]
         self._wanted = True
         self._focus = self._focus or bool(focus)
         self._ui(self._apply)
@@ -144,15 +177,23 @@ class WebPane:
     # ─────────────────────────────────────────
     #  Assistant (threads de l'API, jamais celui de l'interface)
     # ─────────────────────────────────────────
-    def _generate(self, model: str, hint: str, fn) -> dict:
+    def _model(self, model: str) -> tuple[str, dict | None]:
+        """Modèle à utiliser (le premier installé si celui demandé n'existe plus), ou l'erreur."""
         chat = self._app.chat
         if chat is None or not chat.available:
-            return {"ok": False, "error": "Ollama est indisponible."}
+            return "", {"ok": False, "error": "Ollama est indisponible."}
         if model not in chat.models:
             model = chat.models[0] if chat.models else ""
         if not model:
             chat.check()            # lancé depuis le dernier test ?
-            return {"ok": False, "error": chat.models_error or "Aucun modèle Ollama installé."}
+            return "", {"ok": False, "error": chat.models_error or "Aucun modèle Ollama installé."}
+        return model, None
+
+    def _generate(self, model: str, hint: str, fn) -> dict:
+        chat = self._app.chat
+        model, error = self._model(model)
+        if error:
+            return error
         if not self._busy.acquire(blocking=False):
             return {"ok": False, "error": "Une génération est déjà en cours."}
         try:
@@ -177,9 +218,10 @@ class WebPane:
         return {"ok": True, "text": text, "draft": draft, "model": model}
 
     @staticmethod
-    def _ask(model: str, system: str, prompt: str, schema: dict) -> dict:
+    def _ask(model: str, system: str, prompt: str, schema: dict, temperature: float = 0.7) -> dict:
         resp = _ollama.chat(model=model, format=schema, think=False,
-                            options={"temperature": 0.7, "num_ctx": NUM_CTX},
+                            options={"temperature": temperature, "num_ctx": num_ctx()},
+                            keep_alive=keep_alive(),
                             messages=[{"role": "system", "content": system},
                                       {"role": "user", "content": prompt}])
         data = json.loads(resp.message.content or "{}")
@@ -194,9 +236,11 @@ class WebPane:
                 return
             time.sleep(0.05)
 
-    def _eval(self, script: str, timeout: float = 8.0) -> dict:
+    def _eval(self, script: str, timeout: float = 8.0, awaits: bool = False) -> dict:
         """Exécute un script dans la page et retourne son résultat
-        (attend la réponse : à ne pas appeler depuis le thread de l'interface)."""
+        (attend la réponse : à ne pas appeler depuis le thread de l'interface).
+        awaits : le script retourne une promesse, attendue (protocole DevTools :
+        ExecuteScriptAsync rendrait la promesse elle-même, vide)."""
         if self._view is None or self._state != "ready":
             return {"ok": False, "error": f"{self.name} n'est pas chargé."}
         done = threading.Event()
@@ -214,7 +258,13 @@ class WebPane:
                 done.set()
 
             try:
-                self._view.CoreWebView2.ExecuteScriptAsync(script).ContinueWith(Action[Task[String]](finish))
+                core = self._view.CoreWebView2
+                if awaits:
+                    params = {"expression": script, "awaitPromise": True, "returnByValue": True}
+                    task = core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", json.dumps(params))
+                else:
+                    task = core.ExecuteScriptAsync(script)
+                task.ContinueWith(Action[Task[String]](finish))
             except Exception as e:     # contrôle fermé entre-temps
                 box["error"] = e
                 done.set()
@@ -223,6 +273,10 @@ class WebPane:
         if not done.wait(timeout):
             return {"ok": False, "error": f"{self.name} ne répond pas."}
         result = box.get("result")
+        if awaits and isinstance(result, dict):
+            # { result: { value } } ; exception du script : { exceptionDetails }
+            box.setdefault("error", (result.get("exceptionDetails") or {}).get("exception", {}).get("description"))
+            result = (result.get("result") or {}).get("value")
         if not isinstance(result, dict):
             logger.log(f"{self.name} : lecture de la page impossible ({box.get('error') or result!r})")
             return {"ok": False, "error": f"Lecture de la page {self.name} impossible."}
@@ -257,6 +311,7 @@ class WebPane:
         if self._bounds:
             from System.Drawing import Rectangle
             view.Bounds = Rectangle(*self._bounds)
+            self._cut_holes(view)
         visible = self._wanted and self._state == "ready"
         if view.Visible != visible:
             if not visible and view.ContainsFocus:
@@ -269,6 +324,21 @@ class WebPane:
         if visible and self._focus:
             self._focus = False
             view.Focus()
+
+    def _cut_holes(self, view):
+        """Région du contrôle : tout, sauf les zones des menus de l'interface qui le
+        chevauchent (la fenêtre du site, enfant du contrôle, y est découpée aussi)."""
+        from System.Drawing import Rectangle, Region
+        old = view.Region
+        if self._holes:
+            region = Region(Rectangle(0, 0, self._bounds[2], self._bounds[3]))
+            for hole in self._holes:
+                region.Exclude(Rectangle(*hole))
+            view.Region = region
+        elif old is not None:
+            view.Region = None
+        if old is not None:
+            old.Dispose()
 
     def _create(self):
         # Charge les assemblies WebView2 embarquées par pywebview
@@ -312,6 +382,8 @@ class WebPane:
         core.WebMessageReceived += self._on_message
         core.ProcessFailed += self._on_process_failed
         core.AddScriptToExecuteOnDocumentCreatedAsync(SHORTCUTS_JS)
+        if self.context_js:
+            core.AddScriptToExecuteOnDocumentCreatedAsync(WATCH_JS.replace("__CONTEXT__", self.context_js))
         core.Navigate(self.url)
         self._set_state("ready")
         self._apply()
@@ -378,6 +450,13 @@ class WebPane:
             self._app.bridge.emit("webpane:key", {"key": msg["key"]})
         elif msg.get("type") == "focus":
             self._app.bridge.emit("webpane:focus", {"pane": self.key})
+        elif msg.get("type") == "context":
+            self._set_context({"reply": bool(msg.get("reply")), "improve": bool(msg.get("improve"))})
+
+    def _set_context(self, context: dict):
+        if context != self._context:
+            self._context = context
+            self._app.bridge.emit(f"{self.key}:context", dict(context))
 
     def _on_process_failed(self, sender, args):
         kind = str(args.ProcessFailedKind)
@@ -389,6 +468,8 @@ class WebPane:
 
     def _set_state(self, state: str, message: str = ""):
         self._state, self._message = state, message
+        if state != "ready":
+            self._set_context(dict(NO_CONTEXT))
         if message:
             logger.log(f"{self.name} : {message}")
         self._app.bridge.emit(f"{self.key}:state", {"state": state, "message": message})

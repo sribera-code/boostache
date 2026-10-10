@@ -29,6 +29,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime
 
 import ocr
 from clipboard_listener import set_clipboard_content, set_clipboard_image
@@ -53,9 +54,24 @@ DELTA_INTERVAL = 0.04          # regroupement des tokens envoyés à l'interface
 
 # Contexte des modèles (tokens) : les 4096 d'Ollama par défaut ne suffisent pas à une capture
 # d'écran suivie de la réflexion d'un modèle « thinking ». Le même pour tous les appels (sinon
-# Ollama recharge le modèle à chaque changement) ; un OLLAMA_CONTEXT_LENGTH plus grand est gardé.
-_ENV_CTX = os.environ.get("OLLAMA_CONTEXT_LENGTH", "")
-NUM_CTX  = max(8192, int(_ENV_CTX) if _ENV_CTX.isdigit() else 0)
+# Ollama recharge le modèle à chaque changement), choisi dans la section Ollama ; par défaut
+# 8192, ou OLLAMA_CONTEXT_LENGTH s'il est plus grand.
+_ENV_CTX    = os.environ.get("OLLAMA_CONTEXT_LENGTH", "")
+DEFAULT_CTX = max(8192, int(_ENV_CTX) if _ENV_CTX.isdigit() else 0)
+CTX_SIZES   = (4096, 8192, 16384, 32768, 65536)
+# Durée pendant laquelle un modèle reste en mémoire après un appel (réglage → valeur pour Ollama)
+KEEP_ALIVE  = {"0": 0, "5m": "5m", "30m": "30m", "2h": "2h", "-1": -1}
+
+
+def num_ctx() -> int:
+    """Contexte des appels de Boostache (tokens)."""
+    value = settings.get("ollama_num_ctx", 0)
+    return value if value in CTX_SIZES else DEFAULT_CTX
+
+
+def keep_alive():
+    """Durée de chargement après un appel (None : celle du serveur, 5 min sauf réglage)."""
+    return KEEP_ALIVE.get(settings.get("ollama_keep_alive", ""))
 
 HELP_MAX_TEXT  = 4000          # texte de la fenêtre transmis au modèle (caractères)
 HELP_OCR_WAIT  = 10            # attente de l'OCR à l'envoi de la question (secondes)
@@ -89,8 +105,27 @@ PROBE_TIMEOUT = 3.0                       # secondes
 RETRY_DELAYS  = (2, 4, 8, 15, 30, 60)     # injoignable : attente avant chaque nouvel essai (s)
 RECHECK_AFTER = 15                        # en ligne : pas de nouveau test avant (s), sauf échec
 VISIBLE_EVERY = 30                        # fenêtre affichée : au moins un test toutes les 30 s
-NO_MODELS     = "Aucun modèle installé (ollama pull <modèle>)."
+NO_MODELS     = "Aucun modèle installé : télécharges-en un dans la section Ollama."
 UNREACHABLE   = "Ollama ne répond pas : il sera détecté dès son lancement."
+
+
+def internal_model(name: str) -> bool:
+    """Entrée interne d'Ollama (0.40 et plus) : variante d'un modèle pour l'un de
+    ses moteurs, listée sous un nom de la forme « llamacpp:<empreinte> »."""
+    return re.fullmatch(r"[0-9a-f]{64}", name.rsplit(":", 1)[-1]) is not None
+
+
+def _chat_models(entries: list[dict]) -> list[str]:
+    """Modèles qui conversent (réponse de /api/tags), chacun une fois : sans les
+    entrées internes d'Ollama (une par variante de moteur) ni les modèles
+    d'embeddings. Un serveur trop ancien pour donner les capacités : tous."""
+    names = []
+    for m in entries:
+        name = m.get("model") or m.get("name") or ""
+        caps = m.get("capabilities") or []
+        if name and not internal_model(name) and not ("embedding" in caps and "completion" not in caps):
+            names.append(name)
+    return list(dict.fromkeys(names))
 
 
 def _unreachable(e: Exception) -> bool:
@@ -237,6 +272,11 @@ def _split_legacy(content: str) -> tuple[str, list[dict]]:
     return rest.strip(), [{"name": n, "type": "text"} for n in names]
 
 
+def _now() -> str:
+    """Heure d'un message : ISO, heure locale avec son décalage."""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
 def _shorten(text: str) -> str:
     return text[:TITLE_LEN] + ("…" if len(text) > TITLE_LEN else "")
 
@@ -255,10 +295,10 @@ def _ui_message(m: dict) -> dict | None:
         else:
             text, atts = _split_legacy(m.get("content", ""))
             atts += [{"name": "image", "type": "image"} for _ in (m.get("images") or [])]
-        return {"role": "user", "text": text, "attachments": atts}
+        return {"role": "user", "text": text, "attachments": atts, "time": m.get("time", "")}
     if role == "assistant":
-        return {"role": "assistant", "text": m.get("content", ""),
-                "thinking": m.get("thinking", ""), "model": m.get("model", "")}
+        return {"role": "assistant", "text": m.get("content", ""), "thinking": m.get("thinking", ""),
+                "model": m.get("model", ""), "time": m.get("time", "")}
     return None
 
 
@@ -461,7 +501,10 @@ class ChatService:
             if self._checked >= asked:
                 return self.available
             try:
-                models = [m.model for m in self._client.list().models]
+                # Requête directe : la librairie ne transmet pas les capacités des modèles
+                resp = self._client._client.get("/api/tags")
+                resp.raise_for_status()
+                models = _chat_models(resp.json().get("models") or [])
                 online, error = True, "" if models else NO_MODELS
             except _ReadTimeout:
                 # Connexion acceptée mais réponse lente (Ollama occupé) : rien ne disparaît pour ça
@@ -499,6 +542,17 @@ class ChatService:
         if _unreachable(e):
             self.check(force=True)
         return _ollama_error(e)
+
+    def model_changed(self, model: str):
+        """Modèle supprimé, installé ou mis à jour (section Ollama) : ses capacités sont relues."""
+        self._vision.pop(model, None)
+
+    def emit_models(self):
+        """Modèle par défaut changé ailleurs (section Ollama) : les vues le reprennent."""
+        with self._lock:
+            payload = {"models": self.models, "error": self.models_error, "online": self.online,
+                       "default_model": settings.get("last_model", "")}
+        self._bridge.emit("chat:models", payload)
 
     # ── Onglets ───────────────────────────────
     def new_tab(self, after_id: str | None = None) -> dict:
@@ -607,7 +661,7 @@ class ChatService:
             question = (f"{self._help_context(aid)}\n\n{HELP_ANSWER}\n\n"
                         f"{HELP_QUESTION}{text or HELP_DEFAULT_QUESTION}")
         content = "\n\n".join(blocks + ([question] if question else []))
-        message = {"role": "user", "content": content, "display": text, "attachments": atts}
+        message = {"role": "user", "content": content, "display": text, "attachments": atts, "time": _now()}
         if screen and aid["text"]:
             message["screen_text"] = True
         if images:
@@ -635,7 +689,7 @@ class ChatService:
         if not text and not shown["attachments"]:
             return {"ok": False, "error": "La question est vide."}
         message = {**old, "content": _edited_content(old, text), "display": text,
-                   "attachments": shown["attachments"]}
+                   "attachments": shown["attachments"], "time": _now()}
         self._start(tab, message, model, replace=pos)
         return {"ok": True}
 
@@ -671,6 +725,7 @@ class ChatService:
 
         content = thinking = ""
         buf_c = buf_t = ""
+        ctx = num_ctx()
         last_flush = time.monotonic()
         error, stopped, stream, done_reason = None, False, None, None
 
@@ -682,7 +737,8 @@ class ChatService:
             last_flush = time.monotonic()
 
         try:
-            stream = _ollama.chat(model=model, messages=payload, stream=True, options={"num_ctx": NUM_CTX})
+            stream = _ollama.chat(model=model, messages=payload, stream=True, options={"num_ctx": ctx},
+                                  keep_alive=keep_alive())
             for chunk in stream:
                 if stop_evt.is_set():
                     stopped = True
@@ -710,8 +766,9 @@ class ChatService:
                     pass
         flush()
         if done_reason == "length" and not stopped:
-            error = (f"Réponse coupée : le contexte du modèle ({NUM_CTX} tokens) est plein. "
-                     "Ouvre une nouvelle conversation ou retire des pièces jointes.")
+            error = (f"Réponse coupée : le contexte du modèle ({ctx} tokens) est plein. "
+                     "Ouvre une nouvelle conversation, retire des pièces jointes ou agrandis "
+                     "le contexte dans la section Ollama.")
             logger.log(f"Chat ({model}) : {error}")
 
         saved = None
@@ -719,7 +776,7 @@ class ChatService:
             # Onglet fermé ou réinitialisé pendant la génération : on jette la réponse
             alive = tab in self.tabs and tab.gen == gen
             if alive and content.strip():
-                saved = {"role": "assistant", "content": content, "model": model}
+                saved = {"role": "assistant", "content": content, "model": model, "time": _now()}
                 if thinking.strip():
                     saved["thinking"] = thinking
                 tab.messages.append(saved)
@@ -751,7 +808,7 @@ class ChatService:
             self._vision[model] = caps is None or "vision" in caps
         return self._vision[model]
 
-    def _help_model(self) -> str:
+    def help_model(self) -> str:
         """Modèle de l'aide : le dernier choisi pour elle, sinon un modèle qui
         lit les images, sinon n'importe lequel (il n'aura que le texte de la fenêtre)."""
         wanted = [settings.get("help_model", ""), settings.get("last_model", ""), *self.models]
@@ -765,7 +822,7 @@ class ChatService:
         path = CACHE_DIR / f"boostache_{int(time.time() * 1000)}" / f"{name}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path, "PNG")
-        tab = ChatTab(model=self._help_model())
+        tab = ChatTab(model=self.help_model())
         # Fichier gardé même si la pièce jointe est retirée : les propositions s'en servent
         # (le cache est vidé au prochain démarrage)
         self._add_file(tab, str(path))
@@ -786,7 +843,7 @@ class ChatService:
         tab = self._find(tab_id)
         if not tab or not tab.help:
             return
-        model = tab.model if tab.model in self.models else self._help_model()
+        model = tab.model if tab.model in self.models else self.help_model()
         with self._lock:
             aid = tab.help
             if aid is None:
@@ -833,7 +890,8 @@ class ChatService:
                 message["images"] = [_model_image(aid["path"])]
             try:
                 resp = _ollama.chat(model=model, format=HELP_SCHEMA, think=False,
-                                    options={"temperature": 0.4, "num_ctx": NUM_CTX},
+                                    options={"temperature": 0.4, "num_ctx": num_ctx()},
+                                    keep_alive=keep_alive(),
                                     messages=[{"role": "system", "content": HELP_SYSTEM}, message])
                 if resp.done_reason == "length":
                     raise RuntimeError("Réponse du modèle coupée : son contexte est trop petit.")

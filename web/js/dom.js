@@ -83,6 +83,39 @@ export function formatTimestamp(iso) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** Date d'un horodatage ISO, ou null s'il manque ou est illisible. */
+export function parseDate(iso) {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+const sameDay = (a, b) => a.toDateString() === b.toDateString();
+
+/** "14:32". */
+export const formatHour = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+/** "14:32" aujourd'hui, "27/09 14:32" sinon. */
+export const formatShort = (d) => (sameDay(d, new Date()) ? formatHour(d)
+  : `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${formatHour(d)}`);
+
+/** "Aujourd'hui", "Hier", "Lundi 6 octobre", "6 octobre 2025" les autres années. */
+export function formatDay(d) {
+  const today = new Date();
+  if (sameDay(d, today)) return "Aujourd'hui";
+  if (sameDay(d, new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1))) return "Hier";
+  const text = d.toLocaleDateString("fr-FR", d.getFullYear() === today.getFullYear()
+    ? { weekday: "long", day: "numeric", month: "long" }
+    : { day: "numeric", month: "long", year: "numeric" });
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** "mercredi 8 octobre 2026 à 14:32:05". */
+export function formatFullDate(d) {
+  const day = d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  return `${day} à ${formatHour(d)}:${pad(d.getSeconds())}`;
+}
+
 export function plural(n, one, many) {
   return `${n.toLocaleString("fr-FR")} ${n > 1 ? many : one}`;
 }

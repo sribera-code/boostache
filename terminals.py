@@ -5,7 +5,8 @@ affichés par xterm.js dans l'interface.
 Chaque onglet fait tourner un shell interactif (PowerShell ou cmd). Le shell
 publie son répertoire courant dans le titre de la console
 ("boostache-cwd:<chemin>"), ce qui permet de le suivre, de le restaurer au
-prochain démarrage et d'ouvrir un terminal externe au bon endroit.
+prochain démarrage et d'ouvrir un terminal externe au bon endroit. Son invite
+commence par l'heure à laquelle elle s'affiche (fin de la commande précédente).
 """
 
 import base64
@@ -30,16 +31,21 @@ TITLE_MARK = "boostache-cwd:"
 HOME = os.path.expanduser("~")
 
 # Enveloppe le prompt existant (profil utilisateur, oh-my-posh…) pour publier
-# le répertoire courant dans le titre, sans changer l'apparence du prompt.
+# le répertoire courant dans le titre ; seule l'heure, en gris, est ajoutée devant.
 _PS_INIT = r"""
 $global:__bst_prompt = $function:prompt
 function global:prompt {
     $p = if ($global:__bst_prompt) { & $global:__bst_prompt } else { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
     $loc = $executionContext.SessionState.Path.CurrentLocation
     if ($loc.Provider.Name -eq 'FileSystem') { $Host.UI.RawUI.WindowTitle = 'boostache-cwd:' + $loc.ProviderPath }
-    $p
+    $e = [char]27
+    "$e[90m[$(Get-Date -Format 'HH:mm:ss')]$e[0m $p"
 }
 """
+
+# Invite de cmd : titre (répertoire courant), heure en gris sans les centièmes
+# ($T donne « 14:32:05,12 », chaque $H efface un caractère), puis « C:\…> »
+_CMD_PROMPT = "$E]0;" + TITLE_MARK + "$P$E\\" + "$E[90m[$T$H$H$H]$E[0m $P$G"
 
 # Styles de l'ancien format (segments taggés) → séquences ANSI
 _LEGACY_STYLE = {
@@ -379,7 +385,7 @@ class TerminalService:
             exe = "pwsh.exe" if shell == "pwsh" else "powershell.exe"
             enc = base64.b64encode(_PS_INIT.encode("utf-16-le")).decode("ascii")
             return [exe, "-NoLogo", "-NoExit", "-EncodedCommand", enc], env
-        env["PROMPT"] = "$E]0;" + TITLE_MARK + "$P$E\\$P$G"
+        env["PROMPT"] = _CMD_PROMPT
         return ["cmd.exe"], env
 
     @staticmethod

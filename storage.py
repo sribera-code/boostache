@@ -100,6 +100,11 @@ _DEFAULTS = {
     "tts_mode_chat":        "last",        # "last" | "all"
     "tts_mode_console":     "last",        # "last" | "all"
     "tts_mode_note":        "all",         # "all" | "sel"
+    "tts_engine":           "edge",        # "edge" (voix naturelle, en ligne) | "piper" (hors ligne) | "sapi"
+    "tts_voice_edge":       "fr-CA-SylvieNeural",
+    "tts_voice_piper":      "fr_FR-siwis-medium",
+    "tts_voice_sapi":       "",            # "" : voix par défaut de Windows
+    "tts_speed":            1.0,           # de 0.5 à 2
     "clipboard_max_items":  100,
     "console_shell":        "powershell",  # "powershell" | "pwsh" | "cmd"
     "sidebar_collapsed":    False,
@@ -115,6 +120,15 @@ _DEFAULTS = {
     "audio_transcribe":     False,         # transcription automatique après chaque enregistrement
     "transcribe_model":     "small",       # modèle Whisper : "base" | "small" | "large-v3-turbo"
     "transcribe_language":  "",            # "" : détection automatique
+    "live_interval":        30,            # assistant live : secondes entre deux captures (live.INTERVALS)
+    "live_mode":            "reply",       # assistant live : "reply" | "summary" | "explain" | "correct" | "custom"
+    "live_goal":            "",            # consigne du mode Libre ("custom")
+    "live_model":           "",            # "" : de préférence un modèle qui lit les images
+    "live_speak":           False,         # conseils lus à voix haute
+    "live_notify":          True,          # notification Windows quand la fenêtre est masquée
+    "ollama_num_ctx":       0,             # contexte des appels (chat.CTX_SIZES) ; 0 : chat.DEFAULT_CTX
+    "ollama_keep_alive":    "5m",          # modèle gardé en mémoire après un appel (chat.KEEP_ALIVE)
+    "ollama_autostart":     False,         # lancer Ollama au démarrage de Boostache s'il ne répond pas
 }
 
 
@@ -153,7 +167,8 @@ class ConversationManager:
     Format : {"id": "...", "title": "...", "model": "...",
                "created_at": "...", "messages": [...]}
     Les messages suivent le format Ollama (role / content / images) avec
-    quelques champs d'affichage en plus (display, attachments, thinking, model).
+    quelques champs d'affichage en plus (display, attachments, thinking, model,
+    time : heure d'envoi de la question / de fin de la réponse, ISO).
     """
 
     def __init__(self):

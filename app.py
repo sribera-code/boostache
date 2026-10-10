@@ -2,7 +2,7 @@
 app.py – Fenêtre principale de Boostache (interface web via pywebview/WebView2).
 
 Assemble les services (conversations, consoles, notes, captures,
-enregistreur, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
+enregistreur, assistant live, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
 fermée, rappelée depuis le tray ou un raccourci) et fournit l'état initial à
 l'interface.
 """
@@ -18,12 +18,15 @@ import custom_tasks
 from api import Api
 from bridge import Bridge
 from captures import CapturesService, Snipper
-from chat import ChatService, OLLAMA_OK
+from chat import CTX_SIZES, KEEP_ALIVE, ChatService, OLLAMA_OK
 from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from gmail import GmailPane
+from live import INTERVALS as LIVE_INTERVALS, MODES as LIVE_MODES, LiveService
 from notes import NotesService
+from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from recorder import FORMATS as AUDIO_FORMATS, RecorderService
+import speech
 from transcriber import LANGUAGES, MODELS
 from storage import DATA_DIR, settings, clipboard_history
 from terminals import TerminalService
@@ -117,8 +120,9 @@ class BoostacheApp:
 
         self.bridge = Bridge()
         logger.subscribe(self._on_log)
-        tts.subscribe(lambda speaking, source: self.bridge.emit(
-            "tts", {"speaking": speaking, "source": source}))
+        tts.subscribe(lambda state: self.bridge.emit("tts", state))
+        self._configure_tts()
+        threading.Thread(target=speech.warm_up, args=(tts.engine,), daemon=True, name="tts-warm-up").start()
 
         self.snipper = Snipper(hooks=self)
         # Le service surveille lui-même le serveur Ollama (fonctions affichées tant qu'il répond)
@@ -129,6 +133,12 @@ class BoostacheApp:
         self.notes = NotesService()
         self.captures = CapturesService(self.bridge, self.snipper, show_window=self.show)
         self.recorder = RecorderService(self.bridge, is_visible=self.is_visible)
+        self.notifier = None     # notification Windows (titre, texte) : posée par le tray (main.py)
+        self.live = (LiveService(self.bridge, self.chat, is_visible=self.is_visible, notify=self._notify)
+                     if self.chat else None)
+        # Section Ollama : serveur, modèles, téléchargements
+        self.ollama = (OllamaAdmin(self.bridge, self.chat, self.live, is_visible=self.is_visible,
+                                   notify=self._notify) if self.chat else None)
         # Sites intégrés, par clé (whatsapp, gmail)
         self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
         self._clip_listener: ClipboardListener | None = None
@@ -250,6 +260,10 @@ class BoostacheApp:
         logger.log(f"Aide contextuelle : {title or 'écran entier'} ({image.width} × {image.height} px)")
         chat.open_help(image, title, app)
         self.show()
+
+    def _notify(self, title: str, text: str):
+        if self.notifier:
+            self.notifier(title, text)
 
     # ─────────────────────────────────────────
     #  Événements fenêtre
@@ -438,6 +452,8 @@ class BoostacheApp:
                 pass
         self.terminals.shutdown()
         self.recorder.shutdown()
+        if self.live:
+            self.live.shutdown()
         try:
             tts.stop()
         except Exception:
@@ -454,7 +470,10 @@ class BoostacheApp:
                 "system_prompt", "clipboard_max_items", "always_on_top", "window_opacity",
                 "console_shell", "tts_mode_chat", "tts_mode_console", "tts_mode_note",
                 "sidebar_collapsed", "print_screen_capture", "help_capture", "assist_model",
-                "layout")},
+                "layout", "live_mode", "live_interval", "live_goal", "live_speak", "live_notify",
+                "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed",
+                "last_model", "help_model", "live_model", "ollama_num_ctx", "ollama_keep_alive",
+                "ollama_autostart", "digest_height")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -462,12 +481,16 @@ class BoostacheApp:
             "notes":     self.notes.snapshot(),
             "captures":  self.captures.snapshot(),
             "recorder":  self.recorder.snapshot(),
+            "live":      self.live.snapshot() if self.live else
+                         {"available": False, "reason": NO_OLLAMA_LIB},
+            "ollama":    self.ollama.boot_state() if self.ollama else
+                         {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
             "clipboard": self.clipboard_items(),
             "logs":      logger.recent(),
             "tasks":     custom_tasks.rows(),
             "hotkeys":   custom_tasks.hotkey_rows(),
-            "tts":       {"speaking": tts.speaking, "source": None},
+            "tts":       tts.state(),
             "visible":   self._visible,
             "win_build": sys.getwindowsversion().build,
         }
@@ -505,6 +528,24 @@ class BoostacheApp:
             if value not in ("last", "all", "sel"):
                 return settings.get(key)
             settings.set(key, value)
+        elif key == "tts_engine":
+            if value not in speech.ENGINES:
+                return settings.get(key)
+            settings.set(key, value)
+            self._configure_tts()
+            threading.Thread(target=speech.warm_up, args=(value,), daemon=True).start()
+        elif key in ("tts_voice_edge", "tts_voice_piper", "tts_voice_sapi"):
+            if not isinstance(value, str) or len(value) > 300:
+                return settings.get(key)
+            settings.set(key, value)
+            self._configure_tts()
+        elif key == "tts_speed":
+            try:
+                value = round(max(speech.MIN_SPEED, min(float(value), speech.MAX_SPEED)), 2)
+            except (TypeError, ValueError):
+                return settings.get(key)
+            settings.set(key, value)
+            tts.set_speed(value)
         elif key == "audio_format":
             if value not in AUDIO_FORMATS:
                 return settings.get(key)
@@ -513,9 +554,54 @@ class BoostacheApp:
             if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
                 return settings.get(key)
             settings.set(key, value)
-        elif key == "audio_transcribe":
+        elif key in ("audio_transcribe", "live_speak", "live_notify", "ollama_autostart"):
             settings.set(key, bool(value))
+        elif key == "ollama_num_ctx":
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return settings.get(key)
+            if value not in CTX_SIZES:
+                return settings.get(key)
+            settings.set(key, value)
+        elif key == "ollama_keep_alive":
+            if value not in KEEP_ALIVE:
+                return settings.get(key)
+            settings.set(key, value)
+        elif key in ("last_model", "help_model"):
+            settings.set(key, str(value or ""))
+            if key == "last_model" and self.chat:
+                self.chat.emit_models()      # modèle des nouvelles conversations
+        elif key == "live_interval":
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                return settings.get(key)
+            if value not in LIVE_INTERVALS:
+                return settings.get(key)
+            settings.set(key, value)
+            if self.live:
+                self.live.reschedule()
+        elif key == "live_mode":
+            if value not in LIVE_MODES:
+                return settings.get(key)
+            settings.set(key, value)
+            if self.live:
+                self.live.set_mode()
+        elif key == "live_goal":
+            settings.set(key, str(value or "").strip()[:500])
+        elif key == "live_model":
+            settings.set(key, str(value or ""))
+            if self.live:
+                self.live.refresh()
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
+            settings.set(key, value)
+        elif key == "digest_height":
+            # Hauteur du résumé des e-mails (Gmail), en px ; 0 = automatique
+            try:
+                value = max(0, min(int(value), 4000))
+            except (TypeError, ValueError):
+                return settings.get(key)
             settings.set(key, value)
         elif key == "layout":
             # Écran partagé : sections affichées (gauche, droite) et part du volet gauche
@@ -530,6 +616,12 @@ class BoostacheApp:
         else:
             return None
         return settings.get(key)
+
+    @staticmethod
+    def _configure_tts():
+        tts.configure(engine=settings.get("tts_engine"),
+                      voices={e: settings.get(f"tts_voice_{e}") or "" for e in speech.ENGINES},
+                      speed=settings.get("tts_speed"))
 
     def focus_ui(self):
         """Rend le clavier à l'interface quand un site intégré l'a gardé

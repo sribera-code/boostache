@@ -1,7 +1,7 @@
 """
 winutil.py – Petits utilitaires Win32 (premier plan et transparence, barre de
 titre sombre, explorateur, corbeille, liens externes, icônes et miniatures des fenêtres,
-interception de la touche Impr. écran).
+interception de la touche Impr. écran, inactivité de l'utilisateur).
 """
 
 import base64
@@ -55,6 +55,23 @@ def work_area_size() -> tuple[int, int] | None:
     # 96 tant que le processus ne gère pas l'échelle : le rectangle est alors déjà logique
     scale = (user32.GetDpiForSystem() or 96) / 96
     return int((rect.right - rect.left) / scale), int((rect.bottom - rect.top) / scale)
+
+
+class LASTINPUTINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wintypes.UINT), ("dwTime", wintypes.DWORD)]
+
+
+user32.GetLastInputInfo.argtypes = [ctypes.POINTER(LASTINPUTINFO)]
+kernel32.GetTickCount.restype = wintypes.DWORD
+
+
+def idle_seconds() -> float:
+    """Temps écoulé depuis la dernière action au clavier ou à la souris (0 si inconnu)."""
+    info = LASTINPUTINFO(ctypes.sizeof(LASTINPUTINFO), 0)
+    if not user32.GetLastInputInfo(ctypes.byref(info)):
+        return 0.0
+    # Compteurs en millisecondes sur 32 bits : la différence reste juste après un tour (49 jours)
+    return ((kernel32.GetTickCount() - info.dwTime) & 0xFFFFFFFF) / 1000
 
 
 def restore_window(hwnd: int):

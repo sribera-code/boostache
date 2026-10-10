@@ -1,6 +1,6 @@
 """
 engine.py – Machinerie interne de Boostache
-Logger, TaskManager, HotkeyManager, TTSEngine, création de l'icône tray.
+Logger, TaskManager, HotkeyManager, TTSEngine (speech.py), création de l'icône tray.
 Ne pas modifier sauf pour étendre le moteur lui-même.
 """
 
@@ -10,6 +10,8 @@ import threading
 import time
 import datetime
 from collections import deque
+
+from speech import TTSEngine
 
 try:
     import schedule
@@ -177,7 +179,7 @@ class HotkeyManager:
 
 
 # ─────────────────────────────────────────────
-#  TTSEngine
+#  Lecture à voix haute (le moteur est dans speech.py)
 # ─────────────────────────────────────────────
 def strip_markdown(text: str) -> str:
     """Retire la syntaxe markdown avant la lecture TTS (les blocs de code
@@ -199,95 +201,6 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r"─+", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
-
-
-class TTSEngine:
-    """
-    Lit du texte à haute voix via pyttsx3 (SAPI5 Windows).
-    speak() arrête la lecture précédente avant d'en démarrer une nouvelle.
-    Thread-safe : peut être appelé depuis n'importe quel thread.
-
-    Usage :
-        tts.speak("Bonjour", on_done=ma_callback, source="notes:1")
-        tts.stop()
-        tts.subscribe(fn)   # fn(speaking: bool, source: str | None)
-    """
-
-    def __init__(self, logger: Logger):
-        self._logger = logger
-        self._stop_evt = threading.Event()
-        self._engine_ref = None
-        self._thread: threading.Thread | None = None
-        self._source: str | None = None
-        self._listeners: list = []
-
-    def subscribe(self, listener):
-        """listener(speaking: bool, source: str | None), appelé à chaque
-        début et fin de lecture."""
-        self._listeners.append(listener)
-
-    def _notify(self, speaking: bool):
-        for fn in list(self._listeners):
-            try:
-                fn(speaking, self._source if speaking else None)
-            except Exception:
-                pass
-
-    def speak(self, text: str, on_done=None, source: str | None = None):
-        """Lit text à haute voix. Arrête toute lecture en cours d'abord."""
-        self.stop()
-        if not text.strip():
-            if on_done:
-                try:
-                    on_done()
-                except Exception:
-                    pass
-            return
-        self._stop_evt.clear()
-        self._source = source
-        self._thread = threading.Thread(
-            target=self._run, args=(text.strip(), on_done), daemon=True)
-        self._thread.start()
-
-    def _run(self, text: str, on_done):
-        self._notify(True)
-        try:
-            import pyttsx3
-            engine = pyttsx3.init()
-            self._engine_ref = engine
-            engine.setProperty("rate", 175)
-            engine.say(text)
-            if not self._stop_evt.is_set():
-                engine.runAndWait()
-        except Exception as e:
-            self._logger.log(f"TTS erreur : {e}")
-        finally:
-            self._engine_ref = None
-            # Une nouvelle lecture a pu démarrer entre-temps : ne pas l'annoncer finie
-            if self._thread is threading.current_thread():
-                self._notify(False)
-            if on_done:
-                try:
-                    on_done()
-                except Exception:
-                    pass
-
-    def stop(self):
-        """Arrête la lecture en cours."""
-        self._stop_evt.set()
-        engine = self._engine_ref
-        if engine:
-            try:
-                engine.stop()
-                engine.endLoop()
-            except Exception:
-                pass
-        if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=0.5)
-
-    @property
-    def speaking(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
 
 
 # ─────────────────────────────────────────────

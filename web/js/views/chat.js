@@ -1,9 +1,26 @@
 // Vue Conversations : chat avec les modèles Ollama.
-import { h, throttle, plural } from "../dom.js";
+import { h, throttle, plural, parseDate, formatHour, formatShort, formatDay, formatFullDate } from "../dom.js";
 import { ico, iconButton, openLightbox, openMenu, openMenuBelow, TabStrip, toast, kbdCombo } from "../ui.js";
 import { renderMarkdown, renderMarkdownForCopy, splitThinking } from "../markdown.js";
 
 const wordCount = (s) => (s.trim().match(/\S+/g) || []).length;
+
+/** Heure d'un message : "14:32", la date complète au survol ; masquée s'il n'en a pas
+ *  (conversations d'avant l'horodatage, réponse en cours). */
+function setStamp(el, iso) {
+  const d = parseDate(iso);
+  el.hidden = !d;
+  if (!d) return;
+  el.dateTime = iso;
+  el.textContent = formatHour(d);
+  el.dataset.tip = formatFullDate(d);
+}
+
+function stamp(iso) {
+  const el = h("time", { class: "msg-time" });
+  setStamp(el, iso);
+  return el;
+}
 
 export function createChatView(ctx, state) {
   const { api, on } = ctx;
@@ -69,7 +86,7 @@ export function createChatView(ctx, state) {
   function makeTab(data) {
     const pane = h("div", { class: "chat-pane" });
     const t = { id: data.id, data, pane, stick: true, draft: "", stream: null, partial: null,
-      helpHidden: false, helpUsed: new Set(), editing: false };
+      helpHidden: false, helpUsed: new Set(), editing: false, day: null };
     t.renderPartial = throttle(() => {
       if (t.stream && t.partial) t.stream.update(t.partial.content, t.partial.thinking, true);
       autoScroll(t);
@@ -238,10 +255,12 @@ export function createChatView(ctx, state) {
     const root = h("div", { class: "msg msg-user" },
       files.length ? h("div", { class: "msg-files" }, files) : null,
       m.text ? h("div", { class: "bubble", text: m.text }) : null,
-      h("div", { class: "msg-actions" },
-        editBtn,
-        forkBtn,
-        iconButton("copy", images ? "Copier le message et ses images" : "Copier", copy, { size: 15, cls: "sm" })));
+      h("div", { class: "msg-foot" },
+        h("div", { class: "msg-actions" },
+          editBtn,
+          forkBtn,
+          iconButton("copy", images ? "Copier le message et ses images" : "Copier", copy, { size: 15, cls: "sm" })),
+        stamp(m.time)));
     Object.assign(root, { copyMessage: copy, forkMessage: fork, editMessage: edit, editBtn, forkBtn });
     return root;
   }
@@ -363,9 +382,10 @@ export function createChatView(ctx, state) {
       iconButton("copy", "Copier la réponse", copy, { size: 15, cls: "sm" }),
       speakBtn);
     root.copyMessage = copy;
+    const time = stamp(m.time);
     root.append(
       h("div", { class: "msg-meta" }, h("span", { class: "avatar" }, ico("sparkles", 13)),
-        h("span", { class: "msg-model", text: m.model || t.data.model || "Assistant" })),
+        h("span", { class: "msg-model", text: m.model || t.data.model || "Assistant" }), time),
       think, content, actions);
     summary.addEventListener("click", () => { think.dataset.touched = "1"; });
 
@@ -403,23 +423,42 @@ export function createChatView(ctx, state) {
       actions.hidden = streaming;
     }
     update(m.text, m.thinking, live);
-    return { root, update };
+    return { root, update, setTime: (iso) => setStamp(time, iso) };
   }
 
   function notice(text, kind = "") {
     return h("div", { class: `notice ${kind}` }, ico(kind === "error" ? "triangle-alert" : "info", 14), text);
   }
 
+  /** Séparateur de date avant un message d'un autre jour que le précédent ; avant le
+   *  premier, seulement s'il n'est pas d'aujourd'hui. t.day : jour du dernier message affiché. */
+  function daySep(t, iso) {
+    const d = parseDate(iso);
+    if (!d) {
+      t.day ??= "?";      // message sans heure : jour inconnu
+      return null;
+    }
+    const key = d.toDateString();
+    const first = t.day === null;
+    const changed = key !== t.day;
+    t.day = key;
+    if (!changed || (first && key === new Date().toDateString())) return null;
+    return h("div", { class: "day-sep" }, h("span", { text: formatDay(d) }));
+  }
+
   function renderPane(t) {
     const d = t.data;
     t.stream = null;
     t.editing = false;
+    t.day = null;
     if (!d.messages.length && !d.streaming) {
       t.pane.replaceChildren(d.help ? helpIntro(t) : emptyState());
       return;
     }
     const thread = h("div", { class: "thread" });
     d.messages.forEach((m, i) => {
+      const sep = daySep(t, m.time);
+      if (sep) thread.append(sep);
       thread.append(m.role === "user" ? userMessage(t, m, i) : botMessage(t, m).root);
     });
     if (d.streaming) {
@@ -566,7 +605,8 @@ export function createChatView(ctx, state) {
       ? S.models.map((m) => ({ label: m, checked: m === current, onSelect: () => setModel(t, m) }))
       : [{ label: S.modelsError || "Aucun modèle", disabled: true }];
     return [{ section: "Modèle" }, ...items, "-",
-      { label: "Rafraîchir la liste", icon: "refresh-cw", onSelect: () => api.chat_refresh_models() }];
+      { label: "Rafraîchir la liste", icon: "refresh-cw", onSelect: () => api.chat_refresh_models() },
+      { label: "Gérer les modèles…", icon: "settings", onSelect: () => ctx.navigate("ollama") }];
   }
 
   function setModel(t, model) {
@@ -645,9 +685,13 @@ export function createChatView(ctx, state) {
       const last = [...msgs].reverse().find((m) => m.role === "assistant");
       return last ? splitThinking(last.text).content : "";
     }
-    return msgs.map((m) => (m.role === "user"
-      ? `Vous :\n${m.text}`
-      : `${m.model || "Assistant"} :\n${splitThinking(m.text).content}`)).join("\n\n");
+    return msgs.map((m) => {
+      const d = parseDate(m.time);
+      const when = d ? ` (${formatShort(d)})` : "";
+      return m.role === "user"
+        ? `Vous${when} :\n${m.text}`
+        : `${m.model || "Assistant"}${when} :\n${splitThinking(m.text).content}`;
+    }).join("\n\n");
   }
 
   function speakMode(t, mode) {
@@ -718,7 +762,10 @@ export function createChatView(ctx, state) {
     if (thread && !t.editing && data.streaming && data.messages.length === previous + 1) {
       // Envoi d'un message : on ajoute la question et la bulle de réponse,
       // sans reconstruire toute la conversation
-      thread.append(userMessage(t, data.messages[previous], previous));
+      const m = data.messages[previous];
+      const sep = daySep(t, m.time);
+      if (sep) thread.append(sep);
+      thread.append(userMessage(t, m, previous));
       t.partial = { content: "", thinking: "" };
       t.stream = botMessage(t, { text: "", thinking: "", model: data.partial?.model || data.model }, true);
       thread.append(t.stream.root);
@@ -749,8 +796,14 @@ export function createChatView(ctx, state) {
     t.stream = null;
     if (message) {
       t.data.messages.push(message);
-      if (stream) stream.update(message.text, message.thinking, false);
-      else renderPane(t);   // pas de bulle en cours (interface rechargée entre-temps)
+      if (stream) {
+        stream.update(message.text, message.thinking, false);
+        stream.setTime(message.time);
+        const sep = daySep(t, message.time);   // réponse finie après minuit
+        if (sep) stream.root.before(sep);
+      } else {
+        renderPane(t);   // pas de bulle en cours (interface rechargée entre-temps)
+      }
     } else {
       stream?.root.remove();
     }

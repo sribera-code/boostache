@@ -1,12 +1,14 @@
 """
 wasapi.py – Accès minimal à WASAPI (API audio de Windows) par comtypes :
 liste des périphériques, capture « loopback » du son qui sort d'une sortie
-audio, capture d'un micro et lecture de silence.
+audio, capture d'un micro, lecture de silence et lecture d'un son PCM
+(lecture à voix haute, speech.py).
 
-Tous les flux sont demandés au même format (float 32 bits, 48 kHz, stéréo) :
+Les captures sont demandées au même format (float 32 bits, 48 kHz, stéréo) :
 Windows convertit lui-même depuis le format du périphérique
 (AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM), on peut donc additionner les
-échantillons de la sortie et du micro sans rééchantillonner.
+échantillons de la sortie et du micro sans rééchantillonner. La lecture
+profite de la même conversion, dans l'autre sens.
 
 Les objets COM ne doivent servir que dans le thread qui les a créés, après
 com_thread().
@@ -36,6 +38,7 @@ AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM = 0x80000000
 AUDCLNT_BUFFERFLAGS_SILENT = 0x2
 AUDCLNT_E_DEVICE_INVALIDATED = -2004287484     # 0x88890004
+WAVE_FORMAT_PCM = 1
 WAVE_FORMAT_IEEE_FLOAT = 3
 BUFFER_HNS = 2_000_000                          # 200 ms, en unités de 100 ns
 STGM_READ = 0
@@ -291,6 +294,61 @@ class SilenceStream:
         if free:
             self._render.GetBuffer(free)
             self._render.ReleaseBuffer(free, AUDCLNT_BUFFERFLAGS_SILENT)
+
+    def close(self):
+        try:
+            self._client.Stop()
+        except comtypes.COMError:
+            pass
+        self._render = self._client = None
+
+
+class RenderStream:
+    """Joue du PCM 16 bits (mono par défaut, à la fréquence donnée) sur une
+    sortie ; Windows le convertit au format du périphérique. Le flux démarre
+    au premier write() ; pause() / resume() gardent ce qui est en tampon,
+    flush() le jette."""
+
+    def __init__(self, device, rate: int, channels: int = 1):
+        self.rate = rate
+        self.frame = 2 * channels
+        fmt = WAVEFORMATEX(WAVE_FORMAT_PCM, channels, rate, rate * self.frame, self.frame, 16, 0)
+        flags = AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY
+        self._client = _client(device)
+        self._client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_HNS, 0, ctypes.addressof(fmt), None)
+        self._size = self._client.GetBufferSize()
+        self._render = self._client.GetService(byref(IAudioRenderClient._iid_)).QueryInterface(IAudioRenderClient)
+        self._running = False
+
+    def write(self, data: bytes) -> int:
+        """Copie dans le tampon ce qui y tient ; renvoie le nombre d'octets pris."""
+        frames = min(self._size - self._client.GetCurrentPadding(), len(data) // self.frame)
+        if frames <= 0:
+            return 0
+        ctypes.memmove(self._render.GetBuffer(frames), data, frames * self.frame)
+        self._render.ReleaseBuffer(frames, 0)
+        if not self._running:
+            self._client.Start()
+            self._running = True
+        return frames * self.frame
+
+    def pending(self) -> float:
+        """Secondes écrites mais pas encore jouées."""
+        return self._client.GetCurrentPadding() / self.rate
+
+    def pause(self):
+        if self._running:
+            self._client.Stop()
+            self._running = False
+
+    def resume(self):
+        if not self._running and self._client.GetCurrentPadding():
+            self._client.Start()
+            self._running = True
+
+    def flush(self):
+        self.pause()
+        self._client.Reset()
 
     def close(self):
         try:

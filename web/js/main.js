@@ -10,10 +10,12 @@ import { createNotesView } from "./views/notes.js";
 import { createClipboardView } from "./views/clipboard.js";
 import { createCapturesView } from "./views/captures.js";
 import { createRecorderView } from "./views/recorder.js";
+import { createLiveView } from "./views/live.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
 import { createHotkeysView } from "./views/hotkeys.js";
+import { createOllamaView } from "./views/ollama.js";
 import { createSettingsView } from "./views/settings.js";
 
 const NAV = [
@@ -25,10 +27,12 @@ const NAV = [
   { id: "whatsapp",  label: "WhatsApp",       icon: "message-circle",  create: createWhatsAppView },
   { id: "gmail",     label: "Gmail",          icon: "mail",            create: createGmailView },
   { id: "recorder",  label: "Enregistreur",   icon: "audio-lines",     create: createRecorderView },
+  { id: "live",      label: "Assistant live", icon: "eye",             create: createLiveView },
   "-",
   { id: "logs",      label: "Historique",     icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
   { id: "hotkeys",   label: "Raccourcis",     icon: "keyboard",        create: createHotkeysView },
+  { id: "ollama",    label: "Ollama",         icon: "cpu",             create: createOllamaView },
 ];
 const SETTINGS = { id: "settings", label: "Paramètres", icon: "settings", create: createSettingsView };
 
@@ -281,23 +285,63 @@ function shortcut(key) {
 }
 
 // ─────────────────────────────────────────────
-//  Lecture vocale : pastille globale + boutons [data-speak-source]
+//  Lecture vocale : lecteur de la barre latérale + boutons [data-speak-source]
 // ─────────────────────────────────────────────
+const TTS_SPEEDS = [0.75, 1, 1.15, 1.3, 1.5, 1.75, 2];
+const speedText = (v) => `${String(Number(v)).replace(".", ",")}×`;
+
 function setupTts() {
-  const pill = h("div", { class: "tts-card", hidden: true },
-    h("span", { class: "eq" }, h("i"), h("i"), h("i"), h("i")),
-    h("span", { class: "tts-text", text: "Lecture en cours" }),
-    h("button", { class: "icon-btn sm", type: "button", "aria-label": "Arrêter la lecture",
-      dataset: { tip: "Arrêter la lecture" }, onClick: () => api.tts_stop() }, ico("square", 13)));
-  $("#sidebar").insertBefore(pill, $(".sidebar-foot"));
+  const label = h("span", { class: "tts-text", dataset: { tipWrap: "" } });
+  const speedBtn = h("button", { class: "tts-speed", type: "button", "aria-label": "Vitesse de lecture",
+    dataset: { tip: "Vitesse et voix" }, onClick: (ev) => speedMenu(ev.currentTarget) });
+  const bar = h("i");
+  const pauseBtn = iconButton("pause", "Pause", () => api.tts_pause(), { size: 14, cls: "sm tts-pause" });
+  const card = h("div", { class: "tts-card", hidden: true },
+    h("div", { class: "tts-head" },
+      h("span", { class: "eq" }, h("i"), h("i"), h("i"), h("i")), label, speedBtn),
+    h("div", { class: "tts-progress" }, bar),
+    h("div", { class: "tts-controls" },
+      iconButton("skip-back", "Phrase précédente", () => api.tts_skip(-1), { size: 14, cls: "sm tts-skip" }),
+      pauseBtn,
+      iconButton("skip-forward", "Phrase suivante", () => api.tts_skip(1), { size: 14, cls: "sm tts-skip" }),
+      iconButton("square", "Arrêter la lecture", () => api.tts_stop(), { size: 13, cls: "sm" })));
+  $("#sidebar").insertBefore(card, $(".sidebar-foot"));
+
+  function speedMenu(anchor) {
+    const current = Number(store.tts.speed ?? store.settings.tts_speed ?? 1);
+    openMenuBelow([
+      { section: "Vitesse de lecture" },
+      ...TTS_SPEEDS.map((v) => ({ label: speedText(v), hint: v === 1 ? "normale" : "",
+        checked: Math.abs(current - v) < 0.01, onSelect: () => ctx.saveSetting("tts_speed", v) })),
+      "-",
+      { label: "Changer de voix…", icon: "settings", onSelect: () => ctx.navigate("settings") },
+    ], anchor, "right");
+  }
 
   const refresh = () => {
-    pill.hidden = !store.tts.speaking;
+    const t = store.tts;
+    card.hidden = !t.speaking;
+    if (t.speaking) {
+      card.classList.toggle("paused", !!t.paused);
+      card.classList.toggle("waiting", !!t.waiting && !t.paused);
+      label.textContent = t.waiting && !t.paused ? "Préparation…"
+        : t.total > 1 ? `${t.voice} · ${t.index + 1}/${t.total}` : t.voice || "Lecture";
+      label.dataset.tip = t.text || "";
+      speedBtn.textContent = speedText(t.speed ?? 1);
+      bar.style.width = `${t.total ? ((t.index + 1) / t.total) * 100 : 0}%`;
+      pauseBtn.replaceChildren(ico(t.paused ? "play" : "pause", 14));
+      pauseBtn.dataset.tip = t.paused ? "Reprendre" : "Pause";
+      pauseBtn.setAttribute("aria-label", pauseBtn.dataset.tip);
+    }
     for (const btn of document.querySelectorAll("[data-speak-source]")) {
       setSpeakingButton(btn, ctx.speaking(btn.dataset.speakSource));
     }
   };
-  on("tts", (data) => { store.tts = data; refresh(); });
+  on("tts", (data) => {
+    if (data.notice) toast(data.notice, data.notice_kind || "info", 4000);
+    store.tts = data;
+    refresh();
+  });
   on("speak-sources-changed", refresh);
   refresh();
 }

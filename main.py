@@ -24,6 +24,7 @@ import bindings
 class TrayApp:
     def __init__(self, debug: bool = False, show: bool = False):
         self.app = BoostacheApp(debug=debug, show_on_start=show)
+        self.app.notifier = self._notify
         self._tray = None  # type: ignore
 
     def _build_tray(self):
@@ -39,6 +40,11 @@ class TrayApp:
     def _run_tray(self):
         self._build_tray()
         self._tray.run()
+
+    def _notify(self, title: str, text: str):
+        """Notification Windows, émise par l'icône du tray."""
+        if self._tray:
+            self._tray.notify(text, title)
 
     def _on_open(self, icon=None, item=None):
         threading.Thread(target=self.app.show, daemon=True).start()

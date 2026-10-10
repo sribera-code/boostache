@@ -13,7 +13,9 @@ import webview
 
 import custom_tasks
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
+import speech
 from engine import logger, tts, strip_markdown
+from ollama_admin import DOWNLOAD_PAGE, USES as MODEL_USES, models_dir
 from storage import DATA_DIR, clipboard_history, settings
 from winutil import (list_windows, open_url, reveal_in_explorer, set_opacity, set_topmost,
                      window_thumbnail)
@@ -66,6 +68,23 @@ class Api:
 
     def tts_stop(self):
         tts.stop()
+
+    def tts_pause(self, paused=None):
+        tts.pause(None if paused is None else bool(paused))
+
+    def tts_skip(self, delta):
+        tts.skip(int(delta))
+
+    def tts_voices(self):
+        return speech.list_voices()
+
+    def tts_preview(self, engine, voice=""):
+        """Fait entendre une voix sans la choisir."""
+        if engine not in speech.ENGINES:
+            return
+        label = speech.voice_label(engine, voice or tts.voice_for(engine))
+        tts.speak(f"Bonjour, voici la voix {label}. Elle lit vos réponses, vos notes et vos textes à voix haute.",
+                  source="tts-preview", engine=engine, voice=voice or "")
 
     def dictate(self):
         """Dictée vocale Windows (Win+H) dans le champ qui a le focus."""
@@ -273,6 +292,94 @@ class Api:
         return self._app.recorder.set_folder(path) if path else None
 
     # ─────────────────────────────────────────
+    #  Assistant live (captures régulières analysées par Ollama)
+    # ─────────────────────────────────────────
+    def live_start(self):
+        self._app.live.start()
+
+    def live_stop(self):
+        self._app.live.stop()
+
+    def live_now(self, question=""):
+        self._app.live.analyze_now(str(question or ""))
+
+    def live_delete(self, item_id):
+        self._app.live.delete(str(item_id))
+
+    def live_clear(self):
+        self._app.live.clear()
+
+    def live_image_url(self, item_id):
+        return self._app.live.image_url(str(item_id))
+
+    def live_discuss(self, item_id):
+        return self._app.live.discuss(str(item_id))
+
+    def live_to_captures(self, item_id):
+        item = self._app.live.image(str(item_id))
+        if item is None:
+            return False
+        self._app.captures.add_image(item, label="Assistant live")
+        return True
+
+    # ─────────────────────────────────────────
+    #  Ollama (serveur, modèles, téléchargements)
+    # ─────────────────────────────────────────
+    def ollama_state(self):
+        return self._app.ollama.state()
+
+    def ollama_running(self):
+        return self._app.ollama.running()
+
+    def ollama_start(self):
+        return self._app.ollama.start()
+
+    def ollama_install_page(self):
+        return open_url(DOWNLOAD_PAGE)
+
+    def ollama_open_models_dir(self):
+        folder = models_dir()
+        if folder.is_dir():
+            os.startfile(str(folder))
+            return True
+        return False
+
+    def ollama_pull(self, name):
+        return self._app.ollama.pull(str(name or ""))
+
+    def ollama_cancel(self, name):
+        self._app.ollama.cancel(str(name or ""))
+
+    def ollama_dismiss(self, name):
+        self._app.ollama.dismiss(str(name or ""))
+
+    def ollama_delete(self, name):
+        return self._app.ollama.delete(str(name or ""))
+
+    def ollama_unload(self, name):
+        return self._app.ollama.unload(str(name or ""))
+
+    def ollama_check_updates(self):
+        return self._app.ollama.check_updates()
+
+    def ollama_library(self, force=False):
+        return self._app.ollama.library(bool(force))
+
+    def ollama_variants(self, name):
+        return self._app.ollama.variants(str(name or ""))
+
+    def ollama_sizes(self, names):
+        return self._app.ollama.sizes(list(names or []))
+
+    def ollama_use(self, use, model):
+        """Choisit le modèle d'une fonction de Boostache (Conversations, aide…)."""
+        key = MODEL_USES.get(use)
+        if not key or not model:
+            return None
+        self._app.set_setting(key, str(model))
+        return self._app.ollama.uses()
+
+    # ─────────────────────────────────────────
     #  Consoles
     # ─────────────────────────────────────────
     def term_new(self, after_slot=None):
@@ -340,8 +447,8 @@ class Api:
     # ─────────────────────────────────────────
     #  Sites intégrés (WhatsApp, Gmail) : pane = clé du site
     # ─────────────────────────────────────────
-    def pane_show(self, pane, x, y, width, height, focus=False):
-        self._app.panes[pane].show(x, y, width, height, focus)
+    def pane_show(self, pane, x, y, width, height, focus=False, holes=None):
+        self._app.panes[pane].show(x, y, width, height, focus, holes)
 
     def pane_hide(self, pane):
         self._app.panes[pane].hide()
@@ -357,6 +464,19 @@ class Api:
 
     def pane_insert(self, pane, text):
         return self._app.panes[pane].insert(str(text or ""))
+
+    # Résumé des e-mails de la liste affichée (Gmail) : scope = selection | unread | all
+    def pane_digest_scopes(self, pane):
+        return self._app.panes[pane].digest_scopes()
+
+    def pane_digest(self, pane, model, hint="", scope="all"):
+        return self._app.panes[pane].digest(str(model or ""), str(hint or ""), str(scope or "all"))
+
+    def pane_digest_stop(self, pane):
+        self._app.panes[pane].digest_stop()
+
+    def pane_open_thread(self, pane, thread_id):
+        return self._app.panes[pane].open_thread(str(thread_id or ""))
 
     # ─────────────────────────────────────────
     #  Presse-papiers
