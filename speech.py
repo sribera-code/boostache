@@ -17,9 +17,14 @@ pendant que la précédente est jouée (la lecture démarre vite, sans trou), pu
 jouée par WASAPI (wasapi.RenderStream) : pause, phrase précédente ou suivante et
 changement de vitesse en cours de lecture.
 
+Un texte encore en cours d'écriture (réponse d'un modèle) se lit au fil de
+l'eau : speak(…, stream=True) lit les phrases déjà finies, feed() apporte le
+texte complet à chaque ajout, jusqu'au dernier appel (final=True).
+
 Usage :
     tts.speak("Bonjour", on_done=ma_callback, source="notes:1")
-    tts.pause() / tts.skip(-1) / tts.stop()
+    tts.speak(debut, source="chat:1", stream=True); tts.feed("chat:1", suite, final=True)
+    tts.pause() / tts.skip(-1) / tts.stop() / tts.set_volume(80)
     tts.subscribe(fn)   # fn(state: dict), voir TTSEngine.state()
 """
 
@@ -57,6 +62,7 @@ EDGE_VOICES = (
 DEFAULT_VOICES = {"edge": "fr-CA-SylvieNeural", "piper": "fr_FR-siwis-medium", "sapi": ""}
 SPEEDS = (0.75, 1.0, 1.15, 1.3, 1.5, 1.75, 2.0)
 MIN_SPEED, MAX_SPEED = 0.5, 2.0
+# Volume en % (curseur) ; amplitude = (%/100)² : la moitié du curseur sonne comme la moitié du volume
 
 PIPER_DIR = Path.home() / ".local" / "share" / "piper" / "voices"
 EDGE_RATE = 24000                 # edge-tts renvoie du MP3 mono 24 kHz
@@ -73,6 +79,7 @@ RESTART_AFTER = 2.5               # « précédent » au-delà : reprend la phra
 EDGE_RETRY_AFTER = 60             # edge en panne : pas retenté avant (s)
 CACHE_BYTES = 48 << 20            # audio déjà synthétisé (relecture, retour en arrière)
 PIPER_IDLE = 600                  # voix Piper libérée après 10 min sans lecture
+STREAM_TIMEOUT = 180              # texte au fil de l'eau : plus rien reçu depuis (s), il est fini
 
 Audio = namedtuple("Audio", "pcm rate")
 
@@ -154,7 +161,8 @@ def split_text(text: str) -> list[tuple[str, float]]:
                     merged.append(piece)
             if len(merged) > 1 and len(merged[-1]) < MIN_CHUNK \
                     and len(merged[-2]) + len(merged[-1]) < MAX_CHUNK:
-                merged[-2] += " " + merged.pop()
+                last = merged.pop()           # (merged[-2] += merged.pop() viserait l'avant-dernier après le pop)
+                merged[-1] += " " + last
             for k, piece in enumerate(merged):
                 end_of_line = k == len(merged) - 1
                 pause = (PARAGRAPH_PAUSE if li == len(lines) - 1 else LINE_PAUSE) if end_of_line else 0.0
@@ -162,6 +170,48 @@ def split_text(text: str) -> list[tuple[str, float]]:
     if chunks:
         chunks[-1] = (chunks[-1][0], 0.0)
     return chunks
+
+
+class _Feed:
+    """Texte qui s'allonge pendant la lecture : seules les lignes et les phrases
+    finies sont découpées (la fin peut encore changer), jamais un bloc de code
+    ou une réflexion (<think>) pas encore refermés."""
+
+    def __init__(self, prepare=None):
+        self.prepare = prepare or (lambda s: s)
+        self.text = ""                    # texte brut déjà découpé
+
+    def take(self, text: str, final: bool) -> list[tuple[str, float]]:
+        text = text or ""
+        if not text.startswith(self.text):
+            return []                     # autre texte (réponse refaite) : ignoré
+        end = len(text) if final else self._stable(text)
+        if end <= len(self.text):
+            return []
+        part = text[len(self.text):end]
+        self.text = text[:end]
+        chunks = split_text(self.prepare(part))
+        if chunks:                        # silence vers la suite, déjà connu
+            tail = re.search(r"\n[ \t]*(\n)?\s*$", part)
+            pause = 0.0 if final or not tail else PARAGRAPH_PAUSE if tail.group(1) else LINE_PAUSE
+            chunks[-1] = (chunks[-1][0], pause)
+        return chunks
+
+    def _stable(self, text: str) -> int:
+        limit = len(text)
+        fences = [m.start() for m in re.finditer(r"(?m)^[ \t]*```", text)]
+        if len(fences) % 2:
+            limit = fences[-1]
+        think = text.rfind("<think>")
+        if think > text.rfind("</think>"):
+            limit = min(limit, think)
+        end = text.rfind("\n", 0, limit) + 1
+        # Ligne pas finie : jusqu'à sa dernière phrase finie, si le morceau n'est pas trop court
+        start = max(end, len(self.text))
+        for m in _SENTENCE_END.finditer(text, end, limit):
+            if m.end() - start >= MIN_CHUNK:
+                end = m.end()
+        return end
 
 
 # ─────────────────────────────────────────────
@@ -430,9 +480,12 @@ class _AudioCache:
 class _Session:
     """Une lecture : un thread synthétise les phrases à venir, un autre les joue."""
 
-    def __init__(self, owner: "TTSEngine", chunks, source, on_done, engines, voice):
+    def __init__(self, owner: "TTSEngine", chunks, source, on_done, engines, voice, feed=None):
         self.owner = owner
         self.chunks = chunks
+        self.feed = feed                  # _Feed : texte au fil de l'eau, des phrases peuvent s'ajouter
+        self.open = feed is not None      # … tant que le dernier morceau n'est pas arrivé
+        self.fed_at = time.monotonic()
         self.source = source
         self.on_done = on_done
         self.engines = engines            # ordre de repli, le premier sert
@@ -530,8 +583,11 @@ class _Session:
                 while True:
                     announce = False
                     with self.cond:
-                        while not (self.stopped or self.failed or self.index >= len(self.chunks)
-                                   or self.index in self.ready):
+                        while not (self.stopped or self.failed or self.index in self.ready
+                                   or (self.index >= len(self.chunks) and not self.open)):
+                            if self.open and time.monotonic() - self.fed_at > STREAM_TIMEOUT:
+                                self.open = False         # la suite n'arrivera plus
+                                continue
                             if not self.waiting:
                                 self.waiting = announce = True
                                 break
@@ -597,7 +653,8 @@ class _Session:
             self.owner._session_ended(self)
 
     def _interrupted(self, stream, seek: int) -> str:
-        """« stop », « seek » ou « » ; gère la pause (attend la reprise)."""
+        """« stop », « seek » ou « » ; gère la pause (attend la reprise) et le volume."""
+        stream.set_volume(self.owner.amplitude())
         with self.cond:
             if self.paused and not self.stopped and self.seek == seek:
                 stream.pause()
@@ -649,8 +706,10 @@ class TTSEngine:
         self.engine = "edge"
         self.voices = dict(DEFAULT_VOICES)
         self.speed = 1.0
+        self.volume = 100                      # %, voir amplitude()
 
-    def configure(self, engine: str | None = None, voices: dict | None = None, speed: float | None = None):
+    def configure(self, engine: str | None = None, voices: dict | None = None, speed: float | None = None,
+                  volume: int | None = None):
         if engine in ENGINES:
             self.engine = engine
             self._down.pop(engine, None)
@@ -658,6 +717,8 @@ class TTSEngine:
             self.voices.update({k: v for k, v in voices.items() if k in ENGINES and isinstance(v, str)})
         if speed is not None:
             self.set_speed(speed)
+        if volume is not None:
+            self.set_volume(volume)
 
     def subscribe(self, listener):
         """listener(state: dict) à chaque changement (début, phrase, pause, fin)."""
@@ -671,9 +732,11 @@ class TTSEngine:
 
     # ── Commandes ──────────────────────────
     def speak(self, text: str, on_done=None, source: str | None = None,
-              engine: str | None = None, voice: str = ""):
+              engine: str | None = None, voice: str = "", stream: bool = False, prepare=None):
         """Lit text à haute voix. engine / voice : pour essayer une voix sans la
-        choisir (sinon, réglages de configure())."""
+        choisir (sinon, réglages de configure()). stream : texte encore en cours
+        d'écriture, la suite arrive par feed() ; prepare(texte) → texte à lire
+        (appliqué à chaque morceau, sinon par l'appelant)."""
         with self._lock:
             old, self._session = self._session, None
         if old:
@@ -681,8 +744,9 @@ class TTSEngine:
             old.join(1.0)
         if _piper_timer:
             _piper_timer.cancel()
-        chunks = split_text(text)
-        if not chunks:
+        feed = _Feed(prepare) if stream else None
+        chunks = feed.take(text, final=False) if feed else split_text(prepare(text) if prepare else text)
+        if not chunks and not feed:
             if old:
                 self._emit()
             if on_done:
@@ -691,11 +755,31 @@ class TTSEngine:
                 except Exception:
                     pass
             return
-        session = _Session(self, chunks, source, on_done, self._engines(engine or self.engine), voice)
+        session = _Session(self, chunks, source, on_done, self._engines(engine or self.engine), voice, feed)
         with self._lock:
             self._session = session
         self._emit()
         session.start()
+
+    def feed(self, source: str, text: str, final: bool = False) -> bool:
+        """Texte complet, allongé, de la lecture au fil de l'eau source (speak(…, stream=True)) :
+        ses nouvelles phrases finies sont ajoutées. final : le texte est complet.
+        False : cette lecture n'est plus en cours (arrêtée, finie, remplacée)."""
+        session = self._session
+        if not session or session.source != source or not session.feed:
+            return False
+        with session.cond:
+            if not session.open or session.stopped:
+                return False
+            added = session.feed.take(text, final)
+            session.chunks.extend(added)
+            session.fed_at = time.monotonic()
+            if final:
+                session.open = False
+            session.cond.notify_all()
+        if added or final:
+            self._emit()
+        return True
 
     def stop(self):
         """Arrête la lecture en cours."""
@@ -746,6 +830,19 @@ class TTSEngine:
                 session.cond.notify_all()
             self._emit()
 
+    def set_volume(self, volume: int):
+        """Volume de la lecture, en % (0 à 100) ; appliqué tout de suite, phrase en cours comprise."""
+        try:
+            volume = round(max(0, min(float(volume), 100)))
+        except (TypeError, ValueError):
+            return
+        if volume != self.volume:
+            self.volume = volume
+            self._emit()
+
+    def amplitude(self) -> float:
+        return (self.volume / 100) ** 2
+
     # ── État ───────────────────────────────
     @property
     def speaking(self) -> bool:
@@ -754,15 +851,17 @@ class TTSEngine:
     def state(self) -> dict:
         session = self._session
         if not session:
-            return {"speaking": False, "source": None, "speed": self.speed}
+            return {"speaking": False, "source": None, "speed": self.speed, "volume": self.volume}
         n = len(session.chunks)
+        index = max(0, min(session.index, n - 1))
         engine, voice = session.playing if session.playing[0] else (
             session.engines[0] if session.engines else self.engine, "")
         voice = voice or self.voice_for(engine, session.voice if engine == session.first_engine else "")
         return {
             "speaking": True, "source": session.source, "paused": session.paused,
-            "waiting": session.waiting, "index": min(session.index, n - 1), "total": n,
-            "text": session.chunks[min(session.index, n - 1)][0], "speed": session.speed,
+            "waiting": session.waiting, "index": index, "total": n,
+            "streaming": session.open, "ahead": session.open and session.index >= n,   # lu jusqu'au bout du texte reçu
+            "text": session.chunks[index][0] if n else "", "speed": session.speed, "volume": self.volume,
             "engine": engine, "voice": voice_label(engine, voice),
         }
 

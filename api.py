@@ -62,9 +62,12 @@ class Api:
         if path and os.path.exists(path):
             reveal_in_explorer(path)
 
-    def speak(self, text, source=None, markdown=False):
-        text = strip_markdown(text) if markdown else (text or "")
-        tts.speak(text, source=source)
+    def speak(self, text, source=None, markdown=False, stream=False):
+        """stream : texte encore en cours d'écriture, la suite arrive par tts_feed."""
+        tts.speak(text or "", source=source, stream=bool(stream), prepare=strip_markdown if markdown else None)
+
+    def tts_feed(self, source, text, final=False):
+        return tts.feed(source, text or "", bool(final))
 
     def tts_stop(self):
         tts.stop()
@@ -74,6 +77,10 @@ class Api:
 
     def tts_skip(self, delta):
         tts.skip(int(delta))
+
+    def tts_volume(self, volume):
+        """Volume pendant le glissement du curseur (enregistré à la fin, par set_setting)."""
+        tts.set_volume(volume)
 
     def tts_voices(self):
         return speech.list_voices()
@@ -251,8 +258,11 @@ class Api:
     def rec_devices(self):
         return self._app.recorder.devices()
 
-    def rec_start(self, device_id="", mic=False):
-        return self._app.recorder.start(str(device_id or ""), bool(mic))
+    def rec_start(self, source="output", device_id="", mic_id="", live=False):
+        return self._app.recorder.start(str(source or ""), str(device_id or ""), str(mic_id or ""), bool(live))
+
+    def rec_live_close(self):
+        self._app.recorder.close_live()
 
     def rec_pause(self, paused):
         self._app.recorder.pause(bool(paused))
@@ -292,35 +302,25 @@ class Api:
         return self._app.recorder.set_folder(path) if path else None
 
     # ─────────────────────────────────────────
-    #  Assistant live (captures régulières analysées par Ollama)
+    #  Assistant (questions sur Gmail et WhatsApp, annonce des nouveaux messages)
     # ─────────────────────────────────────────
-    def live_start(self):
-        self._app.live.start()
+    def assistant_ask(self, question):
+        return self._app.assistant.ask(str(question or ""))
 
-    def live_stop(self):
-        self._app.live.stop()
+    def assistant_stop(self):
+        self._app.assistant.stop()
 
-    def live_now(self, question=""):
-        self._app.live.analyze_now(str(question or ""))
+    def assistant_delete(self, item_id):
+        self._app.assistant.delete(str(item_id))
 
-    def live_delete(self, item_id):
-        self._app.live.delete(str(item_id))
+    def assistant_clear(self):
+        self._app.assistant.clear()
 
-    def live_clear(self):
-        self._app.live.clear()
+    def assistant_clear_feed(self):
+        self._app.assistant.clear_feed()
 
-    def live_image_url(self, item_id):
-        return self._app.live.image_url(str(item_id))
-
-    def live_discuss(self, item_id):
-        return self._app.live.discuss(str(item_id))
-
-    def live_to_captures(self, item_id):
-        item = self._app.live.image(str(item_id))
-        if item is None:
-            return False
-        self._app.captures.add_image(item, label="Assistant live")
-        return True
+    def assistant_example(self):
+        self._app.assistant.example()
 
     # ─────────────────────────────────────────
     #  Ollama (serveur, modèles, téléchargements)

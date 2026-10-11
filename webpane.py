@@ -7,8 +7,9 @@ vue dans l'interface (qui transmet sa position). Chaque site a son propre
 profil persistant (DATA_DIR/<clé>) : la session reste ouverte d'un lancement
 à l'autre.
 
-Créé à la première ouverture de la section, le contrôle reste ensuite chargé
-(masqué) pour que le nombre de non-lus reste à jour.
+Créé à la première ouverture de la section (ou par l'assistant, voir
+preload), le contrôle reste ensuite chargé (masqué) pour que le nombre de
+non-lus reste à jour.
 
 Assistant de réponse : la conversation ouverte est lue dans la page, envoyée
 à un modèle Ollama local, et le texte choisi est placé dans la zone de saisie
@@ -121,6 +122,8 @@ class WebPane:
         self._holes = []              # zones percées pour les menus de l'interface (show)
         self._wanted = False          # la vue du site est affichée dans l'interface
         self._focus = False           # donner le clavier au site à son affichage
+        self._keep = False            # chargé même jamais affiché (assistant, voir preload)
+        self.on_unread = None         # fn(clé du site) quand le nombre de non-lus change
         self._busy = threading.Lock()  # une génération à la fois
         self._context = dict(NO_CONTEXT)   # boutons de l'assistant utiles sur la page
 
@@ -165,6 +168,21 @@ class WebPane:
 
     def reload(self):
         self._ui(self._reload)
+
+    def preload(self):
+        """Charge le site sans l'afficher (assistant : questions, nouveaux messages)."""
+        if not self._keep or (self._view is None and self._state != "error"):
+            self._keep = True
+            self._ui(self._apply)
+
+    @property
+    def loaded(self) -> bool:
+        """Contrôle créé et page en cours (de chargement ou chargée)."""
+        return self._view is not None and self._state == "ready"
+
+    @property
+    def failed(self) -> bool:
+        return self._state == "error"
 
     def suggest(self, model: str, hint: str = "") -> dict:
         """Trois propositions de réponse à la conversation ouverte."""
@@ -303,7 +321,7 @@ class WebPane:
             logger.log(f"{self.name} : appel impossible ({e})")
 
     def _apply(self):
-        if self._wanted and self._view is None and self._state != "error":
+        if (self._wanted or self._keep) and self._view is None and self._state != "error":
             self._create()
         view = self._view
         if view is None:
@@ -356,6 +374,11 @@ class WebPane:
         view.CreationProperties = props
         view.DefaultBackgroundColor = Color.FromArgb(255, *BACKGROUND_RGB)
         view.Visible = False
+        if not self._bounds:
+            # Chargé sans être affiché (preload) : une taille de fenêtre ordinaire
+            from System.Drawing import Rectangle
+            size = self._app.window.native.ClientSize
+            view.Bounds = Rectangle(0, 0, max(1000, size.Width), max(700, size.Height))
         A = WinForms.AnchorStyles
         view.Anchor = A.Top | A.Bottom | A.Left | A.Right
         view.CoreWebView2InitializationCompleted += self._on_initialized
@@ -438,6 +461,8 @@ class WebPane:
         if unread != self._unread:
             self._unread = unread
             self._app.bridge.emit(f"{self.key}:unread", {"count": unread})
+            if self.on_unread:
+                self.on_unread(self.key)
 
     def _on_message(self, sender, args):
         try:

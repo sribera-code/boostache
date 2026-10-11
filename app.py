@@ -2,7 +2,7 @@
 app.py – Fenêtre principale de Boostache (interface web via pywebview/WebView2).
 
 Assemble les services (conversations, consoles, notes, captures,
-enregistreur, assistant live, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
+enregistreur, assistant de Gmail et WhatsApp, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
 fermée, rappelée depuis le tray ou un raccourci) et fournit l'état initial à
 l'interface.
 """
@@ -16,13 +16,13 @@ from webview.dom import DOMEventHandler
 
 import custom_tasks
 from api import Api
+from assistant import AssistantService
 from bridge import Bridge
 from captures import CapturesService, Snipper
 from chat import CTX_SIZES, KEEP_ALIVE, ChatService, OLLAMA_OK
 from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from gmail import GmailPane
-from live import INTERVALS as LIVE_INTERVALS, MODES as LIVE_MODES, LiveService
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from recorder import FORMATS as AUDIO_FORMATS, RecorderService
@@ -134,13 +134,13 @@ class BoostacheApp:
         self.captures = CapturesService(self.bridge, self.snipper, show_window=self.show)
         self.recorder = RecorderService(self.bridge, is_visible=self.is_visible)
         self.notifier = None     # notification Windows (titre, texte) : posée par le tray (main.py)
-        self.live = (LiveService(self.bridge, self.chat, is_visible=self.is_visible, notify=self._notify)
-                     if self.chat else None)
-        # Section Ollama : serveur, modèles, téléchargements
-        self.ollama = (OllamaAdmin(self.bridge, self.chat, self.live, is_visible=self.is_visible,
-                                   notify=self._notify) if self.chat else None)
         # Sites intégrés, par clé (whatsapp, gmail)
         self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
+        # Questions sur Gmail et WhatsApp (Ollama), annonce des nouveaux messages (sans Ollama)
+        self.assistant = AssistantService(self)
+        # Section Ollama : serveur, modèles, téléchargements
+        self.ollama = (OllamaAdmin(self.bridge, self.chat, self.assistant, is_visible=self.is_visible,
+                                   notify=self._notify) if self.chat else None)
         self._clip_listener: ClipboardListener | None = None
         self._print_screen: PrintScreenHook | None = None
         self._keys_lock = threading.Lock()     # réglages (API) et Ollama (surveillance)
@@ -281,6 +281,12 @@ class BoostacheApp:
     def _on_before_show(self, window):
         # Thread de l'interface : on peut lire le handle natif sans risque
         try:
+            # ✕ range déjà dans le tray : Réduire, qui ferait pareil, est grisé
+            # (Windows affiche Réduire et Agrandir ensemble)
+            window.native.MinimizeBox = False
+        except Exception:
+            pass
+        try:
             self._hwnd = int(window.native.Handle.ToInt64())
         except Exception:
             self._hwnd = 0
@@ -294,7 +300,7 @@ class BoostacheApp:
         return False
 
     def _on_minimized(self):
-        # Réduire = ranger dans le tray (restauration native au prochain affichage)
+        # Réduite malgré tout (Win+↓…) = rangée dans le tray (restauration native au prochain affichage)
         self._was_minimized = True
         self.hide()
 
@@ -316,6 +322,7 @@ class BoostacheApp:
     def _on_loaded(self):
         # Pas avant : pywebview remet l'opacité à 1 après avoir créé la fenêtre masquée
         self._set_opacity(self._opacity_setting())
+        self.assistant.resume()      # sites chargés en arrière-plan : la fenêtre doit exister
         try:
             self.window.dom.document.events.drop += DOMEventHandler(
                 self._on_drop, prevent_default=True)
@@ -452,8 +459,7 @@ class BoostacheApp:
                 pass
         self.terminals.shutdown()
         self.recorder.shutdown()
-        if self.live:
-            self.live.shutdown()
+        self.assistant.shutdown()
         try:
             tts.stop()
         except Exception:
@@ -470,9 +476,10 @@ class BoostacheApp:
                 "system_prompt", "clipboard_max_items", "always_on_top", "window_opacity",
                 "console_shell", "tts_mode_chat", "tts_mode_console", "tts_mode_note",
                 "sidebar_collapsed", "print_screen_capture", "help_capture", "assist_model",
-                "layout", "live_mode", "live_interval", "live_goal", "live_speak", "live_notify",
-                "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed",
-                "last_model", "help_model", "live_model", "ollama_num_ctx", "ollama_keep_alive",
+                "layout", "assistant_announce", "assistant_gmail", "assistant_whatsapp",
+                "assistant_content", "assistant_speak",
+                "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed", "tts_volume",
+                "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
@@ -481,8 +488,7 @@ class BoostacheApp:
             "notes":     self.notes.snapshot(),
             "captures":  self.captures.snapshot(),
             "recorder":  self.recorder.snapshot(),
-            "live":      self.live.snapshot() if self.live else
-                         {"available": False, "reason": NO_OLLAMA_LIB},
+            "assistant": self.assistant.snapshot(),
             "ollama":    self.ollama.boot_state() if self.ollama else
                          {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
@@ -546,6 +552,13 @@ class BoostacheApp:
                 return settings.get(key)
             settings.set(key, value)
             tts.set_speed(value)
+        elif key == "tts_volume":
+            try:
+                value = round(max(0, min(float(value), 100)))
+            except (TypeError, ValueError):
+                return settings.get(key)
+            settings.set(key, value)
+            tts.set_volume(value)
         elif key == "audio_format":
             if value not in AUDIO_FORMATS:
                 return settings.get(key)
@@ -554,7 +567,7 @@ class BoostacheApp:
             if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
                 return settings.get(key)
             settings.set(key, value)
-        elif key in ("audio_transcribe", "live_speak", "live_notify", "ollama_autostart"):
+        elif key in ("audio_transcribe", "assistant_content", "assistant_speak", "ollama_autostart"):
             settings.set(key, bool(value))
         elif key == "ollama_num_ctx":
             try:
@@ -572,28 +585,15 @@ class BoostacheApp:
             settings.set(key, str(value or ""))
             if key == "last_model" and self.chat:
                 self.chat.emit_models()      # modèle des nouvelles conversations
-        elif key == "live_interval":
-            try:
-                value = int(value)
-            except (TypeError, ValueError):
-                return settings.get(key)
-            if value not in LIVE_INTERVALS:
-                return settings.get(key)
-            settings.set(key, value)
-            if self.live:
-                self.live.reschedule()
-        elif key == "live_mode":
-            if value not in LIVE_MODES:
-                return settings.get(key)
-            settings.set(key, value)
-            if self.live:
-                self.live.set_mode()
-        elif key == "live_goal":
-            settings.set(key, str(value or "").strip()[:500])
-        elif key == "live_model":
+        elif key == "assistant_announce":
+            settings.set(key, bool(value))
+            self.assistant.set_watching(bool(value))
+        elif key in ("assistant_gmail", "assistant_whatsapp"):
+            settings.set(key, bool(value))
+            self.assistant.sources_changed()
+        elif key == "assistant_model":
             settings.set(key, str(value or ""))
-            if self.live:
-                self.live.refresh()
+            self.assistant.refresh()
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
         elif key == "digest_height":
@@ -621,7 +621,7 @@ class BoostacheApp:
     def _configure_tts():
         tts.configure(engine=settings.get("tts_engine"),
                       voices={e: settings.get(f"tts_voice_{e}") or "" for e in speech.ENGINES},
-                      speed=settings.get("tts_speed"))
+                      speed=settings.get("tts_speed"), volume=settings.get("tts_volume"))
 
     def focus_ui(self):
         """Rend le clavier à l'interface quand un site intégré l'a gardé

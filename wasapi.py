@@ -159,6 +159,15 @@ class IAudioRenderClient(IUnknown):
     ]
 
 
+class IAudioStreamVolume(IUnknown):
+    _iid_ = GUID("{93014887-242D-4068-8A15-CF5E93B90FE3}")
+    _methods_ = [
+        COMMETHOD([], HRESULT, "GetChannelCount", (["out"], POINTER(c_uint32), "count")),
+        COMMETHOD([], HRESULT, "SetChannelVolume", (["in"], c_uint32, "index"), (["in"], c_float, "level")),
+        COMMETHOD([], HRESULT, "GetChannelVolume", (["in"], c_uint32, "index"), (["out"], POINTER(c_float), "level")),
+    ]
+
+
 @contextmanager
 def com_thread():
     """COM initialisé pour le thread courant (déjà fait par un autre module : rien à défaire)."""
@@ -318,7 +327,18 @@ class RenderStream:
         self._client.Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER_HNS, 0, ctypes.addressof(fmt), None)
         self._size = self._client.GetBufferSize()
         self._render = self._client.GetService(byref(IAudioRenderClient._iid_)).QueryInterface(IAudioRenderClient)
+        self._volume = self._client.GetService(byref(IAudioStreamVolume._iid_)).QueryInterface(IAudioStreamVolume)
+        self.volume = 1.0
         self._running = False
+
+    def set_volume(self, level: float):
+        """Volume de ce flux seul (0 à 1, amplitude), appliqué aussi à ce qui est en tampon.
+        Le volume de l'application dans le mélangeur de Windows n'est pas touché."""
+        level = max(0.0, min(float(level), 1.0))
+        if level != self.volume:
+            for i in range(self._volume.GetChannelCount()):     # ceux du périphérique (conversion)
+                self._volume.SetChannelVolume(i, level)
+            self.volume = level
 
     def write(self, data: bytes) -> int:
         """Copie dans le tampon ce qui y tient ; renvoie le nombre d'octets pris."""
@@ -355,4 +375,4 @@ class RenderStream:
             self._client.Stop()
         except comtypes.COMError:
             pass
-        self._render = self._client = None
+        self._render = self._volume = self._client = None

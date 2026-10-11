@@ -361,15 +361,19 @@ export function createChatView(ctx, state) {
     });
   }
 
-  function botMessage(t, m, live = false) {
+  /** Réponse n° index de la conversation ; live : en cours de génération (lisible
+   *  dès son début, la lecture suit le texte qui arrive). */
+  function botMessage(t, m, live = false, index = t.data.messages.length) {
     const root = h("div", { class: "msg msg-bot" });
     const thinkLabel = h("span", { class: "label" });
     const thinkBody = h("div", { class: "thinking-body" });
     const summary = h("summary", {}, h("span", { class: "chev" }, ico("chevron-right", 13)), ico("brain", 14), thinkLabel);
     const think = h("details", { class: "thinking", hidden: true }, summary, thinkBody);
     const content = h("div", { class: "md" });
-    const source = `chat-msg:${t.id}:${Math.random().toString(36).slice(2, 8)}`;
-    const speakBtn = iconButton("volume-2", "Lire", () => ctx.toggleSpeak(state_.text, source, true), { size: 15, cls: "sm" });
+    // Source stable : la bulle reconstruite garde sa lecture (et la suite de la réponse)
+    const source = `chat-msg:${t.id}:${index}`;
+    const speakBtn = iconButton("volume-2", "Lire",
+      () => ctx.toggleSpeak(state_.text, source, true, state_.streaming), { size: 15, cls: "sm" });
     speakBtn.dataset.speakSource = source;
     speakBtn.dataset.tipIdle = "Lire";
     // Texte Markdown (éditeurs, champs de saisie) + HTML mis en forme (Word, Outlook, mails…)
@@ -378,9 +382,8 @@ export function createChatView(ctx, state) {
       if (await api.copy_rich(state_.text, renderMarkdownForCopy(state_.text))) toast("Réponse copiée");
       else toast("Copie impossible : le presse-papiers est occupé.", "error");
     };
-    const actions = h("div", { class: "msg-actions" },
-      iconButton("copy", "Copier la réponse", copy, { size: 15, cls: "sm" }),
-      speakBtn);
+    const copyBtn = iconButton("copy", "Copier la réponse", copy, { size: 15, cls: "sm" });
+    const actions = h("div", { class: "msg-actions" }, copyBtn, speakBtn);
     root.copyMessage = copy;
     const time = stamp(m.time);
     root.append(
@@ -389,7 +392,7 @@ export function createChatView(ctx, state) {
       think, content, actions);
     summary.addEventListener("click", () => { think.dataset.touched = "1"; });
 
-    const state_ = { text: "" };
+    const state_ = { text: "", streaming: false };
     function update(text, thinking, streaming) {
       let answer = text || "";
       let reasoning = thinking || "";
@@ -403,6 +406,9 @@ export function createChatView(ctx, state) {
         }
       }
       state_.text = answer;
+      // Lecture au fil de l'eau : la suite de la réponse (complète à la fin)
+      if (streaming || state_.streaming) ctx.feed(source, answer, !streaming);
+      state_.streaming = streaming;
       if (reasoning) {
         const thinkingNow = streaming && (!answer || reasoningOpen);
         think.hidden = false;
@@ -420,10 +426,13 @@ export function createChatView(ctx, state) {
       } else {
         content.innerHTML = renderMarkdown(answer, { highlight: !streaming, caret: streaming });
       }
-      actions.hidden = streaming;
+      // Pendant la génération : seulement « Lire », qui suit la réponse
+      copyBtn.hidden = streaming;
     }
     update(m.text, m.thinking, live);
-    return { root, update, setTime: (iso) => setStamp(time, iso) };
+    return { root, update, setTime: (iso) => setStamp(time, iso),
+      /** Génération finie sans réponse : la lecture qui l'attendait s'arrête. */
+      finish: () => { if (state_.streaming) { state_.streaming = false; ctx.feed(source, state_.text, true); } } };
   }
 
   function notice(text, kind = "") {
@@ -459,7 +468,7 @@ export function createChatView(ctx, state) {
     d.messages.forEach((m, i) => {
       const sep = daySep(t, m.time);
       if (sep) thread.append(sep);
-      thread.append(m.role === "user" ? userMessage(t, m, i) : botMessage(t, m).root);
+      thread.append(m.role === "user" ? userMessage(t, m, i) : botMessage(t, m, false, i).root);
     });
     if (d.streaming) {
       t.partial = { content: d.partial?.content || "", thinking: d.partial?.thinking || "" };
@@ -694,14 +703,20 @@ export function createChatView(ctx, state) {
     }).join("\n\n");
   }
 
+  /** Texte lu par le bouton de la barre : la dernière réponse ou toute la conversation,
+   *  réponse en cours comprise (le texte ne fait que s'allonger : lecture au fil de l'eau). */
+  function speakText(t, mode) {
+    const partial = t.data.streaming && t.partial ? splitThinking(t.partial.content).content : null;
+    if (mode !== "all") return partial ?? conversationText(t, true);
+    return [...t.data.messages.map((m) => splitThinking(m.text).content), partial ?? []].join("\n\n");
+  }
+
   function speakMode(t, mode) {
     if (!t) return;
     const source = `chat:${t.id}`;
     if (ctx.speaking(source)) { api.tts_stop(); return; }
-    const text = mode === "all"
-      ? t.data.messages.map((m) => splitThinking(m.text).content).join("\n\n")
-      : conversationText(t, true);
-    ctx.speak(text, source, true);
+    t.speakMode = mode;
+    ctx.speak(speakText(t, mode), source, true, !!t.data.streaming);
   }
 
   function paneMenu(t, ev) {
@@ -784,6 +799,7 @@ export function createChatView(ctx, state) {
     t.partial.content += content;
     t.partial.thinking += thinking;
     t.renderPartial();
+    ctx.feed(`chat:${t.id}`, speakText(t, t.speakMode));
   });
 
   on("chat:done", ({ tab, message, error, stopped, title }) => {
@@ -794,8 +810,9 @@ export function createChatView(ctx, state) {
     t.partial = null;
     const stream = t.stream;
     t.stream = null;
+    if (message) t.data.messages.push(message);
+    ctx.feed(`chat:${t.id}`, speakText(t, t.speakMode), true);
     if (message) {
-      t.data.messages.push(message);
       if (stream) {
         stream.update(message.text, message.thinking, false);
         stream.setTime(message.time);
@@ -805,6 +822,7 @@ export function createChatView(ctx, state) {
         renderPane(t);   // pas de bulle en cours (interface rechargée entre-temps)
       }
     } else {
+      stream?.finish();
       stream?.root.remove();
     }
     if (error) appendNotice(t, error, "error");

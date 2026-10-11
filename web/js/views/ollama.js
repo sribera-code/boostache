@@ -13,7 +13,7 @@ const FIT_KEY = "boostache.ollama.fitOnly";     // filtre « Adaptés à ce PC �
 
 // Capacités (Ollama, ollama.com) → libellé, infobulle ; les autres ne sont pas affichées
 const CAPS = {
-  vision:    ["Images", "Lit les images : captures, aide contextuelle, assistant live"],
+  vision:    ["Images", "Lit les images : captures, aide contextuelle"],
   thinking:  ["Réflexion", "Réfléchit avant de répondre : plus lent, souvent plus juste"],
   tools:     ["Outils", "Sait appeler des fonctions"],
   audio:     ["Audio", "Comprend le son"],
@@ -25,7 +25,7 @@ const USES = [
   ["chat", "Conversations", "last_model", "Modèle des nouvelles conversations"],
   ["help", "Aide contextuelle", "help_model", "Ctrl+Impr. écran ; de préférence un modèle qui lit les images"],
   ["assist", "WhatsApp et Gmail", "assist_model", "Assistant de réponse sous les sites intégrés"],
-  ["live", "Assistant live", "live_model", "De préférence un modèle qui lit les images"],
+  ["assistant", "Assistant", "assistant_model", "Questions sur Gmail et WhatsApp"],
 ];
 
 // Proposés en tête de la bibliothèque, quand rien n'est cherché

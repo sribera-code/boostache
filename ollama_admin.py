@@ -63,7 +63,7 @@ MANIFEST_SINGLE = ", ".join((
 MANIFEST_TYPES = "application/vnd.ollama.manifest.list.v2+json, " + MANIFEST_SINGLE
 
 # Fonctions de Boostache qui utilisent un modèle → réglage où il est choisi
-USES = {"chat": "last_model", "help": "help_model", "assist": "assist_model", "live": "live_model"}
+USES = {"chat": "last_model", "help": "help_model", "assist": "assist_model", "assistant": "assistant_model"}
 
 # Étapes d'un « pull » (statut envoyé par Ollama → texte affiché)
 _PHASES = (
@@ -364,12 +364,12 @@ def _iso(value) -> str:
 # ─────────────────────────────────────────────
 class OllamaAdmin:
     """chat : chat.ChatService (présence d'Ollama, liste des modèles partagée) ;
-    live : live.LiveService ou None (modèle de l'assistant live)."""
+    assistant : assistant.AssistantService ou None (modèle de l'assistant)."""
 
-    def __init__(self, bridge, chat, live=None, is_visible=None, notify=None):
+    def __init__(self, bridge, chat, assistant=None, is_visible=None, notify=None):
         self._bridge = bridge
         self._chat = chat
-        self._live = live
+        self._assistant = assistant
         self._is_visible = is_visible or (lambda: True)
         self._notify = notify
         self._lock = threading.Lock()
@@ -501,8 +501,8 @@ class OllamaAdmin:
         out = {"chat": pick(last), "assist": pick(settings.get("assist_model", ""), last)}
         try:
             out["help"] = self._chat.help_model() or ""
-            if self._live is not None:
-                out["live"] = self._live.model() or ""
+            if self._assistant is not None:
+                out["assistant"] = self._assistant.model() or ""
         except Exception:
             pass
         return out

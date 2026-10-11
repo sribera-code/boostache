@@ -10,7 +10,7 @@ import { createNotesView } from "./views/notes.js";
 import { createClipboardView } from "./views/clipboard.js";
 import { createCapturesView } from "./views/captures.js";
 import { createRecorderView } from "./views/recorder.js";
-import { createLiveView } from "./views/live.js";
+import { createAssistantView } from "./views/assistant.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
@@ -27,7 +27,7 @@ const NAV = [
   { id: "whatsapp",  label: "WhatsApp",       icon: "message-circle",  create: createWhatsAppView },
   { id: "gmail",     label: "Gmail",          icon: "mail",            create: createGmailView },
   { id: "recorder",  label: "Enregistreur",   icon: "audio-lines",     create: createRecorderView },
-  { id: "live",      label: "Assistant live", icon: "eye",             create: createLiveView },
+  { id: "assistant", label: "Assistant",      icon: "sparkles",        create: createAssistantView },
   "-",
   { id: "logs",      label: "Historique",     icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
@@ -37,6 +37,7 @@ const NAV = [
 const SETTINGS = { id: "settings", label: "Paramètres", icon: "settings", create: createSettingsView };
 
 const store = { settings: {}, tts: { speaking: false, source: null }, active: null, dataDir: "", ollama: false };
+const streamed = new Set();     // lectures au fil de l'eau en cours (sources), voir ctx.speak
 const views = new Map();          // id → { view, nav, item }
 let layout = null;                // une section ou deux côte à côte (layout.js)
 let bootState = null;             // état initial (ui_ready), pour une section ajoutée ensuite
@@ -86,14 +87,27 @@ const ctx = {
 
   speaking: (source) => store.tts.speaking && store.tts.source === source,
 
-  speak(text, source, markdown = false) {
-    if (!text || !String(text).trim()) { toast("Rien à lire.", "info"); return; }
-    api.speak(text, source, markdown);
+  /** stream : texte encore en cours d'écriture (réponse d'un modèle) ; lu au fil de
+   *  l'eau, la vue apporte la suite par ctx.feed() jusqu'au texte final. */
+  speak(text, source, markdown = false, stream = false) {
+    if (!stream && (!text || !String(text).trim())) { toast("Rien à lire.", "info"); return; }
+    if (stream) streamed.add(source); else streamed.delete(source);
+    api.speak(text || "", source, markdown, stream);
   },
 
-  toggleSpeak(text, source, markdown = false) {
+  toggleSpeak(text, source, markdown = false, stream = false) {
     if (ctx.speaking(source)) api.tts_stop();
-    else ctx.speak(text, source, markdown);
+    else ctx.speak(text, source, markdown, stream);
+  },
+
+  /** Curseur du volume de la lecture (Paramètres), tenu à jour avec celui du lecteur. */
+  volumeControl: () => volumeControl(),
+
+  /** Texte complet (allongé) d'une lecture au fil de l'eau ; final : il est complet. */
+  feed(source, text, final = false) {
+    if (!streamed.has(source)) return;
+    if (final) streamed.delete(source);
+    api.tts_feed(source, text || "", final);
   },
 
   /** Menu « mode de lecture » (clic droit sur un bouton 🔊). */
@@ -290,6 +304,48 @@ function shortcut(key) {
 const TTS_SPEEDS = [0.75, 1, 1.15, 1.3, 1.5, 1.75, 2];
 const speedText = (v) => `${String(Number(v)).replace(".", ",")}×`;
 
+// ── Volume de la lecture : curseurs du lecteur et des Paramètres, tenus à jour ensemble ──
+const volumeControls = new Set();
+let unmutedVolume = 100;         // rétabli par le bouton du haut-parleur
+const currentVolume = () => Number(store.tts.volume ?? store.settings.tts_volume ?? 100);
+
+/** Volume appliqué tout de suite (glissement) ; save : enregistré dans les réglages. */
+function setVolume(v, save) {
+  v = Math.max(0, Math.min(100, Math.round(v)));
+  store.tts.volume = v;
+  for (const c of volumeControls) c.show(v);
+  if (save) ctx.saveSetting("tts_volume", v);
+  else api.tts_volume(v);
+}
+
+function volumeControl() {
+  let dragging = false;
+  const input = h("input", { type: "range", min: 0, max: 100, step: 5, "aria-label": "Volume de la lecture",
+    onPointerdown: () => { dragging = true; },
+    onPointerup: () => { dragging = false; },
+    onInput: () => setVolume(Number(input.value), false),
+    onChange: () => { dragging = false; setVolume(Number(input.value), true); },
+    onWheel: (ev) => { ev.preventDefault(); setVolume(currentVolume() + (ev.deltaY < 0 ? 5 : -5), true); } });
+  const muteBtn = iconButton("volume-2", "Couper le son", () => {
+    const v = currentVolume();
+    if (v > 0) unmutedVolume = v;
+    setVolume(v > 0 ? 0 : unmutedVolume || 100, true);
+  }, { size: 14, cls: "sm" });
+  const value = h("span", { class: "volume-value" });
+  const el = h("div", { class: "volume-control", dataset: { tip: "Volume de la lecture (molette)" } }, muteBtn, input, value);
+  function show(v) {
+    if (!dragging) input.value = v;
+    value.textContent = `${v} %`;
+    el.style.setProperty("--fill", `${v}%`);
+    muteBtn.replaceChildren(ico(v === 0 ? "volume-x" : v < 50 ? "volume-1" : "volume-2", 14));
+    muteBtn.dataset.tip = v === 0 ? "Remettre le son" : "Couper le son";
+    muteBtn.setAttribute("aria-label", muteBtn.dataset.tip);
+  }
+  volumeControls.add({ show });
+  show(currentVolume());
+  return el;
+}
+
 function setupTts() {
   const label = h("span", { class: "tts-text", dataset: { tipWrap: "" } });
   const speedBtn = h("button", { class: "tts-speed", type: "button", "aria-label": "Vitesse de lecture",
@@ -300,6 +356,7 @@ function setupTts() {
     h("div", { class: "tts-head" },
       h("span", { class: "eq" }, h("i"), h("i"), h("i"), h("i")), label, speedBtn),
     h("div", { class: "tts-progress" }, bar),
+    h("div", { class: "tts-volume" }, volumeControl()),
     h("div", { class: "tts-controls" },
       iconButton("skip-back", "Phrase précédente", () => api.tts_skip(-1), { size: 14, cls: "sm tts-skip" }),
       pauseBtn,
@@ -324,7 +381,7 @@ function setupTts() {
     if (t.speaking) {
       card.classList.toggle("paused", !!t.paused);
       card.classList.toggle("waiting", !!t.waiting && !t.paused);
-      label.textContent = t.waiting && !t.paused ? "Préparation…"
+      label.textContent = t.waiting && !t.paused ? (t.ahead ? "En attente de la suite…" : "Préparation…")
         : t.total > 1 ? `${t.voice} · ${t.index + 1}/${t.total}` : t.voice || "Lecture";
       label.dataset.tip = t.text || "";
       speedBtn.textContent = speedText(t.speed ?? 1);
@@ -340,6 +397,7 @@ function setupTts() {
   on("tts", (data) => {
     if (data.notice) toast(data.notice, data.notice_kind || "info", 4000);
     store.tts = data;
+    for (const c of volumeControls) c.show(currentVolume());
     refresh();
   });
   on("speak-sources-changed", refresh);

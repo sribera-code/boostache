@@ -1,5 +1,6 @@
-// Vue Enregistreur : enregistre le son qui sort du PC (et le micro en option),
-// liste, lecture et transcription en texte des enregistrements du dossier choisi.
+// Vue Enregistreur : enregistre le son qui sort du PC (et le micro en option)
+// ou le micro seul, en fichier audio ou en texte transcrit en direct ; liste,
+// lecture et transcription en texte des enregistrements du dossier choisi.
 import { h, plural, isTyping } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 
@@ -9,6 +10,16 @@ const TRANSCRIBE_STATES = {
   download: "Téléchargement du modèle de transcription (une seule fois)…",
   load: "Chargement du modèle…",
   run: "Transcription…",
+};
+const SOURCES = [
+  ["output", "Son du PC", "Tout ce que vous entendez : musique, vidéos, appels — pas les autres sons de la pièce"],
+  ["both", "PC + micro", "Le son du PC et votre voix, pour un appel par exemple"],
+  ["mic", "Micro", "Seulement le micro : votre voix, une réunion autour de vous…"],
+];
+const LIVE_STATES = {
+  download: "Téléchargement du modèle de transcription (une seule fois)…",
+  load: "Chargement du modèle de transcription…",
+  run: "Transcription en direct",
 };
 const FORMAT_TIPS = {
   mp3: "MP3 : lu partout (environ 1,4 Mo par minute)",
@@ -56,8 +67,12 @@ export function createRecorderView(ctx, state) {
     available: !!init.available,
     folder: init.folder || "",
     format: init.format || "mp3",
+    source: init.source || "output",
     device: init.device || "",
-    mic: !!init.mic,
+    micDevice: init.mic_device || "",
+    live: !!init.live,          // texte en direct au lieu d'un fichier audio
+    liveView: init.live_view || null,
+    mics: [],
     session: init.session || null,
     files: init.files || [],
     outputs: [],
@@ -87,17 +102,28 @@ export function createRecorderView(ctx, state) {
     return { row, fill, peak: 0 };
   };
   const outMeter = meter("PC", "volume-2");
+  // Texte en direct : ce qui est transcrit pendant l'enregistrement
+  const liveStatus = h("div", { class: "rec-live-status" });
+  const liveText = h("div", { class: "rec-live-text", tabindex: "0" });
+  const liveActions = h("div", { class: "rec-live-actions" });
+  const livePanel = h("div", { class: "rec-live", hidden: true },
+    h("div", { class: "rec-live-head" }, liveStatus, liveActions), liveText);
   const micMeter = meter("Micro", "mic");
   const meters = h("div", { class: "rec-meters" }, outMeter.row, micMeter.row);
 
+  const sourceSeg = h("div", { class: "segmented rec-source-seg" });
   const sourceBtn = h("button", { class: "btn sm rec-source", type: "button", onClick: sourceMenu });
-  const micBtn = h("button", { class: "btn sm rec-mic", type: "button", role: "switch", onClick: toggleMic });
+  const resultSeg = h("div", { class: "segmented rec-result" });
   const formatSeg = h("div", { class: "segmented rec-format" });
-  const options = h("div", { class: "rec-options" }, sourceBtn, micBtn, h("div", { class: "head-spacer" }), formatSeg);
+  const modelHint = h("span", { class: "rec-model-hint" });
+  const options = h("div", { class: "rec-options" },
+    h("div", { class: "rec-opt-row" }, h("span", { class: "rec-opt-label", text: "Source" }), sourceSeg, sourceBtn),
+    h("div", { class: "rec-opt-row" }, h("span", { class: "rec-opt-label", text: "Résultat" }), resultSeg,
+      formatSeg, modelHint));
 
   const deck = h("div", { class: "rec-deck" },
     h("div", { class: "rec-main" }, recBtn, h("div", { class: "rec-status" }, timeEl, stateEl), pauseBtn),
-    meters, options);
+    meters, livePanel, options);
 
   // ── Liste ───────────────────────────────────
   const count = h("span", { class: "view-sub" });
@@ -141,7 +167,8 @@ export function createRecorderView(ctx, state) {
     if (S.starting) return;
     S.starting = true;
     renderDeck();
-    const res = await api.rec_start(S.device, S.mic);
+    const live = S.live && S.stt.available;
+    const res = await api.rec_start(S.source, S.device, S.micDevice, live);
     S.starting = false;
     if (res?.error) toast(res.error, "error");
     else if (res?.session) setSession(res.session);
@@ -152,9 +179,9 @@ export function createRecorderView(ctx, state) {
     if (S.session) api.rec_pause(!S.session.paused);
   }
 
-  function toggleMic() {
+  function setSource(source) {
     if (S.session) return;
-    S.mic = !S.mic;
+    S.source = source;
     renderDeck();
   }
 
@@ -176,31 +203,43 @@ export function createRecorderView(ctx, state) {
   async function loadDevices() {
     const res = await api.rec_devices();
     S.outputs = res?.outputs || [];
+    S.mics = res?.mics || [];
     S.micName = res?.mic || "";
     renderDeck();
   }
 
+  /** Périphériques : la sortie enregistrée et/ou le micro, selon la source. */
   async function sourceMenu(ev) {
     if (S.session) return;
     const anchor = ev.currentTarget;
     await loadDevices();
-    const fallback = S.outputs.find((d) => d.default);
+    const section = (title, list, current, defaultLabel, pick) => {
+      const fallback = list.find((d) => d.default);
+      return [
+        { section: title },
+        { label: fallback ? `${defaultLabel} (${fallback.name})` : defaultLabel, checked: !current,
+          onSelect: () => { pick(""); renderDeck(); } },
+        ...list.map((d) => ({ label: d.name, checked: current === d.id, onSelect: () => { pick(d.id); renderDeck(); } })),
+      ];
+    };
     openMenuBelow([
-      { section: "Son enregistré" },
-      { label: fallback ? `Sortie par défaut (${fallback.name})` : "Sortie par défaut", checked: !S.device,
-        onSelect: () => { S.device = ""; renderDeck(); } },
-      ...(S.outputs.length ? ["-"] : []),
-      ...S.outputs.map((d) => ({ label: d.name, checked: S.device === d.id,
-        onSelect: () => { S.device = d.id; renderDeck(); } })),
+      ...(S.source !== "mic" ? section("Sortie enregistrée", S.outputs, S.device, "Sortie par défaut", (id) => { S.device = id; }) : []),
+      ...(S.source !== "output" ? section("Micro", S.mics, S.micDevice, "Micro par défaut", (id) => { S.micDevice = id; }) : []),
     ], anchor);
   }
 
-  function deviceLabel() {
-    if (S.session) return S.session.device;
-    const chosen = S.device && S.outputs.find((d) => d.id === S.device);
+  function deviceName(list, id, defaultLabel) {
+    const chosen = id && list.find((d) => d.id === id);
     if (chosen) return chosen.name;
-    const fallback = S.outputs.find((d) => d.default);
-    return fallback ? `Sortie par défaut (${fallback.name})` : "Sortie par défaut";
+    const fallback = list.find((d) => d.default);
+    return fallback ? `${defaultLabel} (${fallback.name})` : defaultLabel;
+  }
+
+  function deviceLabel() {
+    if (S.session) return S.session.mic ? `${S.session.device} + ${S.session.mic}` : S.session.device;
+    if (S.source === "mic") return deviceName(S.mics, S.micDevice, "Micro par défaut");
+    const out = deviceName(S.outputs, S.device, "Sortie par défaut");
+    return S.source === "both" ? `${out} + ${deviceName(S.mics, S.micDevice, "micro par défaut")}` : out;
   }
 
   function renderDeck() {
@@ -210,7 +249,10 @@ export function createRecorderView(ctx, state) {
     deck.classList.toggle("paused", paused);
     recBtn.replaceChildren(h("span", { class: rec ? "rec-glyph stop" : "rec-glyph" }));
     recBtn.disabled = S.starting;
-    recBtn.dataset.tip = rec ? "Arrêter et enregistrer le fichier" : "Enregistrer le son du PC";
+    const source = rec ? S.session.source : S.source;
+    const live = rec ? !!S.session.live : S.live && !!S.stt.available;
+    recBtn.dataset.tip = rec ? (live ? "Arrêter (le texte est enregistré)" : "Arrêter et enregistrer le fichier")
+      : live ? "Transcrire en direct" : "Enregistrer";
     recBtn.setAttribute("aria-label", recBtn.dataset.tip);
     pauseBtn.hidden = !rec;
     pauseBtn.replaceChildren(ico(paused ? "play" : "pause", 18));
@@ -219,29 +261,72 @@ export function createRecorderView(ctx, state) {
     timeEl.textContent = clock(rec ? S.session.seconds : 0);
 
     if (S.starting) stateEl.textContent = "Démarrage…";
-    else if (paused) stateEl.textContent = "En pause — rien n'est enregistré";
-    else if (rec) stateEl.textContent = `Enregistrement de « ${S.session.device} »${S.session.mic ? " + micro" : ""}`;
-    else stateEl.textContent = "Musique, vidéos, appels : tout ce que vous entendez est enregistré, pas les autres sons de la pièce.";
+    else if (paused) stateEl.textContent = live ? "En pause — rien n'est transcrit" : "En pause — rien n'est enregistré";
+    else if (rec) stateEl.textContent = `${live ? "Transcription" : "Enregistrement"} de « ${deviceLabel()} »`;
+    else stateEl.textContent = SOURCES.find(([id]) => id === source)?.[2]
+      + (live ? ". Le texte s'écrit pendant l'enregistrement, sans fichier audio." : ".");
 
     meters.hidden = !rec;
-    micMeter.row.hidden = !(rec && S.session.mic);
+    outMeter.row.hidden = !rec || source === "mic";
+    micMeter.row.hidden = !(rec && (S.session.mic || source === "mic"));
 
-    sourceBtn.disabled = micBtn.disabled = rec || S.starting;
-    sourceBtn.replaceChildren(ico("volume-2", 14), h("span", { class: "rec-source-name", text: deviceLabel() }),
-      ico("chevron-down", 14));
-    sourceBtn.dataset.tip = rec ? "Source de l'enregistrement en cours" : "Sortie audio à enregistrer";
-    const micOn = rec ? !!S.session.mic : S.mic;
-    micBtn.classList.toggle("on", micOn);
-    micBtn.setAttribute("aria-checked", String(micOn));
-    micBtn.replaceChildren(ico("mic", 14), micOn ? "Micro inclus" : "Ajouter le micro");
-    micBtn.dataset.tip = micOn
-      ? `Votre voix est mêlée au son du PC${S.micName ? ` (${S.micName})` : ""}`
-      : `Mêler votre voix au son du PC, pour un appel par exemple${S.micName ? ` (${S.micName})` : ""}`;
+    const locked = rec || S.starting;
+    sourceSeg.replaceChildren(...SOURCES.map(([id, label, tip]) => h("button", {
+      type: "button", class: source === id ? "active" : "", text: label, disabled: locked && source !== id,
+      dataset: { tip }, onClick: () => setSource(id) })));
+    sourceBtn.disabled = locked;
+    sourceBtn.replaceChildren(ico(source === "mic" ? "mic" : "volume-2", 14),
+      h("span", { class: "rec-source-name", text: deviceLabel() }), ico("chevron-down", 14));
+    sourceBtn.dataset.tip = rec ? "Source de l'enregistrement en cours"
+      : source === "mic" ? "Micro à enregistrer" : source === "both" ? "Sortie et micro à enregistrer" : "Sortie audio à enregistrer";
 
+    resultSeg.hidden = !S.stt.available;
+    resultSeg.replaceChildren(...[[false, "Fichier audio", "Un fichier audio, à écouter ou transcrire ensuite"],
+      [true, "Texte en direct", "Pas de fichier audio : le son est transcrit pendant l'enregistrement, le texte est enregistré"]]
+      .map(([value, label, tip]) => h("button", {
+        type: "button", class: live === value ? "active" : "", text: label, disabled: locked && live !== value,
+        dataset: { tip }, onClick: () => { if (!locked) { S.live = value; renderDeck(); } } })));
+    formatSeg.hidden = live;
     formatSeg.replaceChildren(...FORMATS.map(([id, label]) => h("button", {
       type: "button", class: S.format === id ? "active" : "", text: label, dataset: { tip: FORMAT_TIPS[id] },
       onClick: async () => { await ctx.saveSetting("audio_format", id); S.format = ctx.store.settings.audio_format || id; renderDeck(); },
     })));
+    modelHint.hidden = !live;
+    modelHint.textContent = sttLabel().replace("Texte : ", "Modèle ");
+    modelHint.dataset.tip = "Modèle de transcription : bouton « Texte » au-dessus de la liste. "
+      + "Un modèle plus précis est plus lent : le texte peut prendre du retard sur le son.";
+  }
+
+  // ── Texte en direct ─────────────────────────
+  function renderLive() {
+    const v = S.liveView;
+    livePanel.hidden = !v;
+    if (!v) return;
+    const working = ["download", "load", "run"].includes(v.state);
+    let status;
+    if (v.state === "error") status = [ico("triangle-alert", 13), `Transcription interrompue : ${v.error}`];
+    else if (v.state === "cancelled") status = ["Transcription arrêtée."];
+    else if (v.state === "done") status = [ico("check", 13), v.text ? `Texte enregistré : ${v.name}` : "Aucune parole reconnue."];
+    else if (!v.recording) status = [h("span", { class: "pane-busy" }),
+      `Fin de la transcription…${v.pending >= 1 ? ` (${Math.round(v.pending)} s de son)` : ""}`];
+    else status = [working && v.state !== "run" ? h("span", { class: "pane-busy" }) : h("span", { class: "rec-live-dot" }),
+      LIVE_STATES[v.state] || LIVE_STATES.run,
+      v.state === "run" && v.pending >= 3 ? h("span", { class: "rec-live-late", text: `· ${Math.round(v.pending)} s de retard` }) : null];
+    livePanel.classList.toggle("error", v.state === "error");
+    liveStatus.replaceChildren(...status.filter(Boolean));
+    const stick = liveText.scrollHeight - liveText.scrollTop - liveText.clientHeight < 30;
+    liveText.hidden = !v.text && !working;
+    liveText.replaceChildren(v.text ? v.text : h("span", { class: "muted",
+      text: v.recording ? "Le texte apparaîtra ici, phrase par phrase, après chaque pause de la voix." : "" }));
+    if (stick) liveText.scrollTop = liveText.scrollHeight;
+    const finished = !working;
+    liveActions.replaceChildren(...[
+      v.text ? iconButton("copy", "Copier le texte", () => ctx.copy(v.text, "Texte copié"), { size: 14, cls: "sm" }) : null,
+      v.text ? iconButton("notebook-pen", "Dans une note", (ev) => ctx.pickDestination("notes", ev.currentTarget,
+        (slot) => toNote(v.text, slot)), { size: 14, cls: "sm" }) : null,
+      finished && v.text && v.saved ? iconButton("folder-open", "Afficher dans l'explorateur", () => api.rec_reveal(v.name), { size: 14, cls: "sm" }) : null,
+      finished ? iconButton("x", "Fermer", () => { S.liveView = null; api.rec_live_close(); renderLive(); }, { size: 14, cls: "sm" }) : null,
+    ].filter(Boolean));
   }
 
   function onLevel({ seconds, out, mic }) {
@@ -312,6 +397,7 @@ export function createRecorderView(ctx, state) {
   }
 
   function metaText(f) {
+    if (f.text) return [when(f.mtime), size(f.size), "Texte en direct"].join(" · ");
     const parts = [when(f.mtime)];
     const d = durationOf(f);
     if (d != null) parts.push(clock(d));
@@ -331,7 +417,7 @@ export function createRecorderView(ctx, state) {
           h("span", { style: { transform: `scaleX(${job.progress})` } })) : null];
     }
     return [h("span", { class: "rec-meta-text", text: metaText(f) }),
-      f.transcript ? h("span", { class: "rec-tag", text: "Texte" }) : null];
+      f.transcript && !f.text ? h("span", { class: "rec-tag", text: "Texte" }) : null];
   }
 
   function updateMeta(f) {
@@ -340,6 +426,7 @@ export function createRecorderView(ctx, state) {
   }
 
   function row(f) {
+    if (f.text) return textRow(f);
     const playing = player.name === f.name;
     const stt = S.stt.available;
     const playBtn = h("button", { class: `rec-play${playing && !audio.paused ? " on" : ""}`, type: "button",
@@ -402,6 +489,41 @@ export function createRecorderView(ctx, state) {
     return item;
   }
 
+  /** Texte seul (transcription en direct) : pas de son à écouter. */
+  function textRow(f) {
+    const openBtn = h("button", { class: "rec-play rec-text-icon", type: "button", dataset: { tip: "Voir le texte" },
+      onClick: (ev) => { ev.stopPropagation(); showTranscript(f.name); } }, ico("file-text", 15));
+    const title = S.renaming === f.name ? renameInput(f) : h("div", { class: "rec-title", text: f.title, dataset: { tip: f.name } });
+    const actions = h("div", { class: "rec-actions" },
+      iconButton("file-text", "Voir le texte", () => showTranscript(f.name), { size: 15, cls: "sm on", kbd: "T" }),
+      iconButton("copy", "Copier le fichier (à coller dans un dossier, un e-mail…)", () => copyFile(f.name), { size: 15, cls: "sm" }),
+      iconButton("folder-open", "Afficher dans l'explorateur", () => api.rec_reveal(f.name), { size: 15, cls: "sm" }),
+      iconButton("pencil", "Renommer", () => startRename(f.name), { size: 15, cls: "sm", kbd: "F2" }),
+      iconButton("trash-2", "Supprimer (corbeille)", () => remove(f.name), { size: 15, cls: "sm", kbd: "Suppr" }));
+    const item = h("div", { class: `rec-item${f.name === S.selected ? " selected" : ""}`, role: "option", dataset: { name: f.name } },
+      openBtn, h("div", { class: "rec-text" }, title, h("div", { class: "rec-meta" }, ...metaContent(f).filter(Boolean))), actions);
+    item.addEventListener("click", () => setSelected(f.name));
+    item.addEventListener("dblclick", (ev) => { if (!ev.target.closest("button, input")) showTranscript(f.name); });
+    item.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      setSelected(f.name);
+      openMenu([
+        { label: "Voir le texte", icon: "file-text", hint: "Entrée", onSelect: () => showTranscript(f.name) },
+        ctx.destinationMenuItem("notes", { label: "Texte dans une note", newLabel: "Texte dans une nouvelle note",
+          icon: "notebook-pen" }, (slot) => sendTranscript(f.name, "notes", slot)),
+        ctx.store.ollama ? ctx.destinationMenuItem("chat", { label: "Texte dans une conversation",
+          newLabel: "Texte dans une nouvelle conversation", icon: "message-square" },
+          (tab) => sendTranscript(f.name, "chat", tab)) : null,
+        { label: "Copier le fichier", icon: "copy", hint: "Ctrl+C", onSelect: () => copyFile(f.name) },
+        { label: "Afficher dans l'explorateur", icon: "folder-open", onSelect: () => api.rec_reveal(f.name) },
+        { label: "Renommer…", icon: "pencil", hint: "F2", onSelect: () => startRename(f.name) },
+        "-",
+        { label: "Supprimer", icon: "trash-2", hint: "Suppr", danger: true, onSelect: () => remove(f.name) },
+      ], ev.clientX, ev.clientY);
+    });
+    return item;
+  }
+
   function renderList() {
     count.textContent = S.files.length ? plural(S.files.length, "enregistrement", "enregistrements") : "";
     folderBtn.replaceChildren(ico("folder", 13), h("span", { text: S.folder }));
@@ -409,7 +531,7 @@ export function createRecorderView(ctx, state) {
       list.replaceChildren(h("div", { class: "empty rec-empty" },
         h("div", { class: "glyph" }, ico("audio-lines", 22)),
         h("h3", { text: "Aucun enregistrement" }),
-        h("p", { text: "Lancez un enregistrement avec le bouton rouge : le fichier apparaîtra ici à l'arrêt." })));
+        h("p", { text: "Lancez un enregistrement avec le bouton rouge : le fichier (ou le texte) apparaîtra ici à l'arrêt." })));
       return;
     }
     const focused = list.contains(document.activeElement) && document.activeElement.tagName === "INPUT";
@@ -433,7 +555,11 @@ export function createRecorderView(ctx, state) {
       return;
     }
     if (!S.selected) return;
-    if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); togglePlay(S.selected); }
+    const isText = !!fileOf(S.selected)?.text;
+    if (ev.key === " " || ev.key === "Enter" || (isText && ev.key.toLowerCase() === "t" && !ev.ctrlKey && !ev.altKey)) {
+      ev.preventDefault();
+      if (isText) showTranscript(S.selected); else togglePlay(S.selected);
+    }
     else if (ev.key === "F2") { ev.preventDefault(); startRename(S.selected); }
     else if (ev.key.toLowerCase() === "t" && !ev.ctrlKey && !ev.altKey && S.stt.available) {
       ev.preventDefault();
@@ -519,6 +645,7 @@ export function createRecorderView(ctx, state) {
     const saved = await ctx.saveSetting(key, value);
     if (saved !== null && saved !== undefined) S.stt[field] = saved;
     renderSttBtn();
+    renderDeck();
   }
 
   function sttMenu(ev) {
@@ -573,15 +700,15 @@ export function createRecorderView(ctx, state) {
     const words = (res.text.match(/\S+/g) || []).length;
     const modal = openModal({
       title: f.title,
-      subtitle: `Transcription · ${plural(words, "mot", "mots")}`,
+      subtitle: `${f.text ? "Texte en direct" : "Transcription"} · ${plural(words, "mot", "mots")}`,
       body: viewer,
       width: 720,
       onClose: () => { if (ctx.speaking(source)) api.tts_stop(); },
       actions: [
         { label: "Ouvrir dans le Bloc-notes", icon: "external-link", kind: "ghost", left: true, iconOnly: true,
           onClick: () => { api.rec_open_transcript(name); return false; } },
-        { label: "Transcrire à nouveau", icon: "refresh-cw", kind: "ghost", left: true, iconOnly: true,
-          onClick: () => transcribe(name) },
+        ...(f.text ? [] : [{ label: "Transcrire à nouveau", icon: "refresh-cw", kind: "ghost", left: true, iconOnly: true,
+          onClick: () => transcribe(name) }]),
         { label: "Dans une note", icon: "notebook-pen", kind: "ghost",
           onClick: (btn) => {
             ctx.pickDestination("notes", btn, (slot) => { modal.close(); toNote(res.text, slot); });
@@ -682,12 +809,14 @@ export function createRecorderView(ctx, state) {
     if (started) renderList();     // actions de la ligne : bouton d'annulation
     else updateMeta(f);
   });
+  on("rec:live", (view) => { S.liveView = view; renderLive(); });
   on("rec:transcribed", ({ name, title }) => {
     toast(`Texte prêt : « ${title} »`);
     if (ctx.isActive("recorder") && S.selected === name) showTranscript(name);
   });
 
   renderDeck();
+  renderLive();
   renderSttBtn();
   renderList();
   // (la barre latérale est construite juste après les vues)

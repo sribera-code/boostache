@@ -105,6 +105,7 @@ _DEFAULTS = {
     "tts_voice_piper":      "fr_FR-siwis-medium",
     "tts_voice_sapi":       "",            # "" : voix par défaut de Windows
     "tts_speed":            1.0,           # de 0.5 à 2
+    "tts_volume":           100,           # %, de 0 à 100
     "clipboard_max_items":  100,
     "console_shell":        "powershell",  # "powershell" | "pwsh" | "cmd"
     "sidebar_collapsed":    False,
@@ -117,15 +118,18 @@ _DEFAULTS = {
     "audio_format":         "mp3",         # "mp3" | "m4a" | "wav"
     "audio_device":         "",            # sortie enregistrée ("" : sortie par défaut)
     "audio_mic":            False,         # micro mixé à l'enregistrement
+    "audio_source":         "",            # "output" (son du PC) | "both" (+ micro) | "mic" (micro seul) ; "" : d'après audio_mic
+    "audio_mic_device":     "",            # micro enregistré ("" : micro par défaut)
+    "audio_live":           False,         # texte en direct au lieu d'un fichier audio
     "audio_transcribe":     False,         # transcription automatique après chaque enregistrement
     "transcribe_model":     "small",       # modèle Whisper : "base" | "small" | "large-v3-turbo"
     "transcribe_language":  "",            # "" : détection automatique
-    "live_interval":        30,            # assistant live : secondes entre deux captures (live.INTERVALS)
-    "live_mode":            "reply",       # assistant live : "reply" | "summary" | "explain" | "correct" | "custom"
-    "live_goal":            "",            # consigne du mode Libre ("custom")
-    "live_model":           "",            # "" : de préférence un modèle qui lit les images
-    "live_speak":           False,         # conseils lus à voix haute
-    "live_notify":          True,          # notification Windows quand la fenêtre est masquée
+    "assistant_announce":   False,         # assistant : nouveaux messages annoncés à voix haute
+    "assistant_gmail":      True,          # assistant : Gmail lu (questions, annonces)
+    "assistant_whatsapp":   True,          # assistant : WhatsApp lu (questions, annonces)
+    "assistant_content":    True,          # annonces : objet de l'e-mail, texte du message (sinon l'expéditeur seul)
+    "assistant_speak":      False,         # réponses aux questions lues à voix haute
+    "assistant_model":      "",            # "" : celui de l'assistant de réponse, sinon des conversations
     "ollama_num_ctx":       0,             # contexte des appels (chat.CTX_SIZES) ; 0 : chat.DEFAULT_CTX
     "ollama_keep_alive":    "5m",          # modèle gardé en mémoire après un appel (chat.KEEP_ALIVE)
     "ollama_autostart":     False,         # lancer Ollama au démarrage de Boostache s'il ne répond pas

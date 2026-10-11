@@ -2,7 +2,7 @@
 // WebView2 natif (webpane.py), posé par Python au-dessus de la zone .pane-host
 // dont on transmet la position. Sous le site, l'assistant de réponse (Ollama).
 import { h, plural } from "../dom.js";
-import { ico, iconButton, openMenuBelow, toast } from "../ui.js";
+import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
 
 const WHATSAPP = {
   id: "whatsapp", title: "WhatsApp", icon: "message-circle",
@@ -330,8 +330,17 @@ function createAssistBar(ctx, state, cfg) {
     if (!res) return;
     const head = h("span", { class: "pane-for", text: res.title ? `Pour « ${res.title} » :` : "Propositions :" });
     // E-mails : aperçu compact (sans lignes vides) ; le texte inséré reste complet
-    const chips = res.replies.map((text) => h("button", { class: "pane-reply", type: "button",
+    const chips = res.replies.map((text, i) => h("button", { class: "pane-reply", type: "button",
       text: cfg.long ? text.replace(/\n\s*\n/g, "\n") : text,
+      onContextmenu: (ev) => {
+        ev.preventDefault();
+        const source = `reply:${cfg.id}:${i}`;
+        openMenu([
+          { label: ctx.speaking(source) ? "Arrêter la lecture" : "Lire", icon: "volume-2",
+            onSelect: () => ctx.toggleSpeak(text, source) },
+          { label: "Copier", icon: "copy", onSelect: () => ctx.copy(text) },
+        ], ev.clientX, ev.clientY);
+      },
       onClick: async (ev) => {
         const chip = ev.currentTarget;
         const done = await api.pane_insert(cfg.id, text);
@@ -422,7 +431,8 @@ function createAssistBar(ctx, state, cfg) {
       d.state === "cancelled" ? h("span", { class: "pane-status", text: "Arrêté." }) : null,
       d.state === "error" ? h("span", { class: "pane-status error" }, ico("triangle-alert", 14),
         d.error || "Échec du résumé.") : null,
-      h("span", { class: "digest-actions" }, running
+      // « Lire » dès le premier résumé : la lecture suit les suivants
+      h("span", { class: "digest-actions" }, items.length || running ? digestSpeakButton() : null, running
         ? h("button", { class: "btn sm", type: "button", onClick: () => api.pane_digest_stop(cfg.id) },
           ico("square", 12), "Arrêter")
         : items.length ? [
@@ -437,6 +447,35 @@ function createAssistBar(ctx, state, cfg) {
       d.state === "done" && !items.length
         ? h("p", { class: "digest-empty", text: digestEmpty(d) }) : null,
       items.length ? h("div", { class: "digest-list" }, items.map(digestItem)) : null)]);
+    ctx.emit("speak-sources-changed");
+  }
+
+  // ── Lecture à voix haute du résumé ──
+  const digestSource = `digest:${cfg.id}`;
+  let overviewLast = false;     // lecture commencée pendant le travail : la synthèse, qui arrive en dernier, est lue à la fin
+
+  function digestSpeakButton() {
+    const btn = iconButton("volume-2", "Lire le résumé", () => {
+      if (ctx.speaking(digestSource)) { api.tts_stop(); return; }
+      const running = DIGEST_RUNNING.has(S.digest.state);
+      overviewLast = running;
+      ctx.speak(digestSpeech(S.digest), digestSource, false, running);
+    }, { size: 14, cls: "sm" });
+    btn.dataset.speakSource = digestSource;
+    btn.dataset.tipIdle = "Lire le résumé";
+    return btn;
+  }
+
+  /** Un fil, tel qu'il est lu. */
+  const itemSpeech = (i) => [`${i.from || "Expéditeur inconnu"}${i.subject ? ` : ${i.subject}` : ""}.`,
+    i.summary, i.action ? `À faire : ${i.action}` : ""].filter(Boolean).join("\n");
+
+  /** Texte lu : la synthèse puis chaque fil ; en cours de travail, il ne fait que
+   *  s'allonger (chaque fil fini, puis la synthèse à la fin). */
+  function digestSpeech(d) {
+    const items = (d.items || []).map((i) => `${itemSpeech(i)}\n\n`).join("");
+    if (!d.overview) return items;
+    return overviewLast ? `${items}En bref : ${d.overview}` : `${d.overview}\n\n${items}`;
   }
 
   /** Un fil : clic pour l'ouvrir dans Gmail (sauf sélection de texte en cours). */
@@ -450,7 +489,17 @@ function createAssistBar(ctx, state, cfg) {
     return h("div", { class: `digest-item${item.unread ? " unread" : ""}${item.failed ? " failed" : ""}${link ? "" : " static"}`,
       role: link ? "button" : null, tabindex: link ? "0" : null,
       onClick: () => { if (link && window.getSelection().isCollapsed) open(); },
-      onKeydown: (ev) => { if (link && ev.key === "Enter") open(); } },
+      onKeydown: (ev) => { if (link && ev.key === "Enter") open(); },
+      onContextmenu: (ev) => {
+        ev.preventDefault();
+        const source = `digest-item:${cfg.id}:${item.id}`;
+        openMenu([
+          { label: ctx.speaking(source) ? "Arrêter la lecture" : "Lire ce résumé", icon: "volume-2",
+            onSelect: () => ctx.toggleSpeak(itemSpeech(item), source) },
+          { label: "Copier", icon: "copy", onSelect: () => ctx.copy(itemSpeech(item)) },
+          link ? { label: "Ouvrir dans Gmail", icon: "mail", onSelect: open } : null,
+        ], ev.clientX, ev.clientY);
+      } },
       h("div", { class: "digest-meta" },
         item.unread ? h("span", { class: "digest-dot", "aria-label": "Non lu" }) : null,
         h("span", { class: "digest-from", text: item.from || "(expéditeur inconnu)" }),
@@ -478,6 +527,7 @@ function createAssistBar(ctx, state, cfg) {
   if (cfg.digest) {
     on(`${cfg.id}:digest`, (d) => {
       S.digest = d;
+      ctx.feed(digestSource, digestSpeech(d), !DIGEST_RUNNING.has(d.state));
       refresh();
       if (digestShown) renderDigest();
     });

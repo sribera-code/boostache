@@ -3,12 +3,19 @@ gmail.py – Gmail intégré (voir webpane.py).
 
 Première ouverture : connexion au compte Google, la session est ensuite
 conservée dans DATA_DIR/gmail.
+
+Pour l'assistant (assistant.py) : e-mails non lus de la boîte de réception
+(flux Atom de Gmail, lu sans changer ce qui est affiché ni marquer comme lu),
+nouveaux e-mails, et de quoi répondre aux questions (liste affichée, e-mail
+ouvert, fils complets de ceux dont parle la question).
 """
 
 import json
 import re
 import threading
 import time
+import unicodedata
+from datetime import datetime, timedelta, timezone
 
 from engine import logger
 from webpane import IMPROVE_SCHEMA, STYLE_RULES, SUGGEST_SCHEMA, WebPane, clean, same_text
@@ -250,6 +257,33 @@ THREAD_JS = r"""
 })
 """
 
+# E-mails non lus de la boîte de réception (20 au plus) : flux Atom de Gmail, lu avec
+# la session de la page. Hors de mail.google.com (connexion) : login.
+FEED_JS = r"""
+(async () => {
+  if (location.hostname !== "mail.google.com") return { ok: false, login: true };
+  const doc = await new Promise((resolve) => {
+    const x = new XMLHttpRequest();
+    x.open("GET", location.pathname.replace(/\/?$/, "/") + "feed/atom");
+    x.responseType = "document";
+    x.timeout = 15000;
+    x.onload = () => resolve(x.status === 200 ? x.response : null);
+    x.onerror = x.ontimeout = () => resolve(null);
+    x.send();
+  });
+  const feed = doc?.querySelector("feed");
+  if (!feed) return { ok: false, error: "Boîte de réception illisible." };
+  const text = (e, sel) => (e.querySelector(sel)?.textContent || "").trim();
+  const entries = [...feed.querySelectorAll("entry")].map((e) => ({
+    id: text(e, "id"),
+    msg: (/message_id=([0-9a-f]+)/.exec(e.querySelector("link")?.getAttribute("href") || "") || [])[1] || "",
+    subject: text(e, "title"), snippet: text(e, "summary"), from: text(e, "author > name"),
+    email: text(e, "author > email").toLowerCase(), date: text(e, "issued") || text(e, "modified"),
+  }));
+  return { ok: true, count: +text(feed, "fullcount") || entries.length, entries };
+})()
+"""
+
 SUGGEST_SYSTEM = (
     "Tu aides l'utilisateur à répondre à un e-mail ; ses propres messages sont marqués « Moi ». "
     "Propose trois réponses différentes au dernier message du fil (par exemple accepter, demander une "
@@ -310,6 +344,22 @@ THREAD_ID_RE = re.compile(r"[0-9a-f]{6,24}")
 PAGER_TOTAL_RE = re.compile(r"(?:sur|of)\s+([\d\s.,]+)$")
 CONTEXT_CHARS = 8000
 MESSAGE_CHARS = 3000
+# Assistant : nouveaux e-mails et questions
+SEEN_MAX = 2000            # e-mails déjà vus retenus (identifiants du flux)
+OLD_MAIL = timedelta(minutes=2)   # plus ancien que le début de la surveillance : remonté, pas nouveau
+QUESTION_THREADS = 3       # fils lus en entier pour une question (ceux dont elle parle)
+QUESTION_THREAD_CHARS = 3000
+LIST_ROWS = 30             # lignes de la liste affichée transmises au modèle
+# Mots d'une question qui ne désignent pas un e-mail en particulier
+STOP_WORDS = set("""
+alors aussi autre avec avez avoir bien cela celle celui cette chez comme comment dans dernier derniere
+derniers dernieres depuis dire donc elle elles email emails envoye envoyes est-ce etre faire fait gmail
+leur leurs mail mails mais message messages moins nouveau nouveaux nouvelle nouvelles parle parlent
+peux plus pour pourquoi quand quel quelle quelles quels quoi recu recus resume resumer sais sont suis
+sujet tous tout toute toutes tres vais veux votre vous whatsapp ecrit ecrire repondre reponse lire
+aujourd'hui aujourdhui hier semaine matin soir important importants importantes urgent urgents
+que qui quoi les des une est pas mes mon son ses aux par sur moi toi lui ont ete ces cet dit fait mail
+""".split())
 
 
 def _transcript(subject: str, messages: list[dict], me: str = "Moi") -> str:
@@ -332,6 +382,29 @@ def _transcript(subject: str, messages: list[dict], me: str = "Moi") -> str:
     return f"{head} (du plus ancien au plus récent) :\n\n" + "\n\n".join(reversed(blocks))
 
 
+def _fold(text: str) -> str:
+    """Minuscules sans accents (comparaison des mots d'une question)."""
+    text = unicodedata.normalize("NFKD", (text or "").casefold())
+    return "".join(c for c in text if not unicodedata.combining(c))
+
+
+def _keywords(question: str) -> set[str]:
+    return {w for w in re.findall(r"[\w@.-]{3,}", _fold(question)) if w not in STOP_WORDS and not w.isdigit()}
+
+
+def _feed_date(value: str) -> datetime | None:
+    try:
+        return datetime.fromisoformat((value or "").replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _local(value: str) -> str:
+    """Date du flux (UTC) → « 11/10 14:05 » à l'heure du PC."""
+    when = _feed_date(value)
+    return when.astimezone().strftime("%d/%m %H:%M") if when else ""
+
+
 class GmailPane(WebPane):
     key = "gmail"
     name = "Gmail"
@@ -345,6 +418,8 @@ class GmailPane(WebPane):
         self._digest = {"state": "idle"}      # résumé de la boîte (voir digest)
         self._digest_stop = threading.Event()
         self._summaries = {}                  # (fil, dernier message, modèle) → {summary, action}
+        self._feed_seen: dict[str, bool] | None = None   # e-mails du flux déjà vus (assistant)
+        self._watch_since = datetime.now(timezone.utc)
 
     def snapshot(self) -> dict:
         return {**super().snapshot(), "digest": self._digest_view()}
@@ -412,6 +487,105 @@ class GmailPane(WebPane):
         if hint:
             prompt += f"\n\nConsigne de l'utilisateur : {hint}"
         return self._improved(model, draft, self._ask(model, IMPROVE_SYSTEM, prompt, IMPROVE_SCHEMA).get("text"))
+
+    # ─────────────────────────────────────────
+    #  Assistant (assistant.py)
+    # ─────────────────────────────────────────
+    def inbox(self) -> dict:
+        """E-mails non lus de la boîte de réception : {ok, count, entries}."""
+        res = self._eval(FEED_JS, timeout=20, awaits=True)
+        if res.get("login"):
+            return {"ok": False, "error": "Gmail n'est pas connecté : ouvrez la section Gmail et connectez-vous."}
+        return res
+
+    def reset_watch(self):
+        """Le prochain relevé sert de référence (rien d'annoncé)."""
+        self._feed_seen = None
+
+    def new_messages(self) -> dict:
+        """E-mails arrivés depuis le relevé précédent : {ok, unread, messages: [{from, email,
+        subject, snippet}]}. Le premier relevé ne fait que noter l'état. Un e-mail plus ancien
+        que le début de la surveillance (remonté parmi les 20 non lus du flux) n'est pas nouveau."""
+        res = self.inbox()
+        if not res.get("ok"):
+            return res
+        first = self._feed_seen is None
+        if first:
+            self._feed_seen, self._watch_since = {}, datetime.now(timezone.utc)
+        found = []
+        for e in res.get("entries") or []:
+            if not e.get("id") or e["id"] in self._feed_seen:
+                continue
+            self._feed_seen[e["id"]] = True
+            when = _feed_date(e.get("date"))
+            if first or (when and when < self._watch_since - OLD_MAIL):
+                continue
+            found.append({k: e.get(k) or "" for k in ("from", "email", "subject", "snippet")})
+        while len(self._feed_seen) > SEEN_MAX:
+            self._feed_seen.pop(next(iter(self._feed_seen)))
+        return {"ok": True, "unread": res.get("count", 0), "messages": found}
+
+    def assistant_context(self, question: str) -> dict:
+        """Ce que l'assistant peut lire de Gmail pour une question : non lus de la boîte de
+        réception, liste affichée (ou e-mail ouvert), et en entier les fils dont parle la
+        question (mots communs avec l'expéditeur, l'objet ou l'extrait). {ok, text, note}."""
+        parts, notes, candidates = [], [], []
+        feed = self.inbox()
+        if feed.get("ok"):
+            entries, total = feed.get("entries") or [], feed.get("count", 0)
+            lines = []
+            for e in entries:
+                who = e["from"] or e["email"] or "Expéditeur inconnu"
+                if e["from"] and e["email"] and e["email"] != e["from"].lower():
+                    who += f" <{e['email']}>"
+                lines.append(f"- {_local(e['date'])} — {who} — "
+                             f"« {e['subject'] or '(sans objet)'} » : {e['snippet']}")
+                candidates.append({"id": e.get("msg"), "search": "all", "subject": e["subject"],
+                                   "text": f"{who} {e['subject']} {e['snippet']}"})
+            more = f", les {len(entries)} plus récents" if total > len(entries) else ""
+            parts.append(f"E-mails non lus de la boîte de réception ({total} en tout{more}), du plus récent "
+                         "au plus ancien :\n" + ("\n".join(lines) or "(aucun)"))
+            notes.append(f"{total} non lu{'s' if total > 1 else ''}")
+        elif feed.get("error", "").startswith("Gmail n'est pas connecté"):
+            return feed
+        listing = self._eval(f"{LIST_JS}(false)")
+        if listing.get("ok") and listing.get("list") and listing.get("rows"):
+            rows, view = listing["rows"][:LIST_ROWS], listing.get("view") or "Gmail"
+            search = listing.get("search") if listing.get("search") in ("spam", "trash") else "all"
+            lines = []
+            for r in rows:
+                lines.append(f"- {r.get('date') or r.get('when')} — {r['from']} — « {r['subject'] or '(sans objet)'} »"
+                             f"{' [non lu]' if r.get('unread') else ''} : {r['snippet']}")
+                candidates.append({"id": r["id"], "search": search, "subject": r["subject"],
+                                   "text": f"{r['from']} {r['subject']} {r['snippet']}"})
+            parts.append(f"Liste affichée dans Gmail (« {view} »), du plus récent au plus ancien :\n" + "\n".join(lines))
+            notes.append(f"liste « {view} »")
+        else:
+            opened = self._eval(READ_THREAD_JS)
+            if opened.get("ok") and opened.get("messages"):
+                parts.append("E-mail ouvert dans Gmail. " + _transcript(opened.get("subject", ""), opened["messages"], DIGEST_ME))
+                notes.append("e-mail ouvert")
+        words, scored, ids = _keywords(question), [], set()
+        for i, c in enumerate(candidates):
+            if not THREAD_ID_RE.fullmatch(c["id"] or "") or c["id"] in ids:
+                continue
+            ids.add(c["id"])
+            text = _fold(c["text"])
+            score = sum(1 for w in words if w in text)
+            if score:
+                scored.append((-score, i, c))
+        threads = []
+        for _, _, c in sorted(scored, key=lambda x: x[:2])[:QUESTION_THREADS]:
+            thread = self._eval(f"{THREAD_JS}({json.dumps(c['id'])}, {json.dumps(c['search'])})", timeout=20, awaits=True)
+            if thread.get("messages"):
+                text = _transcript(thread.get("subject") or c["subject"], thread["messages"], DIGEST_ME)
+                threads.append(text[:QUESTION_THREAD_CHARS])
+        if threads:
+            parts.append("E-mails dont parle la question, en entier :\n\n" + "\n\n".join(threads))
+            notes.append(f"{len(threads)} lu{'s' if len(threads) > 1 else ''} en entier")
+        if not parts:
+            return {"ok": False, "error": feed.get("error") or "Gmail illisible."}
+        return {"ok": True, "text": "\n\n".join(parts), "note": ", ".join(notes)}
 
     # ─────────────────────────────────────────
     #  Résumé des e-mails (liste affichée dans Gmail)

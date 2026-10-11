@@ -3,16 +3,58 @@ whatsapp.py – WhatsApp Web intégré (voir webpane.py).
 
 Première ouverture : QR code à scanner avec le téléphone, la session est
 ensuite conservée dans DATA_DIR/whatsapp.
+
+Pour l'assistant (assistant.py) : liste des discussions (nom, heure, non lus,
+aperçu du dernier message) et nouveaux messages, repérés à la hausse du
+nombre de non-lus d'une discussion — sans rien ouvrir ni marquer comme lu.
 """
 
 import json
 import re
 import time
+from datetime import datetime
 
 from engine import logger
 from webpane import IMPROVE_SCHEMA, STYLE_RULES, SUGGEST_SCHEMA, WebPane, clean, same_text
 
 UNREAD_RE = re.compile(r"^\((\d+)\)")
+# Aperçu pendant que le contact écrit ou enregistre : le dernier message connu est gardé
+TYPING_RE = re.compile(r"(est en train d|écrit…|écrit\.\.\.|enregistre|typing|recording)", re.IGNORECASE)
+HOUR_RE = re.compile(r"^(\d{1,2})[:h](\d{2})$")
+RECENT_MINUTES = 10        # discussion jamais vue : nouvelle si son dernier message date de moins
+LIST_CHATS = 40            # discussions transmises au modèle (les plus récentes)
+
+# Discussions de la liste (#pane-side ; seules celles affichées : la liste est virtuelle) :
+# nom (premier span[title]), heure (premier texte en forme d'heure ou de date), non lus
+# (aria-label « 3 messages non lus »), sourdine, aperçu (le reste du texte de la ligne).
+# Pas de liste : ready false (QR code à scanner, chargement).
+CHATS_JS = r"""
+(() => {
+  const side = document.querySelector("#pane-side");
+  if (!side) return { ok: true, ready: false, login: !!document.querySelector("canvas, [data-ref]") };
+  const ROW = '[role="listitem"], [role="row"]';
+  const UNREAD = /(\d+)\s+(?:\S+\s+)?(?:unread|non lus?)/i;
+  const WHEN = /^(\d{1,2}[:h]\d{2}(\s?[ap]\.?m\.?)?|\d{1,2}[\/.]\d{1,2}[\/.]\d{2,4}|hier|yesterday|aujourd.hui|today|lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|monday|tuesday|wednesday|thursday|friday|saturday|sunday)$/i;
+  const chats = [];
+  for (const row of side.querySelectorAll(ROW)) {
+    if (row.parentElement.closest(ROW)) continue;
+    const name = (row.querySelector("span[title]")?.getAttribute("title") || "").trim();
+    if (!name) continue;
+    const time = [...row.querySelectorAll("span, div")].filter((e) => !e.children.length)
+      .map((e) => e.textContent.trim()).find((t) => WHEN.test(t)) || "";
+    let unread = 0;
+    for (const e of row.querySelectorAll("[aria-label]")) {
+      const m = UNREAD.exec(e.getAttribute("aria-label") || "");
+      if (m) { unread = +m[1]; break; }
+    }
+    const lines = (row.innerText || "").split("\n").map((l) => l.trim()).filter(Boolean);
+    const rest = lines.filter((l) => l !== name && l !== time && l !== String(unread));
+    chats.push({ name, time, unread, muted: !!row.querySelector('[data-icon*="muted"]'),
+      preview: rest.join(" ").slice(0, 600) });
+  }
+  return { ok: true, ready: true, chats };
+})()
+"""
 
 # Discussion ouverte : titre, derniers messages affichés, brouillon.
 # Repères de WhatsApp Web : #main (discussion), [data-pre-plain-text]
@@ -129,6 +171,16 @@ def _transcript(chat: str, messages: list[dict], limit: int = CONTEXT_MESSAGES) 
     return f"{head} (du plus ancien au plus récent) :\n" + "\n".join(reversed(lines))
 
 
+def _recent(when: str) -> bool:
+    """Heure de la liste (« 14:05 ») dans les RECENT_MINUTES dernières minutes."""
+    m = HOUR_RE.match(when or "")
+    if not m:
+        return False
+    now = datetime.now()
+    ago = (now.hour * 60 + now.minute - int(m.group(1)) * 60 - int(m.group(2))) % (24 * 60)
+    return ago <= RECENT_MINUTES
+
+
 class WhatsAppPane(WebPane):
     key = "whatsapp"
     name = "WhatsApp"
@@ -136,6 +188,75 @@ class WhatsAppPane(WebPane):
     hosts = ("whatsapp.com", "whatsapp.net")
     read_js = READ_CHAT_JS
     context_js = CONTEXT_JS
+
+    def __init__(self, app):
+        super().__init__(app)
+        self._seen: dict[str, tuple[int, str]] | None = None    # discussion → (non lus, aperçu)
+
+    # ─────────────────────────────────────────
+    #  Assistant (assistant.py)
+    # ─────────────────────────────────────────
+    def chats(self) -> dict:
+        """Discussions affichées dans la liste : {ok, ready, chats}, avec error si pas prête."""
+        res = self._eval(CHATS_JS)
+        if res.get("ok") and not res.get("ready"):
+            return {**res, "error": "WhatsApp n'est pas connecté : ouvrez la section WhatsApp et scannez le QR code."
+                    if res.get("login") else "WhatsApp est en cours de chargement."}
+        return res
+
+    def reset_watch(self):
+        """Le prochain relevé sert de référence (rien d'annoncé)."""
+        self._seen = None
+
+    def new_messages(self) -> dict:
+        """Messages arrivés depuis le relevé précédent : {ok, messages: [{chat, text, count}]}.
+        Le premier relevé ne fait que noter l'état. Une discussion a du nouveau quand son
+        nombre de non-lus augmente (discussions en sourdine ignorées) ; jamais vue (hors de
+        la partie affichée de la liste jusque-là) : si son dernier message est récent."""
+        res = self.chats()
+        if not res.get("ok") or not res.get("ready"):
+            return {**res, "ok": False}
+        first, seen = self._seen is None, dict(self._seen or {})
+        found = []
+        for chat in res["chats"]:
+            name, unread = chat["name"], int(chat.get("unread") or 0)
+            before = seen.get(name)
+            preview = clean(chat.get("preview"))
+            if before and (not preview or TYPING_RE.search(preview)):
+                preview = before[1]
+            seen[name] = (unread, preview)
+            if first or chat.get("muted") or unread <= (before[0] if before else 0):
+                continue
+            if before is None and not _recent(chat.get("time", "")):
+                continue
+            found.append({"chat": name, "text": preview, "count": unread - (before[0] if before else 0)})
+        self._seen = seen
+        return {"ok": True, "messages": found}
+
+    def assistant_context(self) -> dict:
+        """Ce que l'assistant peut lire de WhatsApp : {ok, text, note} ou {ok: False, error}."""
+        res = self.chats()
+        if not res.get("ok") or not res.get("ready"):
+            return {"ok": False, "error": res.get("error") or "WhatsApp illisible."}
+        chats = res["chats"][:LIST_CHATS]
+        lines = []
+        for c in chats:
+            unread = int(c.get("unread") or 0)
+            info = " — ".join(x for x in (c.get("time", ""), f"{unread} non lu{'s' if unread > 1 else ''}" if unread else "",
+                                          "en sourdine" if c.get("muted") else "") if x)
+            lines.append(f"- {c['name']}" + (f" ({info})" if info else "") + f" : {clean(c.get('preview')) or '…'}")
+        parts = ["Discussions WhatsApp, de la plus récente à la plus ancienne, avec le dernier message de "
+                 "chacune (dans un groupe, il commence par le nom de son auteur) :\n" + ("\n".join(lines) or "(aucune)")]
+        page = self._eval(READ_CHAT_JS)
+        if page.get("ok") and page.get("messages"):
+            parts.append("Discussion ouverte dans WhatsApp. " + _transcript(page.get("chat", ""), page["messages"]))
+        unread = sum(1 for c in chats if c.get("unread"))
+        note = f"{len(chats)} discussion{'s' if len(chats) > 1 else ''}"
+        if unread:
+            note += f" dont {unread} non lue{'s' if unread > 1 else ''}"
+        if page.get("ok") and page.get("chat"):
+            note += f", « {page['chat']} » ouverte"
+        return {"ok": True, "text": "\n\n".join(parts), "note": note}
 
     def unread_from_title(self, title: str) -> int:
         m = UNREAD_RE.match(title)

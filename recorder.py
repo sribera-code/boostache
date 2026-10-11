@@ -1,6 +1,6 @@
 """
 recorder.py – Enregistreur : le son qui sort du PC (capture « loopback » d'une
-sortie audio, wasapi.py), avec le micro en option.
+sortie audio, wasapi.py), avec le micro en option, ou le micro seul.
 
 L'enregistrement est écrit au fil de l'eau en WAV (16 bits, 48 kHz, stéréo),
 en-tête mis à jour toutes les quelques secondes : un arrêt brutal laisse un
@@ -8,6 +8,10 @@ fichier lisible. À l'arrêt, il est converti en MP3 ou M4A par l'encodeur
 intégré à Windows (Windows.Media.Transcoding, via PowerShell comme ocr.py) ;
 le WAV est gardé si la conversion échoue. Un enregistrement peut aussi être
 transcrit en texte (transcriber.py) : « nom.txt » à côté du fichier audio.
+
+Texte en direct : aucun fichier audio, le son est transcrit pendant
+l'enregistrement (transcriber.Live) et le texte écrit au fur et à mesure dans
+« Transcription <date>.txt » ; ces textes seuls apparaissent dans la liste.
 
 Les fichiers sont rangés dans un dossier choisi par l'utilisateur (par défaut
 Musique\\Boostache) : la liste affichée est celle des fichiers audio de ce
@@ -46,6 +50,7 @@ except ImportError as e:
 
 FORMATS = ("mp3", "m4a", "wav")
 AUDIO_EXTS = {".mp3", ".m4a", ".wav"}
+SOURCES = ("output", "both", "mic")       # son du PC, son du PC + micro, micro seul
 POLL = 0.01                     # secondes entre deux lectures des flux
 LEVEL_EVERY = 0.08              # niveaux envoyés à l'interface
 HEADER_EVERY = 2.0              # mise à jour de l'en-tête WAV
@@ -148,16 +153,20 @@ class WavWriter:
 
 
 class Session(threading.Thread):
-    """Un enregistrement : lit la sortie (et le micro), mixe, écrit le WAV."""
+    """Un enregistrement : lit la sortie (et le micro), ou le micro seul, mixe,
+    écrit le WAV — ou (live) donne le son à la transcription en direct."""
 
-    def __init__(self, service, path: Path, device_id: str, mic: bool):
+    def __init__(self, service, path: Path, source: str, device_id: str, mic_id: str, live=None):
         super().__init__(daemon=True, name="recorder")
         self._service = service
-        self.path = path
+        self.path = path                  # WAV, ou texte de la transcription en direct
+        self.source = source
         self.device_id = device_id
         self.device_name = ""
-        self.mic = mic
+        self.mic = source == "both"       # micro mêlé au son du PC
+        self.mic_id = mic_id
         self.mic_name = ""
+        self.live = live                  # transcriber.Live : pas de fichier audio
         self.frames = 0
         self.paused = False
         self.error = ""
@@ -167,6 +176,7 @@ class Session(threading.Thread):
         self._mic_buf = None
         self._mic_primed = False
         self._writer: WavWriter | None = None
+        self._rest = np.zeros(0, np.float32)    # 48 → 16 kHz : échantillons pas encore regroupés
 
     @property
     def seconds(self) -> float:
@@ -177,6 +187,11 @@ class Session(threading.Thread):
 
     # ── Flux ───────────────────────────────────
     def _open_output(self):
+        """Flux principal : la sortie (loopback), ou le micro en « micro seul »."""
+        if self.source == "mic":
+            device, _id, self.device_name = wasapi.get_device(wasapi.E_CAPTURE, self.mic_id)
+            self._out = wasapi.CaptureStream(device, loopback=False)
+            return
         device, _id, self.device_name = wasapi.get_device(wasapi.E_RENDER, self.device_id)
         self._silence = wasapi.SilenceStream(device)
         self._out = wasapi.CaptureStream(device, loopback=True)
@@ -189,7 +204,7 @@ class Session(threading.Thread):
 
     def _open_mic(self):
         try:
-            device, _id, self.mic_name = wasapi.get_device(wasapi.E_CAPTURE)
+            device, _id, self.mic_name = wasapi.get_device(wasapi.E_CAPTURE, self.mic_id)
             self._mic = wasapi.CaptureStream(device, loopback=False)
             self._mic_buf = np.zeros(0, np.float32)
             self._mic_primed = False
@@ -210,7 +225,8 @@ class Session(threading.Thread):
     def run(self):
         with wasapi.com_thread():
             try:
-                self._writer = WavWriter(self.path)
+                if not self.live:
+                    self._writer = WavWriter(self.path)
                 self._open_output()
                 if self.mic:
                     self._open_mic()
@@ -232,7 +248,8 @@ class Session(threading.Thread):
                 self._close_output()
                 if self._mic:
                     self._mic.close()
-                self._writer.close()
+                if self._writer:
+                    self._writer.close()
         self._service.session_ended(self)
 
     def _loop(self):
@@ -240,6 +257,8 @@ class Session(threading.Thread):
         peaks = [0.0, 0.0]
         lost = False
         while not self._stop.wait(POLL):
+            if self.live and self.live.done.is_set():
+                break           # transcription en échec : plus rien n'est transcrit ni enregistré
             now = time.monotonic()
             if lost:
                 # Sortie débranchée ou changée : on reprend dès qu'une sortie répond
@@ -255,12 +274,13 @@ class Session(threading.Thread):
                     lost = now
                     continue
             try:
-                self._silence.feed()
+                if self._silence:
+                    self._silence.feed()
                 data = self._out.read()
             except comtypes.COMError as e:
                 if not wasapi.is_invalidated(e):
                     raise
-                logger.log(f"Enregistreur : sortie « {self.device_name} » perdue, nouvel essai…")
+                logger.log(f"Enregistreur : « {self.device_name} » perdu, nouvel essai…")
                 self._close_output()
                 lost = now
                 continue
@@ -274,18 +294,31 @@ class Session(threading.Thread):
                     mixed = out + m
                 if not self.paused:
                     peaks[0] = max(peaks[0], float(np.abs(out).max()))
-                    pcm = (np.clip(mixed, -1.0, 1.0) * 32767).astype("<i2")
-                    self._writer.write(pcm.tobytes())
+                    if self._writer:
+                        pcm = (np.clip(mixed, -1.0, 1.0) * 32767).astype("<i2")
+                        self._writer.write(pcm.tobytes())
+                    if self.live:
+                        self.live.feed(self._speech(mixed))
                     self.frames += len(out) // wasapi.CHANNELS
-            if now - last_header >= HEADER_EVERY:
+            if self._writer and now - last_header >= HEADER_EVERY:
                 self._writer.update_header()
                 last_header = now
             if now - last_level >= LEVEL_EVERY:
                 if self.paused:
                     peaks = [0.0, 0.0]
-                self._service.emit_level(self.seconds, peaks[0], peaks[1] if self._mic else None)
+                if self.source == "mic":          # flux principal = micro : sa jauge seule
+                    self._service.emit_level(self.seconds, None, peaks[0])
+                else:
+                    self._service.emit_level(self.seconds, peaks[0], peaks[1] if self._mic else None)
                 peaks = [0.0, 0.0]
                 last_level = now
+
+    def _speech(self, samples):
+        """Stéréo 48 kHz → mono 16 kHz (moyenne de 3 échantillons), le format de Whisper."""
+        mono = np.concatenate((self._rest, samples.reshape(-1, wasapi.CHANNELS).mean(axis=1)))
+        n = len(mono) // 3 * 3
+        self._rest = mono[n:]
+        return mono[:n].reshape(-1, 3).mean(axis=1).astype(np.float32)
 
     def _read_mic(self):
         if not self._mic:
@@ -329,6 +362,9 @@ class RecorderService:
         self._lock = threading.Lock()
         self._session: Session | None = None
         self._converting: set[str] = set()      # noms des WAV en cours de conversion
+        self._live_names: set[str] = set()      # textes en cours de transcription en direct
+        self._live_view: dict | None = None     # dernière transcription en direct (affichée)
+        self._live_lock = threading.Lock()
         self._shutting_down = False
         self._served: Path | None = None
         self.playback_host = ""                 # hôte virtuel WebView2 du dossier (app.py)
@@ -357,8 +393,11 @@ class RecorderService:
             "reason":    MISSING,
             "folder":    folder,
             "format":    settings.get("audio_format"),
+            "source":    self.source(),
             "device":    settings.get("audio_device"),
-            "mic":       bool(settings.get("audio_mic")),
+            "mic_device": settings.get("audio_mic_device"),
+            "live":      bool(settings.get("audio_live")),
+            "live_view": self._live_view,
             "session":   self._session_state(),
             "files":     self.files(),
             "transcribe": {
@@ -372,12 +411,18 @@ class RecorderService:
             },
         }
 
+    @staticmethod
+    def source() -> str:
+        """Source choisie (réglage d'avant : micro mêlé ou non au son du PC)."""
+        source = settings.get("audio_source")
+        return source if source in SOURCES else "both" if settings.get("audio_mic") else "output"
+
     def _session_state(self) -> dict | None:
         s = self._session
         if not s or not s.ready.is_set() or s.error:
             return None
-        return {"name": s.path.name, "seconds": s.seconds, "paused": s.paused,
-                "device": s.device_name, "mic": s.mic_name if s.mic else ""}
+        return {"name": s.path.name, "seconds": s.seconds, "paused": s.paused, "source": s.source,
+                "device": s.device_name, "mic": s.mic_name if s.mic else "", "live": bool(s.live)}
 
     def emit_state(self):
         self._bridge.emit("rec:state", {"session": self._session_state()})
@@ -392,7 +437,7 @@ class RecorderService:
     # ── Périphériques ──────────────────────────
     def devices(self) -> dict:
         if MISSING:
-            return {"outputs": [], "mic": ""}
+            return {"outputs": [], "mics": [], "mic": ""}
         with wasapi.com_thread():
             try:
                 outputs = wasapi.list_devices(wasapi.E_RENDER)
@@ -400,35 +445,53 @@ class RecorderService:
                 logger.log(f"Enregistreur : liste des sorties audio impossible ({e})")
                 outputs = []
             try:
-                mic = next((d["name"] for d in wasapi.list_devices(wasapi.E_CAPTURE) if d["default"]), "")
+                mics = wasapi.list_devices(wasapi.E_CAPTURE)
             except Exception:
-                mic = ""
-        return {"outputs": outputs, "mic": mic}
+                mics = []
+        mic = next((d["name"] for d in mics if d["default"]), "")
+        return {"outputs": outputs, "mics": mics, "mic": mic}
 
     # ── Enregistrement ─────────────────────────
-    def start(self, device_id: str = "", mic: bool = False) -> dict:
+    def start(self, source: str = "output", device_id: str = "", mic_id: str = "", live: bool = False) -> dict:
+        """source : output (son du PC), both (+ micro), mic (micro seul) ; live : texte
+        en direct au lieu d'un fichier audio."""
         if MISSING:
             return {"error": MISSING}
+        if live and STT_MISSING:
+            return {"error": STT_MISSING}
+        source = source if source in SOURCES else "output"
         with self._lock:
             if self._session:
                 return {"error": "Un enregistrement est déjà en cours."}
             try:
-                path = self._new_path()
+                path = self._new_path(live)
             except OSError as e:
                 return {"error": f"Dossier inaccessible ({e.strerror or e})"}
-            session = Session(self, path, device_id or "", bool(mic))
+            session = Session(self, path, source, device_id or "", mic_id or "")
+            if live:
+                self._live_names.add(path.name)
+                session.live = self.transcriber.live(settings.get("transcribe_model"), settings.get("transcribe_language"),
+                                                     lambda transcript: self._on_live(session, transcript))
             self._session = session
         session.start()
         if not session.ready.wait(10) or session.error:
             with self._lock:
                 self._session = None
+                self._live_names.discard(path.name)
+            if session.live:
+                session.live.cancel()
+                self._live_view = None
+                self._bridge.emit("rec:live", None)
             error = session.error or "le périphérique audio ne répond pas"
             logger.log(f"Enregistreur : démarrage impossible ({error})")
             return {"error": f"Enregistrement impossible : {error}"}
+        settings.set("audio_source", source)
         settings.set("audio_device", device_id or "")
-        settings.set("audio_mic", bool(mic))
+        settings.set("audio_mic_device", mic_id or "")
+        settings.set("audio_live", bool(live))
         mic_info = f" + micro « {session.mic_name} »" if session.mic else ""
-        logger.log(f"Enregistreur : début ({session.device_name}{mic_info}) → {path.name}")
+        what = "texte en direct" if live else "audio"
+        logger.log(f"Enregistreur : début ({session.device_name}{mic_info}, {what}) → {path.name}")
         self.emit_state()
         return {"ok": True, "session": self._session_state()}
 
@@ -454,6 +517,16 @@ class RecorderService:
         self.emit_state()
         if session.error:
             self.toast(f"Enregistrement interrompu : {session.error}", "error")
+        if session.live:
+            # Le son déjà reçu est transcrit jusqu'au bout (à la fermeture de
+            # l'application : le texte obtenu jusque-là est gardé)
+            if self._shutting_down:
+                session.live.cancel()
+            else:
+                session.live.finish()
+            logger.log(f"Enregistreur : fin, {_duration(session.seconds)} de son transcrit → {session.path.name}")
+            self._on_live(session, session.live)
+            return
         if not session.path.exists():
             self.emit_files()
             return
@@ -474,6 +547,49 @@ class RecorderService:
         """Fermeture de l'application : l'enregistrement en cours est gardé en WAV."""
         self._shutting_down = True
         self.stop()
+
+    # ── Transcription en direct ────────────────
+    def _on_live(self, session: Session, live):
+        """Avancement de la transcription en direct : texte écrit au fur et à mesure
+        (rien n'est perdu si l'application s'arrête), affiché par la page."""
+        path = session.path
+        with self._live_lock:
+            if live.text and live.text != getattr(session, "written", ""):
+                try:
+                    path.write_text(live.text + "\n", encoding="utf-8")
+                    session.written = live.text
+                except OSError as e:
+                    if not getattr(session, "write_failed", False):
+                        session.write_failed = True
+                        logger.log(f"Enregistreur : texte non enregistré ({e})")
+                        self.toast(f"Texte non enregistré : {e.strerror or e}", "error")
+            view = {"name": path.name, "title": path.stem, "state": live.state, "text": live.text,
+                    "pending": round(live.pending, 1), "error": live.error,
+                    "recording": self._session is session, "saved": path.exists()}
+            finished = live.done.is_set() and path.name in self._live_names
+            if finished:
+                with self._lock:
+                    self._live_names.discard(path.name)
+            self._live_view = view
+        self._bridge.emit("rec:live", view)
+        if finished:
+            self._live_finished(session, live)
+
+    def _live_finished(self, session: Session, live):
+        if self._shutting_down:
+            return
+        if live.state == "error":
+            self.toast(f"Transcription en direct interrompue : {live.error}", "error")
+        elif not live.text.strip() and live.state == "done":
+            self.toast("Aucune parole reconnue : pas de texte enregistré.", "info")
+        elif session.path.exists():
+            self.toast(f"Texte enregistré : {session.path.name}", "success")
+        self.emit_files()
+
+    def close_live(self):
+        """La page ferme le panneau de la dernière transcription en direct."""
+        if self._live_view and not self._live_view.get("recording") and self._live_view.get("state") not in ("run", "load", "download"):
+            self._live_view = None
 
     def _convert(self, wav: Path, fmt: str):
         with self._lock:
@@ -500,10 +616,13 @@ class RecorderService:
 
         threading.Thread(target=run, daemon=True, name="recorder-convert").start()
 
-    def _new_path(self) -> Path:
+    def _new_path(self, live: bool = False) -> Path:
         stamp = datetime.now().strftime("%Y-%m-%d %Hh%M")
         folder = self.folder()
-        return _unique(folder / f"Enregistrement {stamp}.wav", also=FORMATS)
+        # Ni un audio ni un texte au même nom : un texte seul passerait pour sa transcription
+        if live:
+            return _unique(folder / f"Transcription {stamp}.txt", also=FORMATS)
+        return _unique(folder / f"Enregistrement {stamp}.wav", also=FORMATS + ("txt",))
 
     # ── Fichiers ───────────────────────────────
     def files(self) -> list[dict]:
@@ -515,12 +634,26 @@ class RecorderService:
         current = self._session.path.name if self._session else None
         with self._lock:
             converting = set(self._converting)
+            writing = set(self._live_names)
         # Fichier en cours d'écriture par une conversion : masqué jusqu'à la fin
         pending = {Path(n).stem.lower() for n in converting}
         texts = {Path(e.name).stem.lower() for e in entries if e.name.lower().endswith(".txt")}
+        audios = {Path(e.name).stem.lower() for e in entries if os.path.splitext(e.name)[1].lower() in AUDIO_EXTS}
         files = []
         for entry in entries:
             ext = os.path.splitext(entry.name)[1].lower()
+            # Texte seul (transcription en direct), une fois fini
+            if ext == ".txt" and entry.is_file() and Path(entry.name).stem.lower() not in audios \
+                    and entry.name not in writing:
+                try:
+                    st = entry.stat()
+                except OSError:
+                    continue
+                files.append({"name": entry.name, "title": Path(entry.name).stem, "format": "TXT", "text": True,
+                              "size": st.st_size, "mtime": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+                              "duration": None, "converting": False, "transcript": True, "transcribing": None,
+                              "url": None})
+                continue
             if ext not in AUDIO_EXTS or not entry.is_file() or entry.name == current:
                 continue
             if ext != ".wav" and Path(entry.name).stem.lower() in pending:
@@ -551,17 +684,18 @@ class RecorderService:
         return f"https://{self.playback_host}/{quote(name)}?v={version}"
 
     def _file(self, name: str) -> Path | None:
-        """Fichier audio du dossier (jamais en dehors), None s'il n'existe pas."""
+        """Fichier audio (ou texte seul) du dossier (jamais en dehors), None s'il n'existe pas."""
         if not isinstance(name, str) or not name or os.path.basename(name) != name:
             return None
         path = self.folder() / name
-        return path if path.suffix.lower() in AUDIO_EXTS and path.is_file() else None
+        return path if path.suffix.lower() in AUDIO_EXTS | {".txt"} and path.is_file() else None
 
     def _busy(self, name: str) -> bool:
         if self.transcriber.job(str(self.folder() / name)):
             return True
         with self._lock:
-            return name in self._converting or (self._session is not None and self._session.path.name == name)
+            return (name in self._converting or name in self._live_names
+                    or (self._session is not None and self._session.path.name == name))
 
     def rename(self, name: str, title: str) -> dict:
         path = self._file(name)
@@ -577,6 +711,9 @@ class RecorderService:
             return {"ok": True}
         if target.exists() and target.name.lower() != path.name.lower():
             return {"error": "Un fichier porte déjà ce nom."}
+        # Texte seul : pas au nom d'un enregistrement (il passerait pour sa transcription)
+        if path.suffix.lower() == ".txt" and any(target.with_suffix(ext).exists() for ext in AUDIO_EXTS):
+            return {"error": "Un enregistrement porte déjà ce nom."}
         try:
             path.rename(target)
         except OSError as e:
@@ -612,6 +749,8 @@ class RecorderService:
         path = self._file(name)
         if not path:
             return {"error": "Ce fichier n'existe plus."}
+        if path.suffix.lower() == ".txt":
+            return {"error": "C'est déjà du texte."}
         with self._lock:
             if name in self._converting:
                 return {"error": "Conversion en cours : la transcription pourra suivre."}
