@@ -91,6 +91,12 @@ class Bridge:
                     prev["content"] += payload["content"]
                     prev["thinking"] += payload["thinking"]
                     continue
+                if event == "rag:delta" and prev["id"] == payload["id"]:
+                    prev["text"] += payload["text"]
+                    continue
+                if event == "rag:state":       # seul le dernier état compte
+                    out[-1] = (event, dict(payload))
+                    continue
             if isinstance(payload, dict):
                 payload = dict(payload)
             out.append((event, payload))

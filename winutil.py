@@ -1,7 +1,7 @@
 """
 winutil.py – Petits utilitaires Win32 (premier plan et transparence, barre de
 titre sombre, explorateur, corbeille, liens externes, icônes et miniatures des fenêtres,
-interception de la touche Impr. écran, inactivité de l'utilisateur).
+interception de la touche Impr. écran, inactivité de l'utilisateur, dernière fenêtre active).
 """
 
 import base64
@@ -276,6 +276,18 @@ def _app_name(path: str) -> str:
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def _is_app_window(hwnd: int) -> bool:
+    """Fenêtre d'application visible, comme celles de la barre des tâches."""
+    if (not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, GW_OWNER)
+            or user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW):
+        return False
+    if not user32.GetWindowTextLengthW(hwnd):
+        return False
+    cloaked = ctypes.c_int(0)   # applications UWP suspendues, autres bureaux virtuels
+    dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+    return not cloaked.value and _class_name(hwnd) not in SHELL_CLASSES
+
+
 def list_windows(exclude=(), limit: int = 30, details: bool = True) -> list[dict]:
     """Fenêtres d'application visibles (celles de la barre des tâches), dans
     l'ordre d'empilement : celles au premier plan d'abord, puis de la plus
@@ -286,18 +298,9 @@ def list_windows(exclude=(), limit: int = 30, details: bool = True) -> list[dict
     def visit(hwnd, _):
         if len(found) >= limit:
             return False
-        if (hwnd in exclude or not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, GW_OWNER)
-                or user32.GetWindowLongW(hwnd, GWL_EXSTYLE) & WS_EX_TOOLWINDOW):
-            return True
-        if not user32.GetWindowTextLengthW(hwnd):
-            return True
-        cloaked = ctypes.c_int(0)   # applications UWP suspendues, autres bureaux virtuels
-        dwmapi.DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
-        if cloaked.value:
+        if hwnd in exclude or not _is_app_window(hwnd):
             return True
         cls = _class_name(hwnd)
-        if cls in SHELL_CLASSES:
-            return True
         path = _app_path(hwnd, cls)
         window = {"hwnd": int(hwnd), "title": _title(hwnd), "app": _app_name(path),
                   "minimized": bool(user32.IsIconic(hwnd))}
@@ -752,3 +755,80 @@ class PrintScreenHook:
                 pass
         finally:
             user32.UnhookWindowsHookEx(hook)
+
+
+# ─────────────────────────────────────────────
+#  Dernière fenêtre active
+# ─────────────────────────────────────────────
+EVENT_SYSTEM_FOREGROUND = 0x0003
+WINEVENT_OUTOFCONTEXT = 0x0000
+OBJID_WINDOW = 0
+# Passages éclairs au premier plan : démarrer, recherche, Alt+Tab, icônes cachées du tray
+TRANSIENT_CLASSES = {"Windows.UI.Core.CoreWindow", "MultitaskingViewFrame", "TaskSwitcherWnd",
+                     "XamlExplorerHostIslandWindow", "ForegroundStaging", "NotifyIconOverflowWindow",
+                     "TopLevelWindowForOverflowXamlIsland"}
+
+WINEVENTPROC = ctypes.WINFUNCTYPE(None, wintypes.HANDLE, wintypes.DWORD, wintypes.HWND,
+                                  wintypes.LONG, wintypes.LONG, wintypes.DWORD, wintypes.DWORD)
+user32.SetWinEventHook.argtypes = [wintypes.DWORD, wintypes.DWORD, wintypes.HMODULE, WINEVENTPROC,
+                                   wintypes.DWORD, wintypes.DWORD, wintypes.DWORD]
+user32.SetWinEventHook.restype = wintypes.HANDLE
+user32.UnhookWinEvent.argtypes = [wintypes.HANDLE]
+
+
+class ForegroundTracker:
+    """Retient la dernière fenêtre d'application active. Un clic sur l'icône du
+    tray donne le focus à la barre des tâches : la fenêtre que l'utilisateur
+    vise est celle d'avant."""
+
+    def __init__(self):
+        self.last = 0
+        self._thread: threading.Thread | None = None
+        self._thread_id = 0
+        self._proc = None          # référence forte au callback ctypes (sinon GC)
+
+    @staticmethod
+    def _eligible(hwnd) -> bool:
+        return bool(hwnd) and _is_app_window(hwnd) and _class_name(hwnd) not in TRANSIENT_CLASSES
+
+    def start(self):
+        if self._thread:
+            return
+        fg = user32.GetForegroundWindow()
+        if self._eligible(fg):
+            self.last = int(fg)
+        self._thread = threading.Thread(target=self._run, daemon=True, name="ForegroundTracker")
+        self._thread.start()
+
+    def stop(self):
+        if self._thread_id:
+            user32.PostThreadMessageW(self._thread_id, WM_QUIT, 0, 0)
+        self._thread = None
+        self._thread_id = 0
+
+    def window(self) -> dict | None:
+        """{hwnd, title, topmost} de la dernière fenêtre active ; None si elle a
+        été fermée ou masquée depuis."""
+        hwnd = self.last
+        if not hwnd or not user32.IsWindow(hwnd) or not _is_app_window(hwnd):
+            return None
+        return {"hwnd": hwnd, "title": _title(hwnd), "topmost": _is_topmost(hwnd)}
+
+    def _run(self):
+        self._thread_id = kernel32.GetCurrentThreadId()
+
+        def proc(hook, event, hwnd, id_object, id_child, thread, time_ms):
+            if id_object == OBJID_WINDOW and self._eligible(hwnd):
+                self.last = int(hwnd)
+
+        self._proc = WINEVENTPROC(proc)
+        hook = user32.SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND, None,
+                                      self._proc, 0, 0, WINEVENT_OUTOFCONTEXT)
+        if not hook:
+            return
+        try:
+            msg = wintypes.MSG()
+            while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+                pass
+        finally:
+            user32.UnhookWinEvent(hook)

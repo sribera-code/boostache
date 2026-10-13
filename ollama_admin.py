@@ -63,7 +63,8 @@ MANIFEST_SINGLE = ", ".join((
 MANIFEST_TYPES = "application/vnd.ollama.manifest.list.v2+json, " + MANIFEST_SINGLE
 
 # Fonctions de Boostache qui utilisent un modèle → réglage où il est choisi
-USES = {"chat": "last_model", "help": "help_model", "assist": "assist_model", "assistant": "assistant_model"}
+USES = {"chat": "last_model", "help": "help_model", "assist": "assist_model", "assistant": "assistant_model",
+        "rag": "rag_model"}
 
 # Étapes d'un « pull » (statut envoyé par Ollama → texte affiché)
 _PHASES = (
@@ -364,12 +365,14 @@ def _iso(value) -> str:
 # ─────────────────────────────────────────────
 class OllamaAdmin:
     """chat : chat.ChatService (présence d'Ollama, liste des modèles partagée) ;
-    assistant : assistant.AssistantService ou None (modèle de l'assistant)."""
+    assistant : assistant.AssistantService ou None (modèle de l'assistant) ;
+    rag : rag.RagService ou None (modèles de la section Documents)."""
 
-    def __init__(self, bridge, chat, assistant=None, is_visible=None, notify=None):
+    def __init__(self, bridge, chat, assistant=None, is_visible=None, notify=None, rag=None):
         self._bridge = bridge
         self._chat = chat
         self._assistant = assistant
+        self._rag = rag
         self._is_visible = is_visible or (lambda: True)
         self._notify = notify
         self._lock = threading.Lock()
@@ -503,6 +506,9 @@ class OllamaAdmin:
             out["help"] = self._chat.help_model() or ""
             if self._assistant is not None:
                 out["assistant"] = self._assistant.model() or ""
+            if self._rag is not None:
+                out["rag"] = self._rag.model() or ""
+                out["rag_embed"] = self._rag.embed_model() or ""     # embeddings (pas une fonction de USES)
         except Exception:
             pass
         return out
@@ -588,9 +594,43 @@ class OllamaAdmin:
             return {"ok": False, "error": self._chat.failure(e)}
         logger.log(f"Ollama : modèle {name} supprimé.")
         self._updates.pop(name, None)
-        self._chat.model_changed(name)
         self._chat.probe()
-        return {"ok": True}
+        self._chat.model_removed(name)
+        return {"ok": True, "replaced": self._replace(name)}
+
+    def _replace(self, name: str) -> dict:
+        """Modèle supprimé : chaque fonction qui l'avait choisi passe à un autre modèle
+        installé, de préférence celui d'une autre fonction (déjà choisi, peut-être déjà
+        en mémoire) ; l'aide, à un modèle qui lit les images. Les onglets de conversation
+        et les vues suivent. → {fonction: nouveau modèle ("" : plus aucun)}"""
+        models = list(self._chat.models)
+        chosen = {use: settings.get(key, "") for use, key in USES.items()}
+        replaced = {}
+        # Ordre : les fonctions dont les autres prennent le modèle par défaut d'abord
+        for use, prefer in (("chat", ("assist", "assistant", "help")), ("assist", ("chat",)),
+                            ("assistant", ("assist", "chat")), ("rag", ("assistant", "assist", "chat")),
+                            ("help", ())):
+            key = USES[use]
+            if chosen[use] != name:
+                continue
+            if use == "help":
+                settings.set(key, "")
+                model = self._chat.help_model()
+            else:
+                model = next((m for m in (*(chosen[u] for u in prefer), *models) if m in models), "")
+            chosen[use] = replaced[use] = model
+            settings.set(key, model)
+            self._bridge.emit("setting", {"key": key, "value": model})
+        if replaced:
+            logger.log(f"Ollama : {name} remplacé par " + ", ".join(
+                f"{m or 'aucun modèle'} ({USES[u]})" for u, m in replaced.items()) + ".")
+        self._chat.retarget(name)
+        self._chat.emit_models()        # modèle par défaut des vues (conversations, WhatsApp, Gmail)
+        if self._assistant is not None:
+            self._assistant.refresh()
+        if self._rag is not None:
+            self._rag.model_removed(name)      # modèle d'embeddings ou des réponses
+        return replaced
 
     def check_updates(self) -> dict:
         """Compare chaque modèle installé à celui publié sur son registre : à jour

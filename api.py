@@ -323,6 +323,76 @@ class Api:
         self._app.assistant.example()
 
     # ─────────────────────────────────────────
+    #  Documents (index des dossiers choisis, questions et résumés)
+    # ─────────────────────────────────────────
+    def rag_state(self):
+        return self._app.rag.state()
+
+    def rag_children(self, path):
+        return self._app.rag.children(str(path or ""))
+
+    def rag_add_folder(self):
+        path = self.pick_folder()
+        return self._app.rag.add_folder(path) if path else None
+
+    def rag_add_paths(self, paths):
+        return self._app.rag.add_paths([str(p) for p in paths or []])
+
+    def rag_remove_folder(self, path):
+        return self._app.rag.remove_folder(str(path or ""))
+
+    def rag_exclude(self, path, excluded=True):
+        return self._app.rag.set_excluded(str(path or ""), bool(excluded))
+
+    def rag_reindex(self, path=None):
+        return self._app.rag.reindex(str(path) if path else None)
+
+    def rag_rescan(self):
+        self._app.rag.rescan()
+
+    def rag_pause(self, paused):
+        return self._app.rag.set_paused(bool(paused))
+
+    def rag_set_embed_model(self, model):
+        return self._app.rag.set_embed_model(str(model or ""))
+
+    def rag_pull(self, name):
+        """Télécharge un modèle d'embeddings (progression : événements ollama:pull)."""
+        if not self._app.ollama:
+            return {"ok": False, "error": "La librairie « ollama » est absente."}
+        return self._app.ollama.pull(str(name or ""))
+
+    def rag_ask(self, question, scope=None):
+        return self._app.rag.ask(str(question or ""), str(scope) if scope else None)
+
+    def rag_task(self, kind, path):
+        return self._app.rag.task(str(kind or ""), str(path or ""))
+
+    def rag_stop(self):
+        self._app.rag.stop()
+
+    def rag_delete(self, item_id):
+        self._app.rag.delete(str(item_id))
+
+    def rag_clear(self):
+        self._app.rag.clear()
+
+    def rag_search(self, query, scope=None):
+        return self._app.rag.search(str(query or ""), str(scope) if scope else None)
+
+    def rag_file_info(self, path):
+        return self._app.rag.file_info(str(path or ""))
+
+    def rag_file_chunks(self, path):
+        return self._app.rag.file_chunks(str(path or ""))
+
+    def rag_open(self, path):
+        return self._app.rag.open_file(str(path or ""))
+
+    def rag_reveal(self, path):
+        return self._app.rag.reveal(str(path or ""))
+
+    # ─────────────────────────────────────────
     #  Ollama (serveur, modèles, téléchargements)
     # ─────────────────────────────────────────
     def ollama_state(self):

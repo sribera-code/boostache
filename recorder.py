@@ -374,6 +374,11 @@ class RecorderService:
     def available(self) -> bool:
         return not MISSING
 
+    @property
+    def recording(self) -> bool:
+        """Enregistrement en cours (ou en train de démarrer)."""
+        return self._session is not None
+
     def folder(self) -> Path:
         path = Path(settings.get("audio_dir") or default_folder())
         path.mkdir(parents=True, exist_ok=True)

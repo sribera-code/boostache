@@ -112,6 +112,17 @@ Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
 - Relevés : WhatsApp toutes les 10 s, Gmail toutes les 60 s, et aussitôt que le compteur de non-lus d'un site change. Un nouveau message est repéré à la hausse des non-lus d'une discussion (WhatsApp) ou à un nouvel e-mail non lu (Gmail) ; ce qui était déjà là à l'activation n'est pas annoncé
 - Rien n'est envoyé ni marqué comme lu ; rien ne quitte le PC (Ollama en local). Modèle choisi dans la section Ollama ou sous le champ de question (sinon celui de l'assistant de réponse, puis des conversations)
 
+### Documents
+Questions et résumés sur des dossiers du PC (RAG local : rien ne quitte le PC) :
+- **Dossiers** : bouton **Ajouter un dossier** ou glisser-déposer un dossier ; sous-dossiers compris, sauf les dossiers cachés et techniques (`.git`, `node_modules`…). Un dossier qui contient des dossiers déjà ajoutés les remplace ; clic droit : **Exclure de l'index** (sous-dossier ou fichier) / **Inclure**, **Retirer de la liste** (efface son index, pas les fichiers)
+- **Formats** : texte et code, PDF, Word (`.docx`), Excel (`.xlsx`), PowerPoint (`.pptx`, avec les notes), OpenDocument, RTF, HTML, e-mails (`.eml`), EPUB, notebooks Jupyter. Non lus : anciens formats Office (`.doc`, `.xls`, `.ppt` — à réenregistrer), PDF scannés (sans texte), fichiers OneDrive restés en ligne (les lire les téléchargerait), fichiers de plus de 20 Mo (texte) ou 300 Mo (documents) ; un fichier très long n'est indexé que sur son début (1,5 million de caractères)
+- **Arborescence** comme l'explorateur, avec l'état de l'indexation : pour chaque dossier, fichiers traités sur le total (mini-barre de progression, ✓ quand tout est indexé) ; pour chaque fichier, indexé (✓, nombre de passages en infobulle), en attente, en cours (roue), illisible (⚠, raison en infobulle), sans texte, exclu, format non pris en charge (grisé). En bas, l'avancement global (fichier en cours, temps restant estimé) ; en haut, **Indexation 45 %** / **À jour**, pause / reprise et le menu des réglages (rechercher les changements, tout réindexer, modèles). Clavier : flèches, Entrée (ouvre), Maj+F10 (menu) ; double-clic : ouvrir le fichier (un script s'ouvre dans un éditeur, sans s'exécuter)
+- **Index** : chaque fichier est découpé en passages (~1 200 caractères), rangés dans une base SQLite locale avec un index plein texte (sans accents) et les **vecteurs** d'un modèle d'embeddings d'Ollama — **embeddinggemma** conseillé (622 Mo, multilingue), installable d'un clic depuis la section ; sans lui, la recherche se fait par mots seulement. Les dossiers sont **surveillés** : un fichier ajouté, modifié ou supprimé est pris en compte en quelques secondes (et nouveau parcours complet toutes les 30 min). Pendant une réponse, le calcul des vecteurs attend
+- **Questions** (champ en bas, dictée vocale Win+H) : les passages les plus proches (par le sens et par les mots, classements fusionnés) sont donnés au modèle, qui répond au fil de l'eau en citant ses sources **[1]**, **[2]** — clic : le passage, mots surlignés, avec Ouvrir le fichier, Afficher dans l'explorateur, Voir dans l'arborescence. Les questions de suite (« et pour Lyon ? ») tiennent compte des précédentes. **Portée** (sous le champ) : tous les dossiers, ou le dossier ou le fichier choisi dans l'arborescence (✕ pour revenir à tous)
+- **Fichier choisi** : **Résumer**, **Points clés**, **Expliquer** (le code aussi) ou lui poser une question — lu en entier s'il tient dans le contexte du modèle, sinon partie par partie (16 parties au plus, réparties dans tout le document) ; **Texte indexé** montre les passages retenus. **Dossier choisi** : **Présenter le dossier** (sujets, organisation, questions à poser). Réponses : copier, lire à voix haute, ajouter à une note, recommencer, retirer ; gardées d'une session à l'autre
+- **Rechercher** (champ au-dessus de l'arborescence, Entrée) : noms de fichiers et passages correspondants, sans attendre de modèle, dans la portée choisie
+- Modèle des réponses choisi sous le champ de question ou dans la section Ollama (sinon celui de l'assistant, puis des conversations) ; modèle d'embeddings dans le menu des réglages (le changer recalcule les vecteurs)
+
 ### Lecture à voix haute
 - Boutons **Lire** des conversations, consoles, notes, du presse-papiers, des transcriptions, des réponses et messages de l'assistant et du résumé des e-mails (Gmail) ; clic droit sur un e-mail résumé ou sur une proposition de réponse (WhatsApp, Gmail) : **Lire**
 - **Lecture au fil de l'eau** : une réponse en cours de génération (conversation, résumé des e-mails) se lit dès ses premières phrases, sans attendre la fin — la lecture suit le texte qui arrive (« En attente de la suite… » dans le lecteur quand elle l'a rattrapé)
@@ -129,7 +140,7 @@ Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
 - **Modèles installés** : taille, paramètres, quantification, contexte maximal, capacités (images, réflexion, outils, audio, embeddings) et fonctions de Boostache qui l'utilisent ; modèles **en mémoire** (part sur la carte graphique, heure de libération) avec **Libérer** ; menu : utiliser pour une fonction, mettre à jour, copier le nom, fiche sur ollama.com, **supprimer** (après confirmation). **Vérifier les mises à jour** compare chaque modèle à sa version publiée (Ollama 0.40 et plus garde une variante par moteur de calcul : elles comptent dans la taille)
 - **Télécharger un modèle** : bibliothèque d'ollama.com dans la fenêtre — suggestions pour Boostache (modèles qui lisent les images, bons en français), les plus téléchargés, recherche instantanée (nom, description, « vision »…). Filtre **Adaptés à ce PC** (par défaut) : seuls les modèles qui conversent et dont une taille tient dans la carte graphique ; chaque taille est colorée (vert : rapide, jaune : déborde sur le processeur, barré : trop gros), d'après sa taille exacte, la mémoire de la carte graphique disponible pour Ollama (lue dans son journal) et le contexte choisi ; la **variante conseillée** (la plus grande qui reste rapide) se télécharge d'un clic depuis la ligne. Un modèle déplié montre ses variantes : taille, contexte et si elle **tient dans la carte graphique**, déborde sur le processeur (plus lent) ou est trop grosse pour ce PC ; toutes les quantifications à la demande. Un nom exact (`gemma4:e4b`, `ollama run …` ou une adresse ollama.com / Hugging Face collés) se télécharge directement (Entrée)
 - Téléchargements en arrière-plan : progression, débit, temps restant, **annulation** (Ollama reprend plus tard ce qui a été reçu) ; place sur le disque vérifiée avant de commencer ; pastille dans la barre latérale et notification Windows à la fin si la fenêtre est masquée
-- **Options** de tous les appels de Boostache : **contexte** (4K à 64K tokens, 8K par défaut), durée pendant laquelle un modèle reste **en mémoire** après un appel (de « aussitôt » à « jamais », 5 min par défaut), **modèle de chaque fonction** (Conversations, aide contextuelle, WhatsApp et Gmail, assistant)
+- **Options** de tous les appels de Boostache : **contexte** (4K à 64K tokens, 8K par défaut), durée pendant laquelle un modèle reste **en mémoire** après un appel (de « aussitôt » à « jamais », 5 min par défaut), **modèle de chaque fonction** (Conversations, aide contextuelle, WhatsApp et Gmail, assistant, documents)
 - Les modèles d'embeddings (qui ne conversent pas) et les entrées internes d'Ollama ne sont pas proposés dans les listes de modèles ; « Gérer les modèles… » dans ces listes ouvre la section
 
 ### Historique, tâches et raccourcis
@@ -142,6 +153,7 @@ Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
 - Navigation au clavier : Ctrl+1 à Ctrl+9 pour les sections, Ctrl+, pour les paramètres
 - **Écran partagé** : deux sections côte à côte (Conversations et Consoles, par exemple) — bouton en haut de la barre latérale ou `Ctrl+Shift+S`. La barre latérale ouvre les sections dans le volet actif (souligné en haut) ; `Ctrl+clic` ou clic du milieu sur une section l'ouvre dans l'autre volet ; clic droit : « Ouvrir à gauche / à droite », ou glisser la section vers une moitié de l'écran. Séparateur redimensionnable (double-clic : parts égales ; clic droit : inverser, fermer un volet), `F6` pour passer d'un volet à l'autre ; la disposition est retrouvée au démarrage
 - Fermer la fenêtre (✕) la range dans le tray (le bouton Réduire, qui ferait pareil, est grisé) ; `Ctrl+Shift+D` la rappelle
+- Clic droit sur l'icône du tray : Ouvrir, **Garder au premier plan : _titre_** (garde au premier plan, ou libère, la fenêtre active juste avant le clic sur l'icône, Boostache compris ; cochée si elle l'est déjà), **Capture d'écran** (comme Impr. écran), **Démarrer / Arrêter l'enregistrement** (avec les derniers réglages de l'Enregistreur ; une notification confirme le démarrage si la fenêtre est masquée), Recharger, Quitter
 - **Envoyer vers une conversation ou une note** (capture, texte d'un enregistrement) : un menu propose « Nouvelle conversation » / « Nouvelle note », présélectionnée (Entrée), puis les conversations ou notes existantes ; une conversation ou une note vide est réutilisée plutôt que d'en ouvrir une autre, et le texte envoyé à une note s'ajoute à sa fin
 - Bouton **épingle** (bas de la barre latérale) : garder n'importe quelle fenêtre ouverte au premier plan, Boostache compris — chaque fenêtre avec l'icône de son application, une miniature et son titre complet ; un curseur règle sa transparence (20 à 100 %, double-clic pour la rendre opaque ; celle de Boostache est mémorisée) ; filtre au clavier et « Tout libérer »
 
@@ -224,6 +236,8 @@ boostache/
 ├── chat.py               # Conversations Ollama (streaming, réflexion, pièces jointes, aide contextuelle)
 ├── ocr.py                # Texte d'une image (OCR de Windows, via PowerShell)
 ├── assistant.py          # Assistant : questions sur Gmail et WhatsApp (Ollama), annonce vocale des nouveaux messages
+├── rag.py                # Documents : index des dossiers (SQLite, FTS5, vecteurs Ollama), surveillance, questions, résumés
+├── docreader.py          # Documents : texte des fichiers (PDF, Office, OpenDocument, RTF, HTML, e-mails, EPUB…)
 ├── ollama_admin.py       # Section Ollama : serveur, modèles installés, mises à jour, téléchargements, bibliothèque d'ollama.com
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
@@ -250,7 +264,7 @@ boostache/
 └── requirements.txt
 ```
 
-Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte). Les enregistrements audio sont à part, dans `Musique\Boostache` par défaut. La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
+Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte), l'index des documents dans `rag` (le supprimer, Boostache fermé, le fait reconstruire). Les enregistrements audio sont à part, dans `Musique\Boostache` par défaut. La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
 
 ---
 
@@ -269,9 +283,12 @@ Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **
 | `edge-tts` | Lecture à voix haute avec les voix naturelles de Microsoft (en ligne) |
 | `piper-tts` | Lecture à voix haute hors ligne (voix neuronale locale) |
 | `comtypes` | API audio de Windows (WASAPI) pour l'enregistreur et la lecture ; voix SAPI |
-| `numpy` | Mixage et niveaux de l'enregistreur |
+| `numpy` | Mixage et niveaux de l'enregistreur ; vecteurs des documents |
 | `faster-whisper` | Transcription des enregistrements en texte (Whisper, local) |
 | `truststore` | Connexions HTTPS (modèles Whisper, voix naturelles) avec les certificats de Windows |
+| `pypdf` | Texte des PDF (section Documents) ; `pymupdf`, s'il est installé, est préféré (plus rapide) |
+| `openpyxl` | Texte des classeurs Excel (section Documents) |
+| `watchdog` | Surveillance des dossiers indexés (section Documents) ; sans lui, nouveau parcours toutes les 30 min |
 
 Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight.js], [xterm.js], icônes [Lucide], polices Inter et JetBrains Mono.
 

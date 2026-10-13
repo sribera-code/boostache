@@ -133,6 +133,12 @@ _DEFAULTS = {
     "ollama_num_ctx":       0,             # contexte des appels (chat.CTX_SIZES) ; 0 : chat.DEFAULT_CTX
     "ollama_keep_alive":    "5m",          # modèle gardé en mémoire après un appel (chat.KEEP_ALIVE)
     "ollama_autostart":     False,         # lancer Ollama au démarrage de Boostache s'il ne répond pas
+    "rag_folders":          [],            # section Documents : dossiers indexés
+    "rag_excluded":         [],            # sous-dossiers et fichiers exclus de l'index
+    "rag_embed_model":      "",            # modèle d'embeddings ("" : le premier installé)
+    "rag_model":            "",            # modèle des réponses ("" : celui de l'assistant, sinon des conversations)
+    "rag_paused":           False,         # indexation en pause
+    "rag_tree_width":       330,           # largeur de l'arborescence (px)
 }
 
 

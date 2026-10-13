@@ -128,6 +128,17 @@ def _chat_models(entries: list[dict]) -> list[str]:
     return list(dict.fromkeys(names))
 
 
+def _embed_models(entries: list[dict]) -> list[str]:
+    """Modèles d'embeddings (réponse de /api/tags) : servent à la section Documents."""
+    names = []
+    for m in entries:
+        name = m.get("model") or m.get("name") or ""
+        caps = m.get("capabilities") or []
+        if name and not internal_model(name) and ("embedding" in caps or (not caps and "embed" in name)):
+            names.append(name)
+    return list(dict.fromkeys(names))
+
+
 def _unreachable(e: Exception) -> bool:
     """L'erreur vient-elle d'un serveur injoignable (arrêté, pas encore lancé, coupé) ?"""
     error = str(e).lower()
@@ -397,9 +408,11 @@ class ChatService:
         self._lock = threading.RLock()
         self.tabs: list[ChatTab] = []
         self.models: list[str] = []
+        self.embed_models: list[str] = []    # modèles d'embeddings (section Documents)
         self.models_error = ""
         self.online: bool | None = None      # None : pas encore testé
         self.on_available = None
+        self.model_listeners: list = []      # appelés (sans argument) quand la liste des modèles change
         self.visible = False                 # fenêtre affichée (set_visible)
         self._client = _ollama.Client(timeout=PROBE_TIMEOUT)
         self._probe_lock = threading.Lock()
@@ -504,20 +517,23 @@ class ChatService:
                 # Requête directe : la librairie ne transmet pas les capacités des modèles
                 resp = self._client._client.get("/api/tags")
                 resp.raise_for_status()
-                models = _chat_models(resp.json().get("models") or [])
+                entries = resp.json().get("models") or []
+                models, embed = _chat_models(entries), _embed_models(entries)
                 online, error = True, "" if models else NO_MODELS
             except _ReadTimeout:
                 # Connexion acceptée mais réponse lente (Ollama occupé) : rien ne disparaît pour ça
                 self._checked = time.monotonic()
                 return self.available
             except Exception as e:
-                models, online = [], False
+                models, embed, online = [], [], False
                 error = UNREACHABLE if _unreachable(e) else f"Ollama en erreur : {e}"
             self._checked = time.monotonic()
             with self._lock:
                 was_online, had_models = self.online, bool(self.models)
+                listed = embed != self.embed_models
                 changed = (online, models, error) != (self.online, self.models, self.models_error)
                 self.online, self.models, self.models_error = online, models, error
+                self.embed_models = embed
         if online and not was_online:
             logger.log(f"Ollama détecté : {len(models)} modèle{'s' if len(models) > 1 else ''}.")
         elif not online and was_online is not False:
@@ -526,6 +542,12 @@ class ChatService:
         if changed:
             self._bridge.emit("chat:models", {"models": models, "error": error, "online": online,
                                               "default_model": settings.get("last_model", "")})
+        if changed or listed:
+            for listener in list(self.model_listeners):
+                try:
+                    listener()
+                except Exception as e:
+                    logger.log(f"Ollama : mise à jour après le changement des modèles impossible ({e})")
         if online != (was_online is True):
             self._bridge.emit("chat:available", self.snapshot())
             try:
@@ -546,6 +568,29 @@ class ChatService:
     def model_changed(self, model: str):
         """Modèle supprimé, installé ou mis à jour (section Ollama) : ses capacités sont relues."""
         self._vision.pop(model, None)
+
+    def model_removed(self, model: str):
+        """Modèle supprimé (section Ollama) : retiré de la liste si un test lancé avant
+        la suppression l'y a laissé ; ses capacités oubliées."""
+        self._vision.pop(model, None)
+        with self._lock:
+            self.models = [m for m in self.models if m != model]
+
+    def retarget(self, model: str):
+        """Les onglets qui utilisaient ce modèle (supprimé) passent à celui des
+        conversations, ou de l'aide pour une aide contextuelle (réglages déjà mis à jour)."""
+        with self._lock:
+            moved = [t for t in self.tabs if t.model == model]
+            models = list(self.models)
+        if not moved:
+            return
+        last = settings.get("last_model", "")
+        default = last if last in models else (models[0] if models else "")
+        helper = self.help_model() if any(t.help for t in moved) else ""
+        for tab in moved:
+            tab.model = helper if tab.help else default
+            self._bridge.emit("chat:tab-model", {"tab": tab.id, "model": tab.model})
+        self._save_meta()
 
     def emit_models(self):
         """Modèle par défaut changé ailleurs (section Ollama) : les vues le reprennent."""

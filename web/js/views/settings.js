@@ -126,6 +126,8 @@ export function createSettingsView(ctx, state) {
     topSwitch.classList.toggle("on", !!settings.always_on_top);
     topSwitch.setAttribute("aria-checked", String(!!settings.always_on_top));
   });
+  // Basculé depuis le menu du tray pendant que les paramètres sont affichés
+  ctx.on("setting", ({ key, value }) => { if (key === "always_on_top") syncSwitch(topSwitch, value); });
 
   // ── Captures ────────────────────────────────
   const settingSwitch = (key, label) => {

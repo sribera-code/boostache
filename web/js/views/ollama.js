@@ -26,7 +26,13 @@ const USES = [
   ["help", "Aide contextuelle", "help_model", "Ctrl+Impr. écran ; de préférence un modèle qui lit les images"],
   ["assist", "WhatsApp et Gmail", "assist_model", "Assistant de réponse sous les sites intégrés"],
   ["assistant", "Assistant", "assistant_model", "Questions sur Gmail et WhatsApp"],
+  ["rag", "Documents", "rag_model", "Questions et résumés sur vos dossiers"],
 ];
+const EMBED_USE = "Documents (embeddings)";     // modèle d'embeddings de la section Documents (uses.rag_embed)
+
+/** Fonctions de Boostache qui utilisent ce modèle (libellés). */
+const usedBy = (uses, name) => [...USES.filter(([id]) => uses[id] === name).map(([, label]) => label),
+  ...(uses.rag_embed && uses.rag_embed === name ? [EMBED_USE] : [])];
 
 // Proposés en tête de la bibliothèque, quand rien n'est cherché
 const SUGGESTED = {
@@ -348,7 +354,7 @@ export function createOllamaView(ctx, state) {
     const run = S.running.find((r) => r.name === m.name);
     const job = S.pulls.get(m.name);      // (pas « pull » : c'est la fonction qui télécharge)
     const pulling = job && !job.done;
-    const used = USES.filter(([id]) => S.uses[id] === m.name);
+    const used = usedBy(S.uses, m.name);
     const meta = [m.params, m.quant, bytes(m.size), m.context ? `contexte ${tokens(m.context)}` : "",
       m.modified ? `modifié ${ago(m.modified)}` : ""].filter(Boolean);
     const variants = m.variants > 1 ? h("span", { class: "om-variants-note", text: `${m.variants} variantes`,
@@ -367,7 +373,7 @@ export function createOllamaView(ctx, state) {
           m.update && pulling ? h("span", { class: "om-tag warn", text: "mise à jour" }) : null),
         pulling ? pullLine(job) : h("div", { class: "om-meta" }, h("span", { text: meta.join(" · ") }), variants),
         used.length ? h("div", { class: "om-used" }, ico("sparkles", 12),
-          h("span", { text: `Utilisé par : ${used.map(([, label]) => label).join(", ")}` })) : null,
+          h("span", { text: `Utilisé par : ${used.join(", ")}` })) : null,
         run ? h("div", { class: "om-mem" }, h("span", { class: "om-dot" }), h("span", { text: memText(run) }),
           h("button", { class: "om-link", type: "button", text: "Libérer", onClick: () => unload(m.name) })) : null),
       h("div", { class: "om-actions" },
@@ -428,8 +434,9 @@ export function createOllamaView(ctx, state) {
   }
 
   function confirmDelete(m) {
-    const used = USES.filter(([id]) => S.uses[id] === m.name).map(([, label]) => label);
-    const others = S.models.length > 1;
+    const used = usedBy(S.uses, m.name);
+    const others = S.models.some((x) => x.name !== m.name
+      && !(x.capabilities?.includes("embedding") && !x.capabilities.includes("completion")));
     openModal({
       title: `Supprimer ${m.name} ?`,
       width: 460,
@@ -444,7 +451,16 @@ export function createOllamaView(ctx, state) {
         { label: "Supprimer", icon: "trash-2", kind: "danger", onClick: async () => {
           const res = await api.ollama_delete(m.name);
           if (!res?.ok) { toast(res?.error || "Suppression impossible.", "error"); return false; }
-          toast(`${m.name} supprimé`);
+          // Fonctions qui l'utilisaient : passées à un autre modèle (aussi annoncé par l'événement « setting »)
+          const by = new Map();
+          for (const [id, label, key] of USES) {
+            if (!(id in (res.replaced || {}))) continue;
+            const model = res.replaced[id];
+            store.settings[key] = model;
+            by.set(model, [...(by.get(model) || []), label]);
+          }
+          toast([`${m.name} supprimé`, ...[...by].map(([model, labels]) =>
+            `${labels.join(", ")} : ${model || "aucun modèle"}`)].join(" · "));
           refresh();
           return true;
         } },

@@ -851,6 +851,14 @@ export function createChatView(ctx, state) {
     }
   });
 
+  // Modèle de l'onglet supprimé (section Ollama) : l'onglet passe à un autre
+  on("chat:tab-model", ({ tab, model }) => {
+    const t = S.tabs.get(tab);
+    if (!t) return;
+    t.data.model = model;
+    if (t.id === S.active) updateComposer();
+  });
+
   on("layout", () => { const t = activeTab(); if (t) autoScroll(t); });
 
   // Aide contextuelle : nouvelle conversation sur la capture de la fenêtre active

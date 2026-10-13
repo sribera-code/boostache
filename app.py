@@ -2,7 +2,7 @@
 app.py – Fenêtre principale de Boostache (interface web via pywebview/WebView2).
 
 Assemble les services (conversations, consoles, notes, captures,
-enregistreur, assistant de Gmail et WhatsApp, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
+enregistreur, assistant de Gmail et WhatsApp, documents, presse-papiers…), gère le cycle de vie de la fenêtre (masquée au lieu d'être
 fermée, rappelée depuis le tray ou un raccourci) et fournit l'état initial à
 l'interface.
 """
@@ -25,14 +25,16 @@ from engine import ICON_PATH, logger, tts, hotkey_manager
 from gmail import GmailPane
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
+from rag import RagService
 from recorder import FORMATS as AUDIO_FORMATS, RecorderService
 import speech
 from transcriber import LANGUAGES, MODELS
 from storage import DATA_DIR, settings, clipboard_history
 from terminals import TerminalService
 from whatsapp import WhatsAppPane
-from winutil import (MIN_OPACITY, PrintScreenHook, active_window, bring_to_front, dark_title_bar,
-                     is_maximized, is_minimized, restore_window, window_screenshot, work_area_size)
+from winutil import (MIN_OPACITY, ForegroundTracker, PrintScreenHook, active_window, bring_to_front,
+                     dark_title_bar, is_maximized, is_minimized, restore_window, set_topmost,
+                     window_screenshot, work_area_size)
 
 WEB_DIR = Path(__file__).resolve().parent / "web"
 VIRTUAL_HOST = "boostache.example"
@@ -138,11 +140,14 @@ class BoostacheApp:
         self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
         # Questions sur Gmail et WhatsApp (Ollama), annonce des nouveaux messages (sans Ollama)
         self.assistant = AssistantService(self)
+        # Section Documents : index des dossiers choisis, questions et résumés (Ollama)
+        self.rag = RagService(self.bridge, self.chat)
         # Section Ollama : serveur, modèles, téléchargements
         self.ollama = (OllamaAdmin(self.bridge, self.chat, self.assistant, is_visible=self.is_visible,
-                                   notify=self._notify) if self.chat else None)
+                                   notify=self._notify, rag=self.rag) if self.chat else None)
         self._clip_listener: ClipboardListener | None = None
         self._print_screen: PrintScreenHook | None = None
+        self.foreground = ForegroundTracker()      # dernière fenêtre active (menu du tray)
         self._keys_lock = threading.Lock()     # réglages (API) et Ollama (surveillance)
         self.api = Api(self)
 
@@ -153,6 +158,8 @@ class BoostacheApp:
         """Crée la fenêtre et lance la boucle d'interface (bloquant)."""
         custom_tasks.load_persisted()
         self._start_clipboard_listener()
+        self.rag.start()
+        self.foreground.start()
         if self.chat:
             self.chat.on_available = self._set_screen_keys   # Ctrl+Impr. écran suit Ollama
         self._set_screen_keys()
@@ -264,6 +271,50 @@ class BoostacheApp:
     def _notify(self, title: str, text: str):
         if self.notifier:
             self.notifier(title, text)
+
+    # ─────────────────────────────────────────
+    #  Actions du menu du tray
+    # ─────────────────────────────────────────
+    def pin_target(self) -> dict | None:
+        """Fenêtre visée par « Garder au premier plan » : la dernière fenêtre
+        active, Boostache compris ({hwnd, title, topmost})."""
+        target = self.foreground.window()
+        if target and target["hwnd"] == self._hwnd:
+            target["topmost"] = bool(settings.get("always_on_top", True))
+        return target
+
+    def toggle_topmost(self, target: dict):
+        """Garde la fenêtre au premier plan, ou la libère. Boostache lui-même passe
+        par son réglage : l'interface et le prochain démarrage suivent."""
+        on = not target["topmost"]
+        if target["hwnd"] == self._hwnd:
+            value = self.set_setting("always_on_top", on)
+            self.bridge.emit("setting", {"key": "always_on_top", "value": value})
+            return
+        done = set_topmost(target["hwnd"], on)
+        if done is None:
+            self._notify("Garder au premier plan", "Cette fenêtre a été fermée.")
+        elif not done:
+            self._notify("Garder au premier plan",
+                         "Windows refuse de modifier cette fenêtre (application lancée en administrateur ?).")
+
+    def toggle_recording(self):
+        """Arrête l'enregistrement en cours, ou en démarre un avec les derniers
+        réglages de l'Enregistreur (source, périphériques, texte en direct)."""
+        rec = self.recorder
+        if rec.stop():
+            return
+        live = bool(settings.get("audio_live")) and rec.transcriber.available
+        res = rec.start(rec.source(), settings.get("audio_device") or "",
+                        settings.get("audio_mic_device") or "", live)
+        session = res.get("session")
+        if not session:
+            self._notify("Enregistreur", res.get("error") or "Enregistrement impossible.")
+        elif not self._visible:
+            # Fenêtre masquée : rien d'autre n'indique que l'enregistrement a démarré
+            device = f"{session['device']} + {session['mic']}" if session["mic"] else session["device"]
+            what = "Transcription en direct" if live else "Enregistrement"
+            self._notify("Enregistreur", f"{what} de « {device} » en cours.")
 
     # ─────────────────────────────────────────
     #  Événements fenêtre
@@ -452,6 +503,7 @@ class BoostacheApp:
         self._save_size()
         if self._print_screen:
             self._print_screen.stop()
+        self.foreground.stop()
         if self._clip_listener:
             try:
                 self._clip_listener.stop()
@@ -460,6 +512,7 @@ class BoostacheApp:
         self.terminals.shutdown()
         self.recorder.shutdown()
         self.assistant.shutdown()
+        self.rag.shutdown()
         try:
             tts.stop()
         except Exception:
@@ -480,7 +533,7 @@ class BoostacheApp:
                 "assistant_content", "assistant_speak",
                 "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed", "tts_volume",
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
-                "ollama_autostart", "digest_height")},
+                "ollama_autostart", "digest_height", "rag_model", "rag_tree_width")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -489,6 +542,7 @@ class BoostacheApp:
             "captures":  self.captures.snapshot(),
             "recorder":  self.recorder.snapshot(),
             "assistant": self.assistant.snapshot(),
+            "rag":       self.rag.snapshot(),
             "ollama":    self.ollama.boot_state() if self.ollama else
                          {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
@@ -594,6 +648,17 @@ class BoostacheApp:
         elif key == "assistant_model":
             settings.set(key, str(value or ""))
             self.assistant.refresh()
+            self.rag.refresh()          # modèle des réponses par défaut
+        elif key == "rag_model":
+            settings.set(key, str(value or ""))
+            self.rag.refresh()
+        elif key == "rag_tree_width":
+            # Largeur de l'arborescence de la section Documents (px)
+            try:
+                value = max(180, min(int(value), 1200))
+            except (TypeError, ValueError):
+                return settings.get(key)
+            settings.set(key, value)
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
         elif key == "digest_height":

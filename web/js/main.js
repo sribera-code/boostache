@@ -11,6 +11,7 @@ import { createClipboardView } from "./views/clipboard.js";
 import { createCapturesView } from "./views/captures.js";
 import { createRecorderView } from "./views/recorder.js";
 import { createAssistantView } from "./views/assistant.js";
+import { createRagView } from "./views/rag.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
@@ -28,6 +29,7 @@ const NAV = [
   { id: "gmail",     label: "Gmail",          icon: "mail",            create: createGmailView },
   { id: "recorder",  label: "Enregistreur",   icon: "audio-lines",     create: createRecorderView },
   { id: "assistant", label: "Assistant",      icon: "sparkles",        create: createAssistantView },
+  { id: "rag",       label: "Documents",      icon: "library",         create: createRagView },
   "-",
   { id: "logs",      label: "Historique",     icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
@@ -484,7 +486,7 @@ function setupGlobalHandlers() {
     if (!drop || Date.now() - drop.at > 10000 || !paths?.length) return;
     const view = views.get(drop.view)?.view;
     if (view?.onDrop) view.onDrop(paths, drop.zone);
-    else toast("Déposez des fichiers dans Conversations, Consoles ou Captures.", "info");
+    else toast("Déposez des fichiers dans Conversations, Consoles, Captures ou Documents.", "info");
   });
 
   // Raccourcis de l'interface
@@ -513,6 +515,8 @@ function setupGlobalHandlers() {
   on("webpane:key", ({ key }) => shortcut(key));
   on("window:shown", () => layout.windowShown());
   on("toast", ({ text, kind }) => toast(text, kind || "info"));
+  // Réglage modifié hors de la page (menu du tray)
+  on("setting", ({ key, value }) => { store.settings[key] = value; });
 }
 
 // ─────────────────────────────────────────────
