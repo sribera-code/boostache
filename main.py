@@ -53,6 +53,7 @@ class TrayApp:
             pystray.MenuItem(self._pin_label, self._on_toggle_topmost,
                              checked=lambda item: bool(self._pin_target and self._pin_target["topmost"]),
                              enabled=lambda item: self._pin_target is not None),
+            pystray.Menu.SEPARATOR,
             pystray.MenuItem("Capture d'écran", self._on_capture),
             pystray.MenuItem(lambda item: "Arrêter l'enregistrement" if recorder.recording
                              else "Démarrer l'enregistrement", self._on_toggle_recording,
@@ -108,7 +109,9 @@ class TrayApp:
             kwargs = {}
             if os.name == "nt":
                 kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-            subprocess.Popen([sys.executable, *sys.argv],
+            # Fenêtre affichée une fois rechargé (--show)
+            args = [*sys.argv, *(["--show"] if "--show" not in sys.argv else [])]
+            subprocess.Popen([sys.executable, *args],
                              close_fds=True, **kwargs)
         except Exception as e:
             logger.log(f"Échec du lancement de la nouvelle instance : {e}")

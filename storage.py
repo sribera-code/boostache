@@ -139,6 +139,9 @@ _DEFAULTS = {
     "rag_model":            "",            # modèle des réponses ("" : celui de l'assistant, sinon des conversations)
     "rag_paused":           False,         # indexation en pause
     "rag_tree_width":       330,           # largeur de l'arborescence (px)
+    "mail_list":            True,          # Gmail : liste des e-mails à côté du site
+    "mail_list_width":      340,           # largeur de cette liste (px)
+    "gmail_auto_summary":   False,         # Gmail : nouveaux e-mails de la boîte résumés d'office
 }
 
 

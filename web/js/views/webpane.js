@@ -2,7 +2,9 @@
 // WebView2 natif (webpane.py), posé par Python au-dessus de la zone .pane-host
 // dont on transmet la position. Sous le site, l'assistant de réponse (Ollama).
 import { h, plural } from "../dom.js";
+import { renderMarkdown } from "../markdown.js";
 import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
+import { createMailList, importanceIcon } from "./maillist.js";
 
 const WHATSAPP = {
   id: "whatsapp", title: "WhatsApp", icon: "message-circle",
@@ -15,10 +17,11 @@ const GMAIL = {
   id: "gmail", title: "Gmail", icon: "mail",
   unread: ["message non lu", "messages non lus"],
   firstRun: "Première ouverture : connectez-vous à votre compte Google. La session est ensuite conservée.",
-  hint: "Consigne (facultatif) : accepte mardi 14 h, plus formel…",
-  listHint: "Consigne pour le résumé (facultatif) : concentre-toi sur les factures…",   // aucun e-mail ouvert
+  hint: "Une question sur vos e-mails (Entrée) — ou une consigne pour les boutons…",
+  ask: true,       // questions sur les e-mails (champ de l'assistant)
   long: true,      // propositions = e-mails complets, affichés en entier
   digest: true,    // résumé de la boîte de réception
+  list: true,      // liste des e-mails à côté du site (maillist.js)
 };
 
 const HOLE_MARGIN = 6;     // px autour d'un menu percé dans le site (son ombre)
@@ -36,12 +39,22 @@ function createPaneView(ctx, state, cfg) {
   const status = h("div", { class: "empty" });
   const host = h("div", { class: "pane-host" }, status);
   const assist = createAssistBar(ctx, state, cfg);
+  const list = cfg.list ? createMailList(ctx, state, cfg, assist) : null;
+  // Liste des e-mails : affichée ou masquée depuis l'en-tête
+  const listBtn = list ? iconButton("panel-left", "Liste des e-mails", () => {
+    listBtn.classList.toggle("on", list.toggle());
+    assist.listChanged();
+  }) : null;
+  listBtn?.classList.toggle("on", list.shown());
+  // Résumés des e-mails déjà dans la liste : le panneau du bas n'en garde que la synthèse
+  if (list) assist.setListShown(list.shown);
   const el = h("section", {},
     h("header", { class: "view-head" },
       h("span", { class: "view-title", text: cfg.title }), sub,
       h("div", { class: "head-spacer" }),
+      listBtn,
       iconButton("refresh-cw", `Recharger ${cfg.title}`, () => api.pane_reload(cfg.id))),
-    host,
+    list ? h("div", { class: "pane-body" }, list.el, list.splitter, host) : host,
     assist.el);
 
   function render() {
@@ -136,42 +149,65 @@ function createPaneView(ctx, state, cfg) {
 // ─────────────────────────────────────────────
 const DIGEST_RUNNING = new Set(["listing", "reading", "overview"]);
 const DIGEST_MAX = 50;          // e-mails résumés au plus (gmail.py)
-const DIGEST_MIN_H = 80;        // hauteur minimale du résumé redimensionné (px)
+const CONVO_MIN_H = 80;         // hauteur minimale de la conversation redimensionnée (px)
 const SITE_MIN_H = 60;          // le site reste visible au-dessus (px, voir .pane-host)
+const QA_RUNNING = new Set(["reading", "thinking"]);
+const CONVO_TURNS = 60;         // messages gardés dans la conversation (les plus anciens partent)
 
+/** Barre de l'assistant sous le site : boutons, champ (question ou consigne), modèle,
+ *  et au-dessus la conversation — chaque demande (bulle à droite) et sa réponse
+ *  (propositions, brouillon amélioré, résumé, réponse à une question). */
 function createAssistBar(ctx, state, cfg) {
   const { api, on, store } = ctx;
   const S = { models: state.chat.models || [], fallback: state.chat.default_model || "", ready: false, busy: false,
     digest: state.panes?.[cfg.id]?.digest || { state: "idle" },
     // Ce qui s'applique à la page du site (webpane.WATCH_JS) : e-mail ou discussion
     // ouvert (reply), brouillon écrit (improve) — les autres boutons sont masqués
-    context: state.panes?.[cfg.id]?.context || { reply: false, improve: false } };
-  // Le panneau des résultats montre le résumé de la boîte (suivi pendant le travail)
-  let digestShown = DIGEST_RUNNING.has(S.digest.state);
+    context: state.panes?.[cfg.id]?.context || { reply: false, improve: false },
+    qa: state.panes?.[cfg.id]?.qa || { state: "idle" } };
+  let listShown = () => false;   // liste des e-mails affichée à côté du site (maillist.js)
+  let digestTurn = null;         // réponse qui suit le résumé en cours (événements <site>:digest)
+  let qaTurn = null;             // réponse qui suit la question en cours (événements <site>:qa)
+  let qaCount = 0;
 
-  const results = h("div", { class: `pane-results${cfg.long ? " long" : ""}`, hidden: true });
-  const suggestBtn = h("button", { class: "btn sm", type: "button", onClick: suggest },
+  const convo = h("div", { class: "pane-convo", role: "log", "aria-label": "Conversation avec l'assistant", hidden: true });
+  // Actions principales : en tête de la rangée des suggestions
+  const suggestBtn = h("button", { class: "pane-chip pc-main", type: "button", onClick: () => suggest() },
     ico("sparkles", 14), "Suggérer une réponse");
-  const improveBtn = h("button", { class: "btn sm", type: "button", onClick: improve },
+  const improveBtn = h("button", { class: "pane-chip pc-main", type: "button", onClick: () => improve() },
     ico("pencil-line", 14), "Améliorer le brouillon");
   // Un e-mail ouvert : lui seul ; sinon la liste affichée (menu sélection / non lus / tous)
   const digestLabel = h("span");
-  const digestBtn = cfg.digest ? h("button", { class: "btn sm", type: "button", onClick: digest },
+  const digestBtn = cfg.digest ? h("button", { class: "pane-chip pc-main", type: "button", onClick: digest },
     ico("scroll-text", 14), digestLabel) : null;
   const hint = h("input", { class: "field pane-hint", type: "text", maxlength: "500", spellcheck: "true",
     placeholder: cfg.hint,
-    onKeydown: (ev) => { if (ev.key === "Enter" && S.context.reply) { ev.preventDefault(); suggest(); } } });
+    onKeydown: (ev) => {
+      if (ev.key !== "Enter" || ev.isComposing) return;
+      // Entrée : la question (Gmail) ; sinon « Suggérer » avec une discussion ouverte
+      if (cfg.ask) { ev.preventDefault(); ask(); }
+      else if (S.context.reply) { ev.preventDefault(); suggest(); }
+    } });
+  const askBtn = cfg.ask ? iconButton("arrow-up", "Poser la question (Entrée)", () => ask(),
+    { size: 14, cls: "sm pane-ask" }) : null;
   const idleNote = cfg.idle ? h("span", { class: "pane-idle", text: cfg.idle }) : null;
   const modelName = h("span", { class: "name" });
   const modelBtn = h("button", { class: "model-pill", type: "button", "aria-label": "Modèle de l'assistant",
     onClick: (ev) => openMenuBelow(modelItems(), ev.currentTarget, "right") },
     modelName, ico("chevron-down", 14));
-  // Poignée du résumé (bord haut) : sa hauteur se règle à la souris
-  const grip = cfg.digest ? h("div", { class: "pane-grip", role: "separator", tabindex: "0",
-    "aria-orientation": "horizontal", "aria-label": "Hauteur du résumé",
-    dataset: { tip: "Glisser pour changer la hauteur du résumé — double-clic : hauteur automatique" } }) : null;
-  const el = h("div", { class: "pane-assist", dataset: { ollama: "" } }, grip, results,
-    h("div", { class: "pane-tools" }, suggestBtn, improveBtn, digestBtn, idleNote, hint, modelBtn));
+  const clearBtn = iconButton("eraser", "Effacer la conversation", clearConvo, { size: 14, cls: "sm" });
+  const foldBtn = iconButton("chevron-down", "Masquer la conversation", () => setConvoShown(convo.hidden),
+    { size: 14, cls: "sm pane-fold" });
+  // Poignée de la conversation (bord haut) : sa hauteur se règle à la souris
+  const grip = h("div", { class: "pane-grip", role: "separator", tabindex: "0",
+    "aria-orientation": "horizontal", "aria-label": "Hauteur de la conversation",
+    dataset: { tip: "Glisser pour changer la hauteur de la conversation — double-clic : hauteur automatique" } });
+  // Demandes toutes prêtes, selon ce qui est ouvert dans le site (toujours affichées)
+  const suggestRow = h("div", { class: "pane-suggest", role: "group", "aria-label": "Suggestions" });
+  let suggestKey = null;
+  const el = h("div", { class: "pane-assist", dataset: { ollama: "" } }, grip, convo, suggestRow,
+    h("div", { class: "pane-tools" }, idleNote, hint, askBtn, modelBtn,
+      clearBtn, foldBtn));
 
   function model() {
     const wanted = store.settings.assist_model;
@@ -180,12 +216,12 @@ function createAssistBar(ctx, state, cfg) {
     return S.models[0] || "";
   }
 
-  const idle = () => !S.busy && !DIGEST_RUNNING.has(S.digest.state);
+  const idle = () => !S.busy && !DIGEST_RUNNING.has(S.digest.state) && !QA_RUNNING.has(S.qa.state);
 
   function refresh() {
     modelName.textContent = model() || "Aucun modèle";
     const off = !idle() || !S.ready || !model();
-    for (const btn of [suggestBtn, improveBtn, digestBtn]) if (btn) btn.disabled = off;
+    for (const btn of [suggestBtn, improveBtn, digestBtn, askBtn]) if (btn) btn.disabled = off;
     // Seulement ce qui s'applique : « Suggérer » avec un e-mail (une discussion)
     // ouvert, « Améliorer » avec un brouillon écrit
     const { reply, improve: draft } = S.context;
@@ -193,14 +229,68 @@ function createAssistBar(ctx, state, cfg) {
     improveBtn.hidden = !draft;
     const any = reply || draft || !!digestBtn;
     hint.hidden = !any;
+    if (askBtn) askBtn.hidden = !any;
     if (idleNote) idleNote.hidden = any;
-    hint.placeholder = reply || draft || !cfg.listHint ? cfg.hint : cfg.listHint;
+    renderSuggestions();
     if (digestBtn) {
       digestLabel.textContent = reply ? "Résumer cet e-mail" : "Résumer les e-mails";
       digestBtn.dataset.tip = reply ? "Résume l'e-mail ouvert (tout le fil) et ce qu'il attend de vous"
         : "Lit les e-mails de la liste affichée dans Gmail — sélectionnés, non lus ou tous — "
           + "sans les marquer comme lus, et fait le point";
     }
+  }
+
+  // ── Suggestions (conversation vide) ──
+  /** Brouillon écrit : le retoucher ; e-mail (discussion) ouvert : y répondre ;
+   *  sinon (Gmail) : des questions sur les e-mails. */
+  function suggestions() {
+    const { reply, improve: draft } = S.context;
+    const chip = (icon, label, tip, onRun) => ({ icon, label, tip, onRun });
+    if (draft) return [
+      chip("type", "Corriger les fautes", "Corrige l'orthographe et la grammaire du brouillon, sans changer le style",
+        () => improve("corrige seulement l'orthographe, la grammaire et la ponctuation, sans changer le style ni le sens")),
+      chip("pencil-line", "Plus formel", "Réécrit le brouillon sur un ton plus formel", () => improve("plus formel")),
+      chip("sparkles", "Plus chaleureux", "Réécrit le brouillon sur un ton plus chaleureux", () => improve("plus chaleureux")),
+      chip("scissors", "Plus court", "Raccourcit le brouillon en gardant l'essentiel", () => improve("plus court, garde l'essentiel")),
+    ];
+    if (reply) return [
+      cfg.ask ? chip("lightbulb", "Qu'attend-on de moi ?", "Ce que demande l'e-mail ouvert, et pour quand",
+        () => ask("Que me demande l'e-mail ouvert, et pour quand ? Réponds en quelques lignes.")) : null,
+      chip("check", "Accepter", "Propose des réponses qui acceptent", () => suggest("accepter, répondre positivement")),
+      chip("x", "Décliner poliment", "Propose des réponses qui déclinent poliment", () => suggest("décliner poliment")),
+      chip("search", "Demander des précisions", "Propose des réponses qui demandent des précisions",
+        () => suggest("demander des précisions sur ce qui n'est pas clair")),
+    ].filter(Boolean);
+    if (!cfg.ask) return [];
+    return [
+      chip("flag", "Qu'est-ce qui est urgent ?", "Les e-mails urgents ou importants, et pourquoi",
+        () => ask("Quels e-mails sont urgents ou importants ? Une ligne par e-mail, avec la raison.")),
+      chip("list-checks", "Ce que je dois faire", "Les actions demandées dans vos e-mails, par priorité",
+        () => ask("Quelles actions dois-je faire d'après mes e-mails ? Classe-les par priorité, avec les dates limites.")),
+      chip("message-square", "Qui attend une réponse ?", "Les e-mails qui attendent une réponse de votre part",
+        () => ask("Quels e-mails attendent une réponse de ma part ?")),
+      chip("calendar-clock", "Rendez-vous et dates", "Les rendez-vous, réunions et échéances cités dans vos e-mails",
+        () => ask("Quels rendez-vous, réunions ou dates à retenir trouve-t-on dans mes e-mails ?")),
+      chip("file-text", "Factures à payer", "Les factures et paiements en attente, montants et dates limites",
+        () => ask("Y a-t-il des factures ou des paiements à régler ? Donne les montants et les dates limites.")),
+    ];
+  }
+
+  /** Rangée des actions et suggestions, au-dessus du champ ; sans conversation,
+   *  le bandeau est plus haut. */
+  function renderSuggestions() {
+    const { reply, improve: draft } = S.context;
+    const key = `${reply}|${draft}`;
+    if (key !== suggestKey) {
+      suggestKey = key;
+      suggestRow.replaceChildren(suggestBtn, improveBtn, ...(digestBtn ? [digestBtn] : []),
+        ...suggestions().map((c) => h("button", { class: "pane-chip", type: "button",
+          dataset: { tip: c.tip }, onClick: c.onRun }, ico(c.icon, 13), c.label)));
+    }
+    suggestRow.hidden = ![...suggestRow.children].some((b) => !b.hidden);
+    el.classList.toggle("no-convo", !convo.childElementCount);
+    const off = !idle() || !S.ready || !model();
+    for (const b of suggestRow.children) b.disabled = off;
   }
 
   function modelItems() {
@@ -217,121 +307,173 @@ function createAssistBar(ctx, state, cfg) {
     ];
   }
 
-  function show(...children) {
-    digestShown = false;
-    results.classList.remove("digest");
-    sizeDigest();
-    fill(children);
+  // ── Conversation ──
+  let atBottom = true;           // suivre la fin tant que l'utilisateur n'est pas remonté
+  convo.addEventListener("scroll", () => {
+    atBottom = convo.scrollHeight - convo.scrollTop - convo.clientHeight < 24;
+  });
+  const toBottom = () => { convo.scrollTop = convo.scrollHeight; atBottom = true; };
+  const follow = () => { if (atBottom) toBottom(); };
+
+  function setConvoShown(shown) {
+    convo.hidden = !shown || !convo.childElementCount;
+    const has = convo.childElementCount > 0;
+    clearBtn.hidden = foldBtn.hidden = !has;
+    renderSuggestions();
+    foldBtn.classList.toggle("folded", convo.hidden);
+    const tip = convo.hidden ? "Afficher la conversation" : "Masquer la conversation";
+    foldBtn.dataset.tip = tip;
+    foldBtn.setAttribute("aria-label", tip);
+    sizeConvo();
+    if (!convo.hidden) toBottom();
   }
 
-  // ── Hauteur du résumé : réglage digest_height (px, 0 = automatique) ──
-  /** Applique la hauteur choisie au résumé affiché (les autres résultats gardent la leur). */
-  function sizeDigest() {
-    const px = digestShown ? Number(store.settings.digest_height) || 0 : 0;
-    el.classList.toggle("resizable", digestShown);
-    results.classList.toggle("sized", px > 0);
-    if (px > 0) results.style.setProperty("--digest-h", `${px}px`);
+  /** Demande de l'utilisateur (bulle à droite) ; consigne en dessous. */
+  function userTurn(text, note = "") {
+    convo.append(h("div", { class: "msg msg-user pc-user" },
+      h("div", { class: "bubble" }, text, note ? h("span", { class: "pc-note", text: note }) : null)));
+    trim();
+  }
+
+  /** Réponse de l'assistant ; set(...) remplace son contenu (travail en cours, résultat). */
+  function botTurn(name = model()) {
+    const body = h("div", { class: "pc-body" });
+    convo.append(h("div", { class: "msg msg-bot pc-bot" },
+      h("div", { class: "msg-meta" }, h("span", { class: "avatar" }, ico("sparkles", 12)),
+        h("span", { class: "msg-model", text: name || "Assistant" })),
+      body));
+    trim();
+    setConvoShown(true);
+    return { body, set(...children) { body.replaceChildren(...children.flat(Infinity).filter(Boolean)); follow(); } };
+  }
+
+  function trim() {
+    while (convo.childElementCount > CONVO_TURNS) convo.firstElementChild.remove();
+  }
+
+  function clearConvo() {
+    if (DIGEST_RUNNING.has(S.digest.state)) api.pane_digest_stop(cfg.id);
+    if (QA_RUNNING.has(S.qa.state)) api.pane_ask_stop(cfg.id);
+    if (cfg.ask) api.pane_ask_reset(cfg.id);       // la question suivante repart de zéro
+    digestTurn = qaTurn = null;
+    convo.replaceChildren();
+    setConvoShown(false);
+  }
+
+  const busyStatus = (text) => h("div", { class: "pane-status" }, h("span", { class: "pane-busy" }), text);
+  const errorStatus = (text) => h("div", { class: "pane-status error" }, ico("triangle-alert", 14), text);
+  const doneStatus = (text) => h("div", { class: "pane-status" }, ico("check", 14), text);
+
+  function showError(message) {
+    botTurn().set(errorStatus(message));
+  }
+
+  /** Consigne du champ, utilisée par un bouton : affichée sous la demande, puis effacée. */
+  function takeHint() {
+    const text = hint.value.trim();
+    hint.value = "";
+    return text;
+  }
+
+  // ── Hauteur de la conversation : réglage digest_height (px, 0 = automatique) ──
+  function sizeConvo() {
+    const shown = !convo.hidden;
+    const px = shown ? Number(store.settings.digest_height) || 0 : 0;
+    el.classList.toggle("resizable", shown);
+    convo.classList.toggle("sized", px > 0);
+    if (px > 0) convo.style.setProperty("--digest-h", `${px}px`);
   }
 
   /** Plus grande hauteur possible : le site garde SITE_MIN_H au-dessus. */
-  function maxDigestHeight() {
-    const host = el.parentElement?.querySelector(".pane-host");
-    const now = results.getBoundingClientRect().height;
-    return Math.max(DIGEST_MIN_H, now + (host ? host.getBoundingClientRect().height - SITE_MIN_H : 0));
+  function maxConvoHeight() {
+    const host = el.parentElement?.querySelector(".pane-body, .pane-host");
+    const now = convo.getBoundingClientRect().height;
+    return Math.max(CONVO_MIN_H, now + (host ? host.getBoundingClientRect().height - SITE_MIN_H : 0));
   }
 
-  function setDigestHeight(px, save) {
-    store.settings.digest_height = px ? Math.round(Math.max(DIGEST_MIN_H, Math.min(px, maxDigestHeight()))) : 0;
-    sizeDigest();
+  function setConvoHeight(px, save) {
+    store.settings.digest_height = px ? Math.round(Math.max(CONVO_MIN_H, Math.min(px, maxConvoHeight()))) : 0;
+    sizeConvo();
     if (save) ctx.saveSetting("digest_height", store.settings.digest_height);
   }
 
-  if (grip) {
-    grip.addEventListener("pointerdown", (ev) => {
-      if (ev.button !== 0) return;
-      ev.preventDefault();
-      // Capture : le glisser continue au-dessus du site (contrôle natif)
-      try { grip.setPointerCapture(ev.pointerId); } catch { /* pointeur déjà relâché */ }
-      grip.classList.add("dragging");
-      document.body.classList.add("pane-resizing");
-      const startY = ev.clientY;
-      const startH = results.getBoundingClientRect().height;
-      const max = maxDigestHeight();
-      const before = store.settings.digest_height;
-      let done = false;
-      const move = (e) => {
-        if (!(e.buttons & 1)) { end(); return; }    // relâché hors de la page
-        store.settings.digest_height = Math.round(Math.max(DIGEST_MIN_H, Math.min(max, startH + startY - e.clientY)));
-        sizeDigest();
-      };
-      const end = () => {
-        if (done) return;
-        done = true;
-        grip.removeEventListener("pointermove", move);
-        grip.classList.remove("dragging");
-        document.body.classList.remove("pane-resizing");
-        if (store.settings.digest_height !== before) ctx.saveSetting("digest_height", store.settings.digest_height);
-      };
-      grip.addEventListener("pointermove", move);
-      grip.addEventListener("pointerup", end, { once: true });
-      grip.addEventListener("lostpointercapture", end, { once: true });
-    });
-    grip.addEventListener("dblclick", () => setDigestHeight(0, true));
-    grip.addEventListener("keydown", (ev) => {
-      const step = { ArrowUp: 40, ArrowDown: -40 }[ev.key];
-      if (!step) return;
-      ev.preventDefault();
-      setDigestHeight(results.getBoundingClientRect().height + step, true);
-    });
-  }
+  grip.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    // Capture : le glisser continue au-dessus du site (contrôle natif)
+    try { grip.setPointerCapture(ev.pointerId); } catch { /* pointeur déjà relâché */ }
+    grip.classList.add("dragging");
+    document.body.classList.add("pane-resizing");
+    const startY = ev.clientY;
+    const startH = convo.getBoundingClientRect().height;
+    const max = maxConvoHeight();
+    const before = store.settings.digest_height;
+    let done = false;
+    const move = (e) => {
+      if (!(e.buttons & 1)) { end(); return; }    // relâché hors de la page
+      store.settings.digest_height = Math.round(Math.max(CONVO_MIN_H, Math.min(max, startH + startY - e.clientY)));
+      sizeConvo();
+    };
+    const end = () => {
+      if (done) return;
+      done = true;
+      grip.removeEventListener("pointermove", move);
+      grip.classList.remove("dragging");
+      document.body.classList.remove("pane-resizing");
+      if (store.settings.digest_height !== before) ctx.saveSetting("digest_height", store.settings.digest_height);
+    };
+    grip.addEventListener("pointermove", move);
+    grip.addEventListener("pointerup", end, { once: true });
+    grip.addEventListener("lostpointercapture", end, { once: true });
+  });
+  grip.addEventListener("dblclick", () => setConvoHeight(0, true));
+  grip.addEventListener("keydown", (ev) => {
+    const step = { ArrowUp: 40, ArrowDown: -40 }[ev.key];
+    if (!step) return;
+    ev.preventDefault();
+    setConvoHeight(convo.getBoundingClientRect().height + step, true);
+  });
 
-  function fill(children) {
-    results.replaceChildren(...children, iconButton("x", "Fermer", close, { size: 14, cls: "sm pane-close" }));
-    results.hidden = children.length === 0;
-  }
-
-  // Fermer le résumé en cours l'arrête
-  function close() {
-    if (digestShown && DIGEST_RUNNING.has(S.digest.state)) api.pane_digest_stop(cfg.id);
-    show();
-  }
-
-  function showError(message) {
-    show(h("span", { class: "pane-status error" }, ico("triangle-alert", 14), message));
-  }
-
+  // ── Propositions de réponse, brouillon amélioré ──
   /** Remet le texte remplacé dans la zone de saisie. */
   function restoreButton(previous, label = "Rétablir l'original") {
-    return h("button", { class: "btn sm", type: "button", onClick: async () => {
+    const btn = h("button", { class: "btn sm", type: "button", onClick: async () => {
       const done = await api.pane_insert(cfg.id, previous);
-      if (done?.ok) show();
-      else showError(done?.error || "Restauration impossible.");
+      if (done?.ok) btn.replaceWith(doneStatus("Rétabli."));
+      else toast(done?.error || "Restauration impossible.", "error");
     } }, ico("undo-2", 14), label);
+    return btn;
   }
 
-  async function run(label, call) {
+  /** Demande (bulle) puis réponse en attente ; le résultat ou l'erreur la remplace. */
+  /** note : consigne d'une suggestion, sinon celle du champ. */
+  async function run(request, label, call, note = takeHint()) {
     if (!idle() || !S.ready) return null;
     const m = model();
+    userTurn(request, note ? `Consigne : ${note}` : "");
+    const turn = botTurn(m);
+    turn.set(busyStatus(`${label}…`));
     S.busy = true;
     refresh();
-    show(h("span", { class: "pane-status" }, h("span", { class: "pane-busy" }), `${label} avec ${m}…`));
     try {
-      const res = await call(cfg.id, m, hint.value.trim());
-      if (!res?.ok) { showError(res?.error || "Échec de la génération."); return null; }
-      return res;
+      const res = await call(cfg.id, m, note);
+      if (!res?.ok) { turn.set(errorStatus(res?.error || "Échec de la génération.")); return null; }
+      return { res, turn };
     } finally {
       S.busy = false;
       refresh();
     }
   }
 
-  async function suggest() {
-    const res = await run("Rédaction de propositions", api.pane_suggest);
-    if (!res) return;
-    const head = h("span", { class: "pane-for", text: res.title ? `Pour « ${res.title} » :` : "Propositions :" });
+  async function suggest(note) {
+    const out = await run("Suggérer une réponse", "Rédaction de propositions", api.pane_suggest, note);
+    if (!out) return;
+    const { res, turn } = out;
+    const undo = h("div", { class: "pane-undo" });
     // E-mails : aperçu compact (sans lignes vides) ; le texte inséré reste complet
     const chips = res.replies.map((text, i) => h("button", { class: "pane-reply", type: "button",
       text: cfg.long ? text.replace(/\n\s*\n/g, "\n") : text,
+      dataset: { tip: "Placer cette réponse dans la zone de saisie (rien n'est envoyé)" },
       onContextmenu: (ev) => {
         ev.preventDefault();
         const source = `reply:${cfg.id}:${i}`;
@@ -344,35 +486,35 @@ function createAssistBar(ctx, state, cfg) {
       onClick: async (ev) => {
         const chip = ev.currentTarget;
         const done = await api.pane_insert(cfg.id, text);
-        if (!done?.ok) { showError(done?.error || "Insertion impossible."); return; }
+        if (!done?.ok) { toast(done?.error || "Insertion impossible.", "error"); return; }
         chips.forEach((c) => c.classList.toggle("used", c === chip));
         // Un brouillon déjà écrit a été remplacé : on permet de le récupérer
         undo.replaceChildren();
         if (done.previous && done.previous !== text) undo.append(restoreButton(done.previous, "Rétablir mon brouillon"));
       } }));
-    const undo = h("span", { class: "pane-undo" });
-    show(head, ...chips, undo);
+    turn.set(h("div", { class: "pane-for", text: res.title ? `Pour « ${res.title} » — cliquez sur une proposition pour la placer dans la réponse :`
+        : "Cliquez sur une proposition pour la placer dans la zone de saisie :" }),
+      h("div", { class: `pc-replies${cfg.long ? " long" : ""}` }, chips), undo);
   }
 
-  async function improve() {
-    const res = await run("Amélioration du brouillon", api.pane_improve);
-    if (!res) return;
-    show(h("span", { class: "pane-status" }, ico("check", 14), `Brouillon amélioré dans ${cfg.title}.`),
-      restoreButton(res.draft));
+  async function improve(note) {
+    const out = await run("Améliorer le brouillon", "Amélioration du brouillon", api.pane_improve, note);
+    if (!out) return;
+    out.turn.set(doneStatus(`Brouillon amélioré dans ${cfg.title}.`),
+      h("div", { class: "pane-undo" }, restoreButton(out.res.draft)));
   }
 
   // ── Résumé des e-mails de la liste affichée dans Gmail (en arrière-plan,
   //    événements <site>:digest) : sélectionnés, non lus ou tous ──
-  async function digest(ev) {
-    const anchor = ev.currentTarget;
+  async function digest() {
     if (!idle() || !S.ready) return;
     if (S.context.reply) { startDigest("current"); return; }    // e-mail ouvert : lui seul
     const scopes = await api.pane_digest_scopes(cfg.id);
-    if (!scopes?.ok) { showError(scopes?.error || `${cfg.title} ne répond pas.`); return; }
+    if (!scopes?.ok) { userTurn("Résumer les e-mails"); showError(scopes?.error || `${cfg.title} ne répond pas.`); return; }
     const items = scopeItems(scopes);
     // Rien à choisir (ni sélection, ni non-lus) : tous, directement
     if (items.length === 1) { items[0].onSelect(); return; }
-    const menu = openMenuBelow([{ section: `Résumer — ${scopes.view}` }, ...items], anchor);
+    const menu = openMenuBelow([{ section: `Résumer — ${scopes.view}` }, ...items], digestBtn);
     menu.focusEntry(menu.entries[0]);      // le plus précis en premier (Entrée)
   }
 
@@ -380,7 +522,7 @@ function createAssistBar(ctx, state, cfg) {
    *  Sans liste affichée (fil ouvert) : non lus ou tous de la boîte de réception. */
   function scopeItems(s) {
     const item = (scope, label, icon, count) => ({ label, icon, hint: count ? String(count) : "",
-      onSelect: () => startDigest(scope) });
+      onSelect: () => startDigest(scope, null, count) });
     return [
       s.list && s.selection ? item("selection", s.selection > 1 ? "Les e-mails sélectionnés" : "L'e-mail sélectionné",
         "text-select", s.selection) : null,
@@ -390,11 +532,22 @@ function createAssistBar(ctx, state, cfg) {
     ].filter(Boolean);
   }
 
-  async function startDigest(scope) {
+  /** La demande telle qu'elle apparaît dans la conversation. */
+  function digestRequest(scope, n) {
+    if (scope === "current") return "Résumer cet e-mail";
+    if (scope === "selection") return n > 1 ? `Résumer les ${n} e-mails sélectionnés` : "Résumer l'e-mail sélectionné";
+    if (scope === "unread") return n === 1 ? "Résumer l'e-mail non lu" : n ? `Résumer les ${n} e-mails non lus` : "Résumer les e-mails non lus";
+    return n === 1 ? "Résumer l'e-mail" : n ? `Résumer les ${n} e-mails` : "Résumer les e-mails";
+  }
+
+  async function startDigest(scope, ids = null, count = 0) {
     if (!idle() || !S.ready) return;
-    const res = await api.pane_digest(cfg.id, model(), hint.value.trim(), scope);
-    if (!res?.ok) { showError(res?.error || "Résumé impossible."); return; }
-    digestShown = true;
+    const note = takeHint();
+    userTurn(digestRequest(scope, ids ? ids.length : count), note ? `Consigne : ${note}` : "");
+    digestTurn = botTurn();
+    digestTurn.set(busyStatus("Lecture des e-mails…"));
+    const res = await api.pane_digest(cfg.id, model(), note, scope, ids);
+    if (!res?.ok) { digestTurn.set(errorStatus(res?.error || "Résumé impossible.")); digestTurn = null; return; }
     renderDigest();
   }
 
@@ -413,41 +566,100 @@ function createAssistBar(ctx, state, cfg) {
   }
 
   function digestProgress(d) {
-    if (d.scope === "current") return `Lecture et résumé de l'e-mail avec ${d.model}…`;
+    if (d.scope === "current") return `Lecture et résumé de l'e-mail…`;
     if (d.state === "listing") return "Lecture de la boîte de réception…";
     if (d.state === "overview") return "Synthèse…";
-    return `Résumé ${Math.min(d.items.length + 1, d.total)} sur ${d.total} avec ${d.model}…`;
+    return `Résumé ${Math.min(d.items.length + 1, d.total)} sur ${d.total}…`;
   }
 
   function renderDigest() {
+    if (!digestTurn) return;
     const d = S.digest;
     const items = d.items || [];
     const running = DIGEST_RUNNING.has(d.state);
+    // Plusieurs e-mails, liste affichée à côté : leurs résumés y sont, ici la synthèse seule
+    const inList = listShown() && d.scope !== "current" && (d.total || 0) > 1;
     const text = () => digestText(d);
-    const head = h("div", { class: "digest-head" },
-      h("span", { class: "digest-title" }, ico("scroll-text", 14), d.view || "E-mails"),
-      h("span", { class: "digest-count", text: digestCount(d) }),
-      running ? h("span", { class: "pane-status" }, h("span", { class: "pane-busy" }), digestProgress(d)) : null,
-      d.state === "cancelled" ? h("span", { class: "pane-status", text: "Arrêté." }) : null,
-      d.state === "error" ? h("span", { class: "pane-status error" }, ico("triangle-alert", 14),
-        d.error || "Échec du résumé.") : null,
-      // « Lire » dès le premier résumé : la lecture suit les suivants
-      h("span", { class: "digest-actions" }, items.length || running ? digestSpeakButton() : null, running
-        ? h("button", { class: "btn sm", type: "button", onClick: () => api.pane_digest_stop(cfg.id) },
-          ico("square", 12), "Arrêter")
-        : items.length ? [
-          iconButton("copy", "Copier le résumé", () => ctx.copy(text()), { size: 14, cls: "sm" }),
-          iconButton("notebook-pen", "Ajouter à une note", (ev) => ctx.pickDestination("notes", ev.currentTarget,
-            (slot) => ctx.emit("note:insert", { text: text(), slot })), { size: 14, cls: "sm" }),
-        ] : null));
-    results.classList.add("digest");
-    sizeDigest();
-    fill([h("div", { class: "pane-digest" }, head,
+    const count = digestCount(d);
+    digestTurn.set(
+      d.view ? h("div", { class: "digest-head" },
+        h("span", { class: "digest-title" }, ico("scroll-text", 14), d.view),
+        count ? h("span", { class: "digest-count", text: count }) : null,
+        inList && items.length && !running ? h("span", { class: "digest-count", text: "· résumés dans la liste à gauche" }) : null)
+        : null,
+      running ? busyStatus(digestProgress(d)) : null,
+      d.state === "cancelled" ? h("div", { class: "pane-status", text: "Arrêté." }) : null,
+      d.state === "error" ? errorStatus(d.error || "Échec du résumé.") : null,
       d.overview ? h("p", { class: "digest-overview", text: d.overview }) : null,
-      d.state === "done" && !items.length
-        ? h("p", { class: "digest-empty", text: digestEmpty(d) }) : null,
-      items.length ? h("div", { class: "digest-list" }, items.map(digestItem)) : null)]);
+      d.state === "done" && !items.length ? h("p", { class: "digest-empty", text: digestEmpty(d) }) : null,
+      items.length && !inList ? h("div", { class: "digest-list" }, items.map(digestItem)) : null,
+      // « Lire » dès le premier résumé : la lecture suit les suivants
+      items.length || running ? h("div", { class: "msg-actions" },
+        digestSpeakButton(),
+        running ? h("button", { class: "btn sm", type: "button", onClick: () => api.pane_digest_stop(cfg.id) },
+          ico("square", 12), "Arrêter") : [
+          iconButton("copy", "Copier le résumé", () => ctx.copy(text()), { size: 15, cls: "sm" }),
+          iconButton("notebook-pen", "Ajouter à une note", (ev) => ctx.pickDestination("notes", ev.currentTarget,
+            (slot) => ctx.emit("note:insert", { text: text(), slot })), { size: 15, cls: "sm" }),
+        ]) : null);
     ctx.emit("speak-sources-changed");
+  }
+
+  // ── Question sur les e-mails (Gmail, en arrière-plan : événements <site>:qa) ──
+  /** preset : question d'une suggestion (le champ garde son texte), sinon celle du champ. */
+  async function ask(preset) {
+    const question = preset || hint.value.trim();
+    if (!question) { hint.focus(); return; }
+    if (!idle() || !S.ready) return;
+    if (!preset) hint.value = "";
+    userTurn(question);
+    qaTurn = botTurn();
+    qaTurn.source = `qa:${cfg.id}:${++qaCount}`;
+    qaTurn.set(busyStatus("Lecture de Gmail…"));
+    const res = await api.pane_ask(cfg.id, model(), question);
+    if (!res?.ok) { qaTurn.set(errorStatus(res?.error || "Question impossible.")); qaTurn = null; return; }
+    renderQA();
+  }
+
+  function renderQA() {
+    if (!qaTurn) return;
+    const q = S.qa;
+    const running = QA_RUNNING.has(q.state);
+    const { source } = qaTurn;
+    const text = q.answer;
+    const answer = h("div", { class: "md qa-answer" });
+    if (text) answer.innerHTML = renderMarkdown(text);
+    let speak = null;
+    if (text && !running) {
+      speak = iconButton("volume-2", "Lire la réponse", () => ctx.toggleSpeak(text, source, true), { size: 15, cls: "sm" });
+      speak.dataset.speakSource = source;
+      speak.dataset.tipIdle = "Lire la réponse";
+    }
+    qaTurn.set(
+      running && !text ? busyStatus(q.state === "reading" ? "Lecture de Gmail…" : "Réflexion…") : null,
+      text ? answer : null,
+      q.state === "stopped" ? h("div", { class: "pane-status", text: "Arrêté." }) : null,
+      q.state === "error" ? errorStatus(q.error || "Échec de la réponse.") : null,
+      h("div", { class: "msg-actions" }, running
+        ? h("button", { class: "btn sm", type: "button", onClick: () => api.pane_ask_stop(cfg.id) }, ico("square", 12), "Arrêter")
+        : text ? [speak, iconButton("copy", "Copier la réponse", () => ctx.copy(text), { size: 15, cls: "sm" })] : null));
+    if (!running) qaTurn = null;
+    ctx.emit("speak-sources-changed");
+  }
+
+  if (cfg.ask) {
+    on(`${cfg.id}:qa`, (q) => {
+      S.qa = q;
+      refresh();
+      renderQA();
+    });
+    // Interface rechargée pendant la réponse : elle reprend dans la conversation
+    if (QA_RUNNING.has(S.qa.state)) {
+      userTurn(S.qa.question || "Question");
+      qaTurn = botTurn(S.qa.model);
+      qaTurn.source = `qa:${cfg.id}:${++qaCount}`;
+      renderQA();
+    }
   }
 
   // ── Lecture à voix haute du résumé ──
@@ -460,7 +672,7 @@ function createAssistBar(ctx, state, cfg) {
       const running = DIGEST_RUNNING.has(S.digest.state);
       overviewLast = running;
       ctx.speak(digestSpeech(S.digest), digestSource, false, running);
-    }, { size: 14, cls: "sm" });
+    }, { size: 15, cls: "sm" });
     btn.dataset.speakSource = digestSource;
     btn.dataset.tipIdle = "Lire le résumé";
     return btn;
@@ -502,6 +714,7 @@ function createAssistBar(ctx, state, cfg) {
       } },
       h("div", { class: "digest-meta" },
         item.unread ? h("span", { class: "digest-dot", "aria-label": "Non lu" }) : null,
+        importanceIcon(item.failed ? "" : item.importance),
         h("span", { class: "digest-from", text: item.from || "(expéditeur inconnu)" }),
         h("span", { class: "digest-subject", text: item.subject || "(sans objet)" }),
         h("span", { class: "digest-when", text: item.when, dataset: { tip: item.date || null } })),
@@ -529,9 +742,14 @@ function createAssistBar(ctx, state, cfg) {
       S.digest = d;
       ctx.feed(digestSource, digestSpeech(d), !DIGEST_RUNNING.has(d.state));
       refresh();
-      if (digestShown) renderDigest();
+      renderDigest();
     });
-    if (digestShown) renderDigest();     // interface rechargée pendant le résumé
+    // Interface rechargée pendant le résumé : il reprend dans la conversation
+    if (DIGEST_RUNNING.has(S.digest.state)) {
+      userTurn(digestRequest(S.digest.scope, S.digest.total));
+      digestTurn = botTurn(S.digest.model);
+      renderDigest();
+    }
   }
 
   on("chat:models", ({ models, default_model }) => {
@@ -540,10 +758,20 @@ function createAssistBar(ctx, state, cfg) {
     refresh();
   });
   refresh();
+  setConvoShown(false);
 
   return {
     el,
     setReady(ready) { S.ready = ready; refresh(); },
     setContext(context) { S.context = { reply: !!context?.reply, improve: !!context?.improve }; refresh(); },
+    // Pour la liste des e-mails (maillist.js)
+    setListShown(fn) { listShown = fn; },
+    listChanged() { renderDigest(); },
+    model,
+    hint: () => hint.value.trim(),
+    canRun: () => idle() && S.ready && !!model(),
+    blocked: () => !S.ready ? `${cfg.title} n'est pas chargé.` : !model() ? "Aucun modèle Ollama installé."
+      : "Un résumé est déjà en cours.",
+    runDigest: (scope, ids) => startDigest(scope, ids),
   };
 }

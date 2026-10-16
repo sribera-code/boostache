@@ -111,6 +111,7 @@ class WebPane:
     hosts: tuple = ()        # domaines autorisés en navigation (et leurs sous-domaines)
     read_js = ""             # lecture de la conversation ouverte : { ok, …, draft }
     context_js = ""          # fonction de la page → { reply, improve } (voir WATCH_JS)
+    page_scripts: tuple = ()  # autres scripts injectés dans la page (messages : _on_page_message)
 
     def __init__(self, app):
         self._app = app
@@ -407,6 +408,8 @@ class WebPane:
         core.AddScriptToExecuteOnDocumentCreatedAsync(SHORTCUTS_JS)
         if self.context_js:
             core.AddScriptToExecuteOnDocumentCreatedAsync(WATCH_JS.replace("__CONTEXT__", self.context_js))
+        for script in self.page_scripts:
+            core.AddScriptToExecuteOnDocumentCreatedAsync(script)
         core.Navigate(self.url)
         self._set_state("ready")
         self._apply()
@@ -477,6 +480,11 @@ class WebPane:
             self._app.bridge.emit("webpane:focus", {"pane": self.key})
         elif msg.get("type") == "context":
             self._set_context({"reply": bool(msg.get("reply")), "improve": bool(msg.get("improve"))})
+        else:
+            self._on_page_message(msg)
+
+    def _on_page_message(self, msg: dict):
+        """Message d'un script de page_scripts (thread de l'interface : ne pas bloquer)."""
 
     def _set_context(self, context: dict):
         if context != self._context:

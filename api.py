@@ -539,14 +539,36 @@ class Api:
     def pane_digest_scopes(self, pane):
         return self._app.panes[pane].digest_scopes()
 
-    def pane_digest(self, pane, model, hint="", scope="all"):
-        return self._app.panes[pane].digest(str(model or ""), str(hint or ""), str(scope or "all"))
+    # ids : e-mails choisis dans la liste à côté du site (sinon la liste affichée dans Gmail)
+    def pane_digest(self, pane, model, hint="", scope="all", ids=None):
+        ids = None if ids is None else [str(i) for i in ids][:100]
+        return self._app.panes[pane].digest(str(model or ""), str(hint or ""), str(scope or "all"), ids)
 
     def pane_digest_stop(self, pane):
         self._app.panes[pane].digest_stop()
 
-    def pane_open_thread(self, pane, thread_id):
-        return self._app.panes[pane].open_thread(str(thread_id or ""))
+    # Question sur les e-mails (Gmail) : réponse par l'événement gmail:qa
+    def pane_ask(self, pane, model, question):
+        return self._app.panes[pane].ask(str(model or ""), str(question or ""))
+
+    def pane_ask_stop(self, pane):
+        self._app.panes[pane].ask_stop()
+
+    def pane_ask_reset(self, pane):
+        self._app.panes[pane].ask_reset()
+
+    def pane_open_thread(self, pane, thread_id, base=""):
+        return self._app.panes[pane].open_thread(str(thread_id or ""), str(base or ""))
+
+    # Liste des e-mails à côté du site (Gmail) : résumés en arrière-plan
+    def pane_list_summarize(self, pane, model, hint="", ids=None):
+        return self._app.panes[pane].summarize_list(str(model or ""), str(hint or ""), [str(i) for i in ids or []][:100])
+
+    def pane_list_stop(self, pane):
+        self._app.panes[pane].summarize_stop()
+
+    def pane_list_action(self, pane, thread_id, action):
+        return self._app.panes[pane].list_action(str(thread_id or ""), str(action or ""))
 
     # ─────────────────────────────────────────
     #  Presse-papiers

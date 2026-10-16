@@ -49,6 +49,7 @@
   --green: #7cc48f;
   --red: #ee7d7d;
   --link: #9ec1ff;
+  --amber: #e6b660;
 
   --radius-s: 6px;
   --radius: 9px;
@@ -2317,12 +2318,66 @@ table.grid tr:hover .row-actions { opacity: 1; }
 .pane-assist { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 9px 12px 10px; border-top: 1px solid var(--line); }
 .pane-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .pane-tools .model-pill { margin-left: 0; }
-.pane-hint.field { flex: 1; min-width: 180px; height: 28px; padding: 0 10px; font-size: 12.5px; }
+.pane-hint.field { flex: 1; min-width: 180px; height: 34px; padding: 0 12px; font-size: 13px; }
 .pane-idle { flex: 1; min-width: 180px; color: var(--fg-3); font-size: 12.5px; }
-.pane-results { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; max-height: 40vh; overflow-y: auto; font-size: 12.5px; }
-.pane-results[hidden] { display: none; }
-.pane-results .pane-close { margin-left: auto; }
-.pane-for { color: var(--fg-3); }
+/* Actions et suggestions au-dessus du champ ; conversation vide : bandeau deux fois plus haut */
+.pane-assist.no-convo { justify-content: center; min-height: 96px; }
+.pane-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
+.pane-suggest[hidden] { display: none; }
+.pane-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 10px;
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  background: var(--bg-3);
+  color: var(--fg-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.pane-chip .icon { color: var(--fg-3); transition: color .12s; }
+.pane-chip:hover { border-color: var(--line-3); background: var(--bg-4); color: var(--fg); }
+.pane-chip:hover .icon { color: var(--link); }
+.pane-chip:disabled { opacity: .45; pointer-events: none; }
+.pane-chip[hidden] { display: none; }
+/* Actions principales (résumer, suggérer, améliorer) : plus marquées */
+.pane-chip.pc-main { border-color: var(--line-3); color: var(--fg); font-weight: 500; }
+.pane-chip.pc-main .icon { color: var(--link); }
+/* Conversation avec l'assistant (au-dessus des outils) : demandes à droite, réponses à gauche ;
+   hauteur réglable par la poignée du bord haut (sized : hauteur choisie, réduite si la fenêtre
+   manque de place, le site garde 60 px) */
+.pane-convo {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: 45vh;
+  margin: 0 -12px;
+  padding: 8px 16px 6px;
+  overflow-y: auto;
+  font-size: 13px;
+  overscroll-behavior: contain;
+}
+.pane-convo[hidden] { display: none; }
+.pane-convo.sized { flex: 0 1 var(--digest-h); min-height: 60px; max-height: none; }
+.pane-convo .msg-user { max-width: 78%; }
+.pane-convo .bubble { padding: 7px 13px; border-radius: 16px 16px 5px 16px; font-size: 13px; line-height: 1.5; }
+.pc-note { display: block; margin-top: 2px; color: var(--fg-2); font-size: 12px; }
+.pane-convo .msg-meta { margin-bottom: 6px; }
+.pane-convo .avatar { width: 22px; height: 22px; border-radius: 7px; }
+.pc-body { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; min-width: 0; }
+.pc-body > * { max-width: 100%; }
+.pc-body > .digest-head, .pc-body > .digest-overview, .pc-body > .digest-list, .pc-body > .qa-answer,
+.pc-body > .pc-replies.long { align-self: stretch; }
+.pc-body .msg-actions { margin: 0 0 0 -6px; }
+.pc-replies { display: flex; flex-wrap: wrap; gap: 6px 8px; }
+.pc-replies.long { flex-direction: column; flex-wrap: nowrap; }
+.pane-tools .pane-fold .icon { transition: transform .15s; }
+.pane-tools .pane-fold.folded .icon { transform: rotate(180deg); }
+.pane-for { color: var(--fg-3); font-size: 12.5px; }
 .pane-status { display: inline-flex; align-items: center; gap: 8px; color: var(--fg-2); }
 .pane-status .icon { color: var(--green); }
 .pane-status.error, .pane-status.error .icon { color: var(--red); }
@@ -2344,8 +2399,7 @@ table.grid tr:hover .row-actions { opacity: 1; }
 .pane-reply.used { border-color: rgba(124, 196, 143, .55); }
 .pane-undo:empty { display: none; }
 /* Gmail : propositions = e-mails complets, une par ligne */
-.pane-results.long { position: relative; flex-direction: column; flex-wrap: nowrap; align-items: flex-start; max-height: 45vh; padding-right: 32px; }
-.pane-results.long .pane-reply {
+.pc-replies.long .pane-reply {
   display: -webkit-box;
   overflow: hidden;
   align-self: stretch;
@@ -2354,14 +2408,9 @@ table.grid tr:hover .row-actions { opacity: 1; }
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 4;
 }
-.pane-results.long .pane-close { position: absolute; top: 0; right: 0; }
-/* Gmail : résumé des e-mails ; hauteur réglable par la poignée du bord haut
-   (sized : hauteur choisie, réduite si la fenêtre manque de place, le site garde 60 px) */
-.pane-results.digest { max-height: 55vh; }
-.pane-results.digest.sized { flex: 0 1 var(--digest-h); min-height: 60px; max-height: none; }
 .pane-assist { position: relative; }
 .pane-assist.resizable { flex-shrink: 1; min-height: 0; }
-.pane-host:has(+ .pane-assist.resizable) { min-height: 60px; }
+.pane-host:has(+ .pane-assist.resizable), .pane-body:has(+ .pane-assist.resizable) { min-height: 60px; }
 .pane-grip { display: none; }
 .pane-assist.resizable > .pane-grip {
   position: absolute;
@@ -2395,15 +2444,13 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .digest-title { display: inline-flex; align-items: center; gap: 7px; color: var(--fg); font-size: 13px; font-weight: 600; }
 .digest-count { color: var(--fg-3); }
 .digest-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+/* Synthèse : texte libre, comme la réponse à une question (pas d'encadré) */
 .digest-overview {
   margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--line-2);
-  border-radius: 10px;
-  background: var(--bg-3);
+  padding: 2px 2px 4px;
   color: var(--fg);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.6;
   white-space: pre-wrap;
   user-select: text;
 }
@@ -2433,6 +2480,137 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .digest-item.failed .digest-summary { color: var(--fg-3); font-style: italic; }
 .digest-action { display: flex; align-items: center; gap: 4px; color: var(--link); font-size: 12.5px; }
 .digest-action .icon { flex-shrink: 0; }
+/* Question sur les e-mails */
+.qa-question > span { min-width: 0; overflow-wrap: anywhere; }
+.qa-answer { padding: 2px 2px 4px; color: var(--fg); font-size: 13px; line-height: 1.6; user-select: text; }
+.pane-tools .pane-ask { flex-shrink: 0; }
+
+/* Gmail : liste des e-mails à côté du site (maillist.js) ; le site garde 320 px */
+.pane-body { display: flex; flex: 1; min-height: 0; }
+.pane-body > .pane-host { flex: 1; min-width: 0; }
+.mail-list {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  width: var(--ml-w, 340px);
+  max-width: calc(100% - 320px);
+  min-width: 0;
+  background: var(--bg-1);
+}
+.mail-list[hidden], .ml-splitter[hidden] { display: none; }
+.ml-head { display: flex; flex-shrink: 0; align-items: center; gap: 4px; min-height: 40px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line); }
+.ml-title { flex-shrink: 0; max-width: 60%; overflow: hidden; color: var(--fg); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.ml-count { min-width: 0; margin-left: 4px; overflow: hidden; color: var(--fg-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.ml-rows { display: flex; flex: 1; flex-direction: column; gap: 6px; min-height: 0; padding: 6px; overflow-y: auto; }
+.ml-empty { margin: 16px 10px; color: var(--fg-3); font-size: 12.5px; line-height: 1.55; }
+/* Chaque e-mail dans son cadre, séparé des voisins */
+.ml-row {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px 9px;
+  border: 1px solid var(--line-2);
+  border-radius: 9px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background .12s, border-color .12s;
+}
+/* Lus / non lus : non lus sur fond plus clair, filet vert, texte en gras ; lus en gris */
+.ml-row.unread { background: rgba(255, 255, 255, .045); }
+.ml-row:not(.unread) .ml-subject > span:first-child { color: var(--fg-2); }
+.ml-row.unread .ml-subject > span:first-child { font-weight: 600; }
+.ml-row.unread .ml-when { color: var(--fg); font-weight: 600; }
+.ml-row:hover { border-color: var(--line-3); background: var(--bg-3); }
+.ml-row.open { border-color: var(--line-3); background: var(--bg-4); }
+.ml-row.selected { background: rgba(158, 193, 255, .08); }
+.ml-row:focus-visible { outline: 1px solid var(--line-3); }
+.ml-meta { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 24px; }
+/* Expéditeur en tête de ligne, plus grand que le reste */
+.ml-from { flex: 1; min-width: 0; overflow: hidden; color: var(--fg); font-size: 13.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.ml-row.unread .ml-from { font-weight: 700; }
+.ml-when { flex-shrink: 0; color: var(--fg-3); font-size: 11.5px; }
+.ml-sum.icon-btn { flex-shrink: 0; width: 22px; height: 22px; margin: -2px -2px -2px 0; opacity: 0; }
+.ml-row:hover .ml-sum, .ml-row:focus-within .ml-sum, .ml-sum.busy { opacity: 1; }
+.ml-sum.busy .pane-busy { width: 6px; height: 6px; }
+/* Lu / non lu, supprimer : à la place de la date au survol (ou au clavier) */
+.ml-acts { display: none; flex-shrink: 0; align-items: center; gap: 2px; margin: -2px 0; }
+.ml-row:hover .ml-acts, .ml-row:has(:focus-visible) .ml-acts, .ml-row:focus-visible .ml-acts { display: inline-flex; }
+.ml-row:hover .ml-when, .ml-row:has(:focus-visible) .ml-when, .ml-row:focus-visible .ml-when { display: none; }
+.ml-act.icon-btn { width: 24px; height: 24px; }
+.ml-act.ml-delete:hover { color: var(--red); }
+.ml-row.acting { opacity: .55; pointer-events: none; transition: opacity .15s; }
+.ml-row.removing { opacity: .3; }
+.ml-subject { overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
+.ml-row.unread .ml-subject > span:first-child { color: var(--fg); }
+.ml-snippet { color: var(--fg-3); }
+/* Résumé : bloc teinté (bleu) avec l'icône de l'assistant, distinct du sujet et de
+   l'extrait quel que soit le fond de la ligne (survol, ouverte, sélectionnée) ;
+   un clic ouvre l'e-mail comme le reste de la ligne */
+.ml-summary {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+  padding: 6px 9px;
+  border-left: 2px solid rgba(158, 193, 255, .55);
+  border-radius: 0 6px 6px 0;
+  background: rgba(158, 193, 255, .075);
+  color: var(--fg);
+  line-height: 1.5;
+  user-select: text;
+}
+.ml-summary-text .icon { display: inline-block; margin-right: 5px; vertical-align: -1px; color: var(--link); }
+/* E-mail lu : résumé en retrait (texte gris, teinte plus légère) */
+.ml-row:not(.unread) .ml-summary { border-left-color: rgba(158, 193, 255, .3); background: rgba(158, 193, 255, .045); color: var(--fg-2); }
+.ml-row:not(.unread) .ml-action { color: var(--fg-2); }
+.ml-summary.dim { opacity: .55; }
+/* Réduit : deux lignes de résumé, l'action sur une ; en entier au clic */
+.ml-summary-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.ml-summary.open .ml-summary-text { display: block; overflow: visible; }
+.ml-summary:not(.open) .ml-action > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ml-summary.truncated, .ml-summary.open { padding-right: 30px; }
+.ml-more {
+  position: absolute;
+  right: 4px; bottom: 4px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: var(--bg-4);
+  color: var(--fg-2);
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.ml-more[hidden] { display: none; }
+.ml-more:hover { background: var(--bg-5); color: var(--fg); }
+.ml-summary.open .ml-more .icon { transform: rotate(180deg); }
+/* E-mails urgents (drapeau) et importants (étoile), d'après le résumé */
+.imp { display: inline-flex; flex-shrink: 0; align-items: center; }
+.imp .icon { fill: currentColor; }
+.imp-urgent { color: var(--red); }
+.imp-important { color: var(--amber); }
+.digest-meta .imp { align-self: center; }
+.ml-action { display: flex; align-items: center; gap: 4px; color: var(--link); }
+.ml-action .icon { flex-shrink: 0; }
+.ml-pending { margin-top: 3px; color: var(--fg-3); font-style: italic; }
+.ml-error { margin-top: 3px; color: var(--red); font-size: 12px; }
+.ml-splitter { position: relative; flex-shrink: 0; width: 4px; touch-action: none; outline: 0; cursor: col-resize; }
+.ml-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0; bottom: 0; left: 0;
+  width: 1px;
+  background: var(--line);
+  transition: background .12s, width .12s;
+}
+.ml-splitter:hover::after { transition-delay: .12s; }
+.ml-splitter:hover::after, .ml-splitter.dragging::after, .ml-splitter:focus-visible::after { width: 3px; background: var(--line-3); }
+body.ml-resizing, body.ml-resizing * { cursor: col-resize !important; }
 
 /* ── Petites largeurs (de la section : un volet de l'écran partagé aussi) ─ */
 @container view (max-width: 860px) {

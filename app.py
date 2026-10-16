@@ -533,7 +533,8 @@ class BoostacheApp:
                 "assistant_content", "assistant_speak",
                 "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed", "tts_volume",
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
-                "ollama_autostart", "digest_height", "rag_model", "rag_tree_width")},
+                "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
+                "mail_list", "mail_list_width", "gmail_auto_summary")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -660,6 +661,15 @@ class BoostacheApp:
                 return settings.get(key)
             settings.set(key, value)
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
+            settings.set(key, value)
+        elif key in ("mail_list", "gmail_auto_summary"):
+            settings.set(key, bool(value))
+        elif key == "mail_list_width":
+            # Largeur de la liste des e-mails à côté de Gmail (px)
+            try:
+                value = max(220, min(int(value), 900))
+            except (TypeError, ValueError):
+                return settings.get(key)
             settings.set(key, value)
         elif key == "digest_height":
             # Hauteur du résumé des e-mails (Gmail), en px ; 0 = automatique
