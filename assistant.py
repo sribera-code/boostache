@@ -36,7 +36,7 @@ import uuid
 from datetime import datetime
 
 from chat import _ollama, keep_alive, num_ctx
-from engine import logger, strip_markdown, tts
+from engine import logger, tts
 from gmail import IMPORTANCE, NO_ACTION_RE
 from storage import settings
 from webpane import clean
@@ -545,9 +545,9 @@ class AssistantService:
         self._bridge.emit("assistant:history", {"items": items})
 
     def _answer(self, item: dict):
+        """Répond au fil de l'eau (assistant:delta) ; la lecture à voix haute (Lecture
+        auto) suit ces événements dans l'interface."""
         chat = self._app.chat
-        source = f"assistant:{item['id']}"
-        speak = bool(settings.get("assistant_speak", False))
         stream = None
         try:
             context = self._gather(item)
@@ -562,8 +562,6 @@ class AssistantService:
             messages.append({"role": "user", "content": f"{context}\n\n# Question de l'utilisateur\n\n{item['question']}"})
             item.update(state="thinking", phase=f"Réponse avec {item['model']}…")
             self._emit_qa(item)
-            if speak:
-                tts.speak("", source=source, stream=True, prepare=strip_markdown)
             stream = _ollama.chat(model=item["model"], messages=messages, stream=True, think=False,
                                   options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
             buf, last, done_reason = "", time.monotonic(), None
@@ -576,8 +574,6 @@ class AssistantService:
                 buf += delta
                 if buf and time.monotonic() - last >= DELTA_INTERVAL:
                     self._bridge.emit("assistant:delta", {"id": item["id"], "text": buf})
-                    if speak:
-                        tts.feed(source, item["answer"])
                     buf, last = "", time.monotonic()
             if buf:
                 self._bridge.emit("assistant:delta", {"id": item["id"], "text": buf})
@@ -595,8 +591,6 @@ class AssistantService:
             logger.log(f"Assistant ({item['model']}) : {error}")
             item.update(state="error", error=error)
         finally:
-            if speak:
-                tts.feed(source, item["answer"], final=True)
             if stream is not None and hasattr(stream, "close"):
                 try:
                     stream.close()

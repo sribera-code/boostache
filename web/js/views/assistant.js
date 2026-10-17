@@ -4,6 +4,7 @@
 import { h, plural } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
+import { createComposer, conversationSpeech } from "../composer.js";
 import { importanceIcon } from "./maillist.js";
 
 const SOURCES = {
@@ -21,6 +22,9 @@ const SUGGESTIONS = [
 
 /** "2026-10-07T14:02:05" → "14:02". */
 const hhmm = (iso) => (iso || "").slice(11, 16);
+const BUSY = new Set(["reading", "thinking"]);
+const READ_ALL = "assistant:all";              // lecture de toutes les questions (bouton Lire)
+const sourceOf = (id) => `assistant:${id}`;    // lecture d'une réponse
 
 export function createAssistantView(ctx, state) {
   const { api, on, store } = ctx;
@@ -76,22 +80,32 @@ export function createAssistantView(ctx, state) {
   const body = h("div", { class: "asst-body" }, deck, feedBox, threadHead, intro, thread);
 
   // ── Champ de question ───────────────────────
-  const input = h("textarea", { class: "field asst-input", rows: "1", maxlength: "1000", spellcheck: "true",
-    "aria-label": "Question à l'assistant",
-    onKeydown: (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); ask(); } },
-    onInput: autosize });
-  const sendBtn = h("button", { class: "btn primary sm asst-send", type: "button", onClick: () => (S.st.asking ? api.assistant_stop() : ask()) });
-  const micBtn = iconButton("mic", "Dictée vocale", () => { input.focus(); api.dictate(); }, { kbd: "Win+H" });
-  const speakBtn = settingToggle("volume-2", "Lire les réponses", "assistant_speak", "Lire chaque réponse à voix haute, dès ses premières phrases");
   const modelName = h("span", { class: "name" });
   const modelBtn = h("button", { class: "model-pill", type: "button", "aria-label": "Modèle de l'assistant",
     dataset: { tip: "Modèle qui répond aux questions" },
-    onClick: (ev) => openMenuBelow(modelItems(), ev.currentTarget, "right") },
+    onClick: (ev) => openMenuBelow(modelItems(), ev.currentTarget) },
     ico("sparkles", 14), modelName, ico("chevron-down", 14));
-  const askBar = h("div", { class: "asst-ask" },
-    h("div", { class: "asst-ask-inner" },
-      h("div", { class: "asst-ask-row" }, input, micBtn, sendBtn),
-      h("div", { class: "asst-ask-options" }, speakBtn, h("div", { class: "head-spacer" }), modelBtn)));
+  let readingMode = "answers";   // ce que suit la lecture de toutes les questions
+  const composer = createComposer(ctx, {
+    label: "Question à l'assistant", maxlength: 1000, maxHeight: 200,
+    tools: [iconButton("mic", "Dictée vocale", () => { input.focus(); api.dictate(); }, { kbd: "Win+H" }), modelBtn],
+    speakKey: "assistant_speak",
+    // Activée pendant une réponse : elle est lue tout de suite
+    onAutoRead: (on) => { const entry = busyEntry(); if (on && entry) autoRead(entry); },
+    read: {
+      source: READ_ALL,
+      match: (source) => source === READ_ALL || (source.startsWith("assistant:") && answers.has(source.slice(10))),
+      speak: (mode) => {
+        readingMode = mode;
+        ctx.speak(threadSpeech(mode), READ_ALL, true, !!busyEntry());
+      },
+    },
+    onSend: () => ask(),
+    onStop: () => api.assistant_stop(),
+    sendTip: "Demander", stopTip: "Arrêter la réponse",
+  });
+  const { input } = composer;
+  const askBar = h("div", { class: "composer-wrap" }, composer.el);
 
   const sub = h("span", { class: "view-sub" });
   const el = h("section", {},
@@ -135,12 +149,10 @@ export function createAssistantView(ctx, state) {
     problems.hidden = !issues.length;
 
     const ollama = !!store.ollama;
-    const asking = !!S.st.asking;
-    sendBtn.replaceChildren(ico(asking ? "square" : "arrow-up", 14), asking ? "Arrêter" : "Demander");
-    sendBtn.disabled = !ollama && !asking;
+    composer.update({ busy: !!S.st.asking, ready: ollama });
     input.disabled = !ollama;
-    input.placeholder = ollama ? "Une question sur vos e-mails ou vos messages WhatsApp ?"
-      : "Les questions ont besoin d'Ollama (en local), qui ne répond pas.";
+    composer.setPlaceholder(ollama ? "Une question sur vos e-mails ou vos messages WhatsApp ?"
+      : "Les questions ont besoin d'Ollama (en local), qui ne répond pas.");
     modelName.textContent = S.st.model || "Aucun modèle";
     modelBtn.hidden = !ollama;
     renderBadge();
@@ -297,7 +309,7 @@ export function createAssistantView(ctx, state) {
 
   function updateQa(entry) {
     const { item } = entry;
-    const busy = item.state === "reading" || item.state === "thinking";
+    const busy = BUSY.has(item.state);
     entry.reply.classList.toggle("busy", busy);
     entry.phase.hidden = !busy || (item.state === "thinking" && !!item.answer);
     entry.phase.replaceChildren(h("span", { class: "pane-busy" }), h("span", { text: item.phase || "…" }));
@@ -340,9 +352,27 @@ export function createAssistantView(ctx, state) {
     renderBadge();
   }
 
-  function autosize() {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  // ── Lecture à voix haute des réponses ───────
+  /** Réponse en cours d'écriture, s'il y en a une. */
+  const busyEntry = () => [...answers.values()].find((e) => BUSY.has(e.item.state)) || null;
+
+  /** Lecture auto : la réponse, dès ses premières phrases (la suite par feedAnswer). */
+  function autoRead(entry) {
+    entry.autoRead = true;
+    ctx.speak(entry.item.answer || "", sourceOf(entry.item.id), true, true);
+  }
+
+  /** Texte de toutes les questions affichées (réponse en cours comprise). */
+  function threadSpeech(mode) {
+    return conversationSpeech(S.history.map((i) => answers.get(i.id)?.item || i)
+      .map((i) => ({ ask: i.question, answer: i.answer })), mode);
+  }
+
+  /** Suite d'une réponse pour les lectures au fil de l'eau (la sienne, celle de toutes). */
+  function feedAnswer(entry) {
+    const final = !BUSY.has(entry.item.state);
+    ctx.feed(sourceOf(entry.item.id), entry.item.answer || "", final);
+    if (ctx.feeding(READ_ALL)) ctx.feed(READ_ALL, threadSpeech(readingMode), final);
   }
 
   // ── Actions ─────────────────────────────────
@@ -355,7 +385,7 @@ export function createAssistantView(ctx, state) {
     if (!question || S.st.asking || !store.ollama) return;
     const res = await api.assistant_ask(question);
     if (!res?.ok) { toast(res?.error || "Question impossible.", "error"); return; }
-    if (text === undefined) { input.value = ""; autosize(); }
+    if (text === undefined) composer.setValue("");
   }
 
   // ── Évènements Python ───────────────────────
@@ -376,6 +406,9 @@ export function createAssistantView(ctx, state) {
       updateQa(entry);
       const i = S.history.findIndex((x) => x.id === item.id);
       if (i >= 0) S.history[i] = item;
+      // Lecture auto : dès que la réponse commence (Gmail et WhatsApp lus)
+      if (item.state === "thinking" && !entry.autoRead && composer.autoRead()) autoRead(entry);
+      feedAnswer(entry);
       return;
     }
     S.history.push(item);
@@ -391,6 +424,7 @@ export function createAssistantView(ctx, state) {
     const follow = nearBottom();
     entry.item = { ...entry.item, answer: (entry.item.answer || "") + text, state: "thinking" };
     updateQa(entry);
+    feedAnswer(entry);
     if (follow) scrollDown();
   });
 

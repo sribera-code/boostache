@@ -5,6 +5,7 @@
 import { h, plural, formatShort, parseDate } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
+import { createComposer, conversationSpeech } from "../composer.js";
 
 const EXPANDED_KEY = "boostache.rag.expanded";     // dossiers dépliés (localStorage)
 const SELECTED_KEY = "boostache.rag.selected";     // élément choisi
@@ -27,6 +28,8 @@ const STOP = new Set(("les des une pour dans avec sans par sur que qui quoi quel
   + "aux ces cet cette mais donc comme plus moins tout tous toute toutes leur leurs nos vos notre votre "
   + "the and for with from this that what which").split(" "));
 const BUSY = new Set(["searching", "reading", "thinking"]);
+const READ_ALL = "rag:all";              // lecture de toutes les questions (bouton Lire)
+const sourceOf = (id) => `rag:${id}`;    // lecture d'une réponse
 
 // ─────────────────────────────────────────────
 //  Mise en forme
@@ -217,23 +220,34 @@ export function createRagView(ctx, state) {
     h("span", { class: "asst-block-title", text: "Questions" }), h("div", { class: "head-spacer" }), clearBtn);
   const scroller = h("div", { class: "rag-scroll" }, h("div", { class: "rag-scroll-inner" }, intro, threadHead, thread));
 
-  const input = h("textarea", { class: "field asst-input", rows: "1", maxlength: "4000", spellcheck: "true",
-    "aria-label": "Question sur les documents",
-    onKeydown: (ev) => { if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) { ev.preventDefault(); ask(); } },
-    onInput: autosize });
-  const sendBtn = h("button", { class: "btn primary sm asst-send", type: "button",
-    onClick: () => (S.st.asking ? api.rag_stop() : ask()) });
-  const micBtn = iconButton("mic", "Dictée vocale", () => { input.focus(); api.dictate(); }, { kbd: "Win+H" });
   const scopeBtn = h("button", { class: "rag-scope", type: "button", onClick: (ev) => scopeMenu(ev) });
   const modelName = h("span", { class: "name" });
   const modelBtn = h("button", { class: "model-pill", type: "button", "aria-label": "Modèle des réponses",
     dataset: { tip: "Modèle qui répond aux questions et résume les documents" },
-    onClick: (ev) => openMenuBelow(answerModelItems(), ev.currentTarget, "right") },
+    onClick: (ev) => openMenuBelow(answerModelItems(), ev.currentTarget) },
     ico("sparkles", 14), modelName, ico("chevron-down", 14));
-  const askBar = h("div", { class: "asst-ask rag-ask" },
-    h("div", { class: "asst-ask-inner" },
-      h("div", { class: "asst-ask-row" }, input, micBtn, sendBtn),
-      h("div", { class: "asst-ask-options" }, scopeBtn, h("div", { class: "head-spacer" }), modelBtn)));
+  let readingMode = "answers";   // ce que suit la lecture de toutes les questions
+  const composer = createComposer(ctx, {
+    label: "Question sur les documents", maxlength: 4000, maxHeight: 200,
+    tools: [iconButton("mic", "Dictée vocale", () => { input.focus(); api.dictate(); }, { kbd: "Win+H" }),
+      scopeBtn, modelBtn],
+    speakKey: "rag_speak",
+    // Activée pendant une réponse : elle est lue tout de suite
+    onAutoRead: (on) => { const entry = busyEntry(); if (on && entry) autoRead(entry); },
+    read: {
+      source: READ_ALL,
+      match: (source) => source === READ_ALL || (source.startsWith("rag:") && answers.has(source.slice(4))),
+      speak: (mode) => {
+        readingMode = mode;
+        ctx.speak(threadSpeech(mode), READ_ALL, true, !!busyEntry());
+      },
+    },
+    onSend: () => ask(),
+    onStop: () => api.rag_stop(),
+    sendTip: "Demander", stopTip: "Arrêter la réponse",
+  });
+  const { input } = composer;
+  const askBar = h("div", { class: "composer-wrap" }, composer.el);
   const main = h("div", { class: "rag-main" }, detail, scroller, askBar);
 
   const body = h("div", { class: "rag-body" }, side, splitter, main);
@@ -907,8 +921,8 @@ export function createRagView(ctx, state) {
     scopeBtn.classList.toggle("on", !!s);
     scopeBtn.dataset.tip = s ? `Les questions portent sur ${s.dir ? "le dossier" : "le fichier"} « ${s.name} »` : "Les questions portent sur tous les dossiers";
     const ollama = !!store.ollama;
-    input.placeholder = !ollama ? "Les réponses ont besoin d'Ollama (en local), qui ne répond pas."
-      : s ? `Une question sur « ${s.name} » ?` : "Une question sur vos documents ?";
+    composer.setPlaceholder(!ollama ? "Les réponses ont besoin d'Ollama (en local), qui ne répond pas."
+      : s ? `Une question sur « ${s.name} » ?` : "Une question sur vos documents ?");
   }
 
   function scopeMenu(ev) {
@@ -936,7 +950,7 @@ export function createRagView(ctx, state) {
     if (!question || S.st.asking || !store.ollama) return;
     const res = await api.rag_ask(question, S.scope?.path || null);
     if (!res?.ok) { toast(res?.error || "Question impossible.", "error"); return; }
-    if (text === undefined) { input.value = ""; autosize(); }
+    if (text === undefined) composer.setValue("");
   }
 
   async function runTask(kind, node) {
@@ -1110,9 +1124,27 @@ export function createRagView(ctx, state) {
     requestAnimationFrame(() => { scroller.scrollTop = scroller.scrollHeight; });
   }
 
-  function autosize() {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  // ── Lecture à voix haute des réponses ───────
+  /** Réponse en cours d'écriture, s'il y en a une. */
+  const busyEntry = () => [...answers.values()].find((e) => BUSY.has(e.item.state)) || null;
+
+  /** Lecture auto : la réponse, dès ses premières phrases (la suite par feedAnswer). */
+  function autoRead(entry) {
+    entry.autoRead = true;
+    ctx.speak(noCitations(entry.item.answer), sourceOf(entry.item.id), true, true);
+  }
+
+  /** Texte de toutes les questions affichées (réponse en cours comprise), sans les renvois [1]. */
+  function threadSpeech(mode) {
+    return conversationSpeech(S.history.map((i) => answers.get(i.id)?.item || i)
+      .map((i) => ({ ask: titleOf(i), answer: noCitations(i.answer) })), mode);
+  }
+
+  /** Suite d'une réponse pour les lectures au fil de l'eau (la sienne, celle de toutes). */
+  function feedAnswer(entry) {
+    const final = !BUSY.has(entry.item.state);
+    ctx.feed(sourceOf(entry.item.id), noCitations(entry.item.answer), final);
+    if (ctx.feeding(READ_ALL)) ctx.feed(READ_ALL, threadSpeech(readingMode), final);
   }
 
   // ─────────────────────────────────────────────
@@ -1167,9 +1199,7 @@ export function createRagView(ctx, state) {
 
     // Champ de question
     const ollama = !!store.ollama;
-    const asking = !!st.asking;
-    sendBtn.replaceChildren(ico(asking ? "square" : "arrow-up", 14), asking ? "Arrêter" : "Demander");
-    sendBtn.disabled = !ollama && !asking;
+    composer.update({ busy: !!st.asking, ready: ollama });
     input.disabled = !ollama;
     modelName.textContent = st.model || "Aucun modèle";
     modelBtn.hidden = !ollama;
@@ -1306,6 +1336,9 @@ export function createRagView(ctx, state) {
       updateQa(entry);
       const i = S.history.findIndex((x) => x.id === item.id);
       if (i >= 0) S.history[i] = item;
+      // Lecture auto : dès que la réponse commence (passages trouvés et lus)
+      if (item.state === "thinking" && !entry.autoRead && composer.autoRead()) autoRead(entry);
+      feedAnswer(entry);
       if (!BUSY.has(item.state)) renderDetail();
       return;
     }
@@ -1323,6 +1356,7 @@ export function createRagView(ctx, state) {
     const follow = nearBottom();
     entry.item = { ...entry.item, answer: (entry.item.answer || "") + text, state: "thinking" };
     updateQa(entry);
+    feedAnswer(entry);
     if (follow) scrollDown();
   });
 

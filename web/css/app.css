@@ -1104,6 +1104,7 @@ kbd {
   background: var(--bg-3);
   box-shadow: 0 10px 30px rgba(0, 0, 0, .28);
   transition: border-color .15s;
+  container: composer / inline-size;
 }
 .composer:focus-within { border-color: var(--line-3); }
 .composer textarea {
@@ -1122,7 +1123,48 @@ kbd {
   user-select: text;
 }
 .composer textarea::placeholder { color: var(--fg-3); }
+.composer textarea:disabled { cursor: default; }
 .composer-bar { display: flex; align-items: center; gap: 2px; padding: 4px 8px 8px 8px; }
+.composer-bar .model-pill, .composer-bar .rag-scope { min-width: 0; }   /* rétrécissent, nom tronqué */
+/* Lecture à voix haute : interrupteur « Lecture auto » (chaque réponse lue pendant qu'elle s'écrit) */
+.read-auto {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 7px;
+  height: 30px;
+  margin-right: 2px;
+  padding: 0 10px 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--fg-2);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.read-auto:hover { background: var(--bg-4); color: var(--fg); }
+.read-auto-track {
+  position: relative;
+  flex-shrink: 0;
+  width: 24px; height: 14px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .16);
+  transition: background .15s;
+}
+.read-auto-track::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  background: #c4c4c4;
+  transition: transform .18s var(--ease), background .15s;
+}
+.read-auto.on { border-color: rgba(124, 196, 143, .35); color: var(--fg); }
+.read-auto.on .read-auto-track { background: var(--green); }
+.read-auto.on .read-auto-track::after { transform: translateX(10px); background: #fff; }
 .model-pill {
   display: inline-flex;
   align-items: center;
@@ -1858,15 +1900,6 @@ mark { border-radius: 3px; background: rgba(255, 214, 102, .28); color: inherit;
 .asst-model { margin-left: auto; color: var(--fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .asst-actions { display: flex; gap: 2px; margin: -4px 0 -6px -6px; }
 
-/* Champ de question */
-.asst-ask { flex-shrink: 0; padding: 10px 20px 12px; border-top: 1px solid var(--line); }
-.asst-ask-inner { display: flex; flex-direction: column; gap: 8px; max-width: 780px; margin-inline: auto; }
-.asst-ask-row { display: flex; align-items: flex-end; gap: 6px; }
-.asst-input.field { flex: 1; min-width: 0; min-height: 34px; max-height: 140px; padding: 7px 12px; font: 13.5px/1.45 var(--font-ui); resize: none; }
-.asst-send { height: 34px; }
-.asst-ask-options { display: flex; align-items: center; gap: 8px; }
-.asst-ask-options .model-pill { margin-left: 0; }
-
 /* ── Documents : arborescence indexée, recherche, questions ───────────── */
 .rag-status {
   display: inline-flex;
@@ -2336,12 +2369,9 @@ table.grid tr:hover .row-actions { opacity: 1; }
 /* ── Sites intégrés : WhatsApp, Gmail (contrôle natif sur .pane-host) ───── */
 .pane-host { display: flex; flex: 1; flex-direction: column; min-height: 0; background: var(--bg-2); }
 .pane-assist { display: flex; flex-shrink: 0; flex-direction: column; gap: 8px; padding: 9px 12px 10px; border-top: 1px solid var(--line); }
-.pane-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.pane-tools .model-pill { margin-left: 0; }
-.pane-hint.field { flex: 1; min-width: 180px; height: 34px; padding: 0 12px; font-size: 13px; }
-.pane-idle { flex: 1; min-width: 180px; color: var(--fg-3); font-size: 12.5px; }
-/* Actions et suggestions au-dessus du champ ; conversation vide : bandeau deux fois plus haut */
-.pane-assist.no-convo { justify-content: center; min-height: 96px; }
+/* Zone de saisie (composer.js) sur toute la largeur, comme la conversation au-dessus */
+.pane-assist > .composer { flex-shrink: 0; max-width: none; }
+/* Actions et suggestions au-dessus de la zone de saisie */
 .pane-suggest { display: flex; flex-wrap: wrap; gap: 6px; }
 .pane-suggest[hidden] { display: none; }
 .pane-chip {
@@ -2369,7 +2399,7 @@ table.grid tr:hover .row-actions { opacity: 1; }
 .pane-chip.pc-main .icon { color: var(--link); }
 /* Conversation avec l'assistant (au-dessus des outils) : demandes à droite, réponses à gauche ;
    hauteur réglable par la poignée du bord haut (sized : hauteur choisie, réduite si la fenêtre
-   manque de place, le site garde 60 px) */
+   manque de place : le site et la liste des e-mails gardent 40 % de la hauteur) */
 .pane-convo {
   display: flex;
   flex-direction: column;
@@ -2395,8 +2425,8 @@ table.grid tr:hover .row-actions { opacity: 1; }
 .pc-body .msg-actions { margin: 0 0 0 -6px; }
 .pc-replies { display: flex; flex-wrap: wrap; gap: 6px 8px; }
 .pc-replies.long { flex-direction: column; flex-wrap: nowrap; }
-.pane-tools .pane-fold .icon { transition: transform .15s; }
-.pane-tools .pane-fold.folded .icon { transform: rotate(180deg); }
+.pane-fold .icon { transition: transform .15s; }
+.pane-fold.folded .icon { transform: rotate(180deg); }
 .pane-for { color: var(--fg-3); font-size: 12.5px; }
 .pane-status { display: inline-flex; align-items: center; gap: 8px; color: var(--fg-2); }
 .pane-status .icon { color: var(--green); }
@@ -2430,7 +2460,9 @@ table.grid tr:hover .row-actions { opacity: 1; }
 }
 .pane-assist { position: relative; }
 .pane-assist.resizable { flex-shrink: 1; min-height: 0; }
-.pane-host:has(+ .pane-assist.resizable), .pane-body:has(+ .pane-assist.resizable) { min-height: 60px; }
+/* Le site (et la liste des e-mails à côté) gardent 40 % de la section : la conversation
+   rétrécit (elle défile) plutôt que de les écraser — SITE_SHARE dans webpane.js */
+.pane-host:has(+ .pane-assist.resizable), .pane-body:has(+ .pane-assist.resizable) { min-height: 40%; }
 .pane-grip { display: none; }
 .pane-assist.resizable > .pane-grip {
   position: absolute;
@@ -2503,7 +2535,6 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 /* Question sur les e-mails */
 .qa-question > span { min-width: 0; overflow-wrap: anywhere; }
 .qa-answer { padding: 2px 2px 4px; color: var(--fg); font-size: 13px; line-height: 1.6; user-select: text; }
-.pane-tools .pane-ask { flex-shrink: 0; }
 
 /* Gmail : liste des e-mails à côté du site (maillist.js) ; le site garde 320 px */
 .pane-body { display: flex; flex: 1; min-height: 0; }
@@ -2643,10 +2674,14 @@ body.ml-resizing, body.ml-resizing * { cursor: col-resize !important; }
 @container view (max-width: 860px) {
   .om-v-ctx { display: none; }
   .asst-body { padding: 14px 16px 16px; }
-  .asst-ask { padding: 10px 16px 12px; }
   .asst-main { gap: 14px; }
   .asst-btn { width: 48px; height: 48px; }
   .thread { padding: 22px 18px 16px; }
   .composer-wrap { padding: 4px 16px 14px; }
   .search input { width: 160px; }
+}
+/* Zone de saisie étroite : l'interrupteur de lecture sans son libellé (infobulle) */
+@container composer (max-width: 520px) {
+  .read-auto { padding: 0 7px; }
+  .read-auto-label { display: none; }
 }

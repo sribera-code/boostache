@@ -112,6 +112,7 @@ class WebPane:
     read_js = ""             # lecture de la conversation ouverte : { ok, …, draft }
     context_js = ""          # fonction de la page → { reply, improve } (voir WATCH_JS)
     page_scripts: tuple = ()  # autres scripts injectés dans la page (messages : _on_page_message)
+    shown_js = ""            # exécuté dans la page chaque fois que le site s'affiche dans l'interface
 
     def __init__(self, app):
         self._app = app
@@ -340,6 +341,8 @@ class WebPane:
             view.Visible = visible
             if visible:
                 view.BringToFront()
+                if self.shown_js:
+                    view.CoreWebView2.ExecuteScriptAsync(self.shown_js)
         if visible and self._focus:
             self._focus = False
             view.Focus()

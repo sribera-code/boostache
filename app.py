@@ -45,6 +45,8 @@ PREVIEW_LEN = 2000
 PRINT_SCREEN = "print screen"
 CTRL_PRINT_SCREEN = "ctrl+print screen"
 NO_OLLAMA_LIB = "librairie 'ollama' absente (pip install ollama)"
+# Lecture auto des zones de saisie (réponses lues au fil de l'eau), une par section
+SPEAK_SETTINGS = ("chat_speak", "assistant_speak", "rag_speak", "gmail_speak", "whatsapp_speak")
 
 
 def _force_dark_titlebar():
@@ -523,14 +525,17 @@ class BoostacheApp:
     #  Données envoyées à l'interface
     # ─────────────────────────────────────────
     def ui_ready(self) -> dict:
+        """État complet pour l'interface qui démarre. Les événements arrivés depuis
+        attendent ui_started : distribués avant que les vues existent, personne ne les
+        recevrait (la liste de Gmail, par exemple, n'est renvoyée que si elle change)."""
         self.bridge.discard_pending()
         state = {
             "settings": {k: settings.get(k) for k in (
                 "system_prompt", "clipboard_max_items", "always_on_top", "window_opacity",
-                "console_shell", "tts_mode_chat", "tts_mode_console", "tts_mode_note",
+                "console_shell", "tts_mode_answers", "tts_mode_console", "tts_mode_note",
                 "sidebar_collapsed", "print_screen_capture", "help_capture", "assist_model",
                 "layout", "assistant_announce", "assistant_gmail", "assistant_whatsapp",
-                "assistant_content", "assistant_summary", "assistant_speak",
+                "assistant_content", "assistant_summary", *SPEAK_SETTINGS,
                 "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed", "tts_volume",
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
@@ -555,8 +560,11 @@ class BoostacheApp:
             "visible":   self._visible,
             "win_build": sys.getwindowsversion().build,
         }
-        self.bridge.set_ready(True)
         return state
+
+    def ui_started(self):
+        """L'interface a construit ses vues : les événements en attente partent."""
+        self.bridge.set_ready(True)
 
     def set_setting(self, key: str, value):
         if key == "clipboard_max_items":
@@ -585,8 +593,12 @@ class BoostacheApp:
             if value not in self.terminals.shells:
                 return settings.get(key)
             settings.set(key, value)
-        elif key in ("tts_mode_chat", "tts_mode_console", "tts_mode_note"):
+        elif key in ("tts_mode_console", "tts_mode_note"):
             if value not in ("last", "all", "sel"):
+                return settings.get(key)
+            settings.set(key, value)
+        elif key == "tts_mode_answers":
+            if value not in ("answers", "all"):
                 return settings.get(key)
             settings.set(key, value)
         elif key == "tts_engine":
@@ -622,7 +634,7 @@ class BoostacheApp:
             if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
                 return settings.get(key)
             settings.set(key, value)
-        elif key in ("audio_transcribe", "assistant_content", "assistant_summary", "assistant_speak", "ollama_autostart"):
+        elif key in ("audio_transcribe", "assistant_content", "assistant_summary", "ollama_autostart", *SPEAK_SETTINGS):
             settings.set(key, bool(value))
         elif key == "ollama_num_ctx":
             try:

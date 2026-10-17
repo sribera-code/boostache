@@ -208,12 +208,14 @@ CURRENT_JS = r"""
 # Liste des e-mails à côté du site (gmail:list) : la page envoie la liste affichée
 # à chaque changement (vérifiée au plus toutes les 400 ms après une modification)
 # et le fil ouvert. Fil ouvert, paramètres : list: false (la dernière liste reste).
+# Mis en place une fois par page ; window.__boostacheList.check(true) la renvoie
+# même inchangée (voir LIST_SHOWN_JS).
 LIST_WATCH_JS = r"""
 (() => {
-  if (window.top !== window || location.hostname !== "mail.google.com") return;
+  if (window.top !== window || location.hostname !== "mail.google.com" || window.__boostacheList) return;
   const list = """ + LIST_JS.strip() + r""";
   let last = "", timer = 0;
-  const check = () => {
+  const check = (force = false) => {
     timer = 0;
     let now;
     try { now = list(false); } catch { return; }
@@ -221,16 +223,21 @@ LIST_WATCH_JS = r"""
     const msg = { type: "list", list: !!now.list, open: head?.getAttribute("data-legacy-thread-id") || "" };
     if (now.list) Object.assign(msg, { rows: now.rows, view: now.view, base: now.base, search: now.search, pager: now.pager });
     const key = JSON.stringify(msg);
-    if (key === last) return;
+    if (key === last && !force) return;
     last = key;
     window.chrome.webview.postMessage(msg);
   };
-  const soon = () => { if (!timer) timer = setTimeout(check, 400); };
+  const soon = () => { if (!timer) timer = setTimeout(() => check(), 400); };
   new MutationObserver(soon).observe(document, { subtree: true, childList: true, characterData: true,
     attributes: true, attributeFilter: ["style", "class", "hidden", "aria-checked"] });
   addEventListener("hashchange", soon);
+  window.__boostacheList = { check };
 })();
 """
+
+# Site affiché dans l'interface : la liste est renvoyée telle quelle (l'interface a pu
+# manquer le dernier envoi), et sa surveillance mise en place si la page ne l'a pas
+LIST_SHOWN_JS = LIST_WATCH_JS + "\nwindow.__boostacheList && window.__boostacheList.check(true);"
 
 # Action sur un fil de la liste (marquer comme lu / non lu, supprimer) : clic
 # sur le bouton de survol de sa ligne dans Gmail (li.bqX, data-tooltip ; classes
@@ -509,6 +516,7 @@ class GmailPane(WebPane):
     read_js = READ_THREAD_JS
     context_js = CONTEXT_JS
     page_scripts = (LIST_WATCH_JS,)
+    shown_js = LIST_SHOWN_JS
 
     def __init__(self, app):
         super().__init__(app)

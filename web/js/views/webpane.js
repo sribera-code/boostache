@@ -4,6 +4,7 @@
 import { h, plural } from "../dom.js";
 import { renderMarkdown } from "../markdown.js";
 import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
+import { createComposer, conversationSpeech } from "../composer.js";
 import { createMailList, importanceIcon } from "./maillist.js";
 
 const WHATSAPP = {
@@ -17,7 +18,7 @@ const GMAIL = {
   id: "gmail", title: "Gmail", icon: "mail",
   unread: ["message non lu", "messages non lus"],
   firstRun: "Première ouverture : connectez-vous à votre compte Google. La session est ensuite conservée.",
-  hint: "Une question sur vos e-mails (Entrée) — ou une consigne pour les boutons…",
+  hint: "Une question sur vos e-mails, ou une consigne pour les boutons…",
   ask: true,       // questions sur les e-mails (champ de l'assistant)
   long: true,      // propositions = e-mails complets, affichés en entier
   digest: true,    // résumé de la boîte de réception
@@ -150,13 +151,13 @@ function createPaneView(ctx, state, cfg) {
 const DIGEST_RUNNING = new Set(["listing", "reading", "overview"]);
 const DIGEST_MAX = 50;          // e-mails résumés au plus (gmail.py)
 const CONVO_MIN_H = 80;         // hauteur minimale de la conversation redimensionnée (px)
-const SITE_MIN_H = 60;          // le site reste visible au-dessus (px, voir .pane-host)
+const SITE_SHARE = 0.4;         // le site et la liste des e-mails gardent cette part de la section (voir .pane-body)
 const QA_RUNNING = new Set(["reading", "thinking"]);
 const CONVO_TURNS = 60;         // messages gardés dans la conversation (les plus anciens partent)
 
-/** Barre de l'assistant sous le site : boutons, champ (question ou consigne), modèle,
- *  et au-dessus la conversation — chaque demande (bulle à droite) et sa réponse
- *  (propositions, brouillon amélioré, résumé, réponse à une question). */
+/** Barre de l'assistant sous le site : boutons, zone de saisie (question ou consigne,
+ *  modèle, lecture à voix haute) et au-dessus la conversation — chaque demande (bulle
+ *  à droite) et sa réponse (propositions, brouillon amélioré, résumé, réponse à une question). */
 function createAssistBar(ctx, state, cfg) {
   const { api, on, store } = ctx;
   const S = { models: state.chat.models || [], fallback: state.chat.default_model || "", ready: false, busy: false,
@@ -170,7 +171,12 @@ function createAssistBar(ctx, state, cfg) {
   let listShown = () => false;   // liste des e-mails affichée à côté du site (maillist.js)
   let digestTurn = null;         // réponse qui suit le résumé en cours (événements <site>:digest)
   let qaTurn = null;             // réponse qui suit la question en cours (événements <site>:qa)
-  let qaCount = 0;
+  // Lectures à voix haute de la conversation : toutes commencent par ce préfixe
+  const prefix = `pane:${cfg.id}:`;
+  const READ_ALL = `${prefix}all`;
+  let turnCount = 0;
+  let readingMode = "answers";   // ce que suit la lecture de toute la conversation
+  let readingLive = false;       // … commencée pendant une génération (elle attend la suite)
 
   const convo = h("div", { class: "pane-convo", role: "log", "aria-label": "Conversation avec l'assistant", hidden: true });
   // Actions principales : en tête de la rangée des suggestions
@@ -185,24 +191,40 @@ function createAssistBar(ctx, state, cfg) {
     ["all", "scroll-text"], ["selection", "text-select"]].map(([scope, icon]) => [scope, h("button",
       { class: "pane-chip pc-main", type: "button", onClick: () => startDigest(scope, null, scopeCount(scope)) },
       ico(icon, 14), h("span"))])) : {};
-  const hint = h("input", { class: "field pane-hint", type: "text", maxlength: "500", spellcheck: "true",
-    placeholder: cfg.hint,
-    onKeydown: (ev) => {
-      if (ev.key !== "Enter" || ev.isComposing) return;
-      // Entrée : la question (Gmail) ; sinon « Suggérer » avec une discussion ouverte
-      if (cfg.ask) { ev.preventDefault(); ask(); }
-      else if (S.context.reply) { ev.preventDefault(); suggest(); }
-    } });
-  const askBtn = cfg.ask ? iconButton("arrow-up", "Poser la question (Entrée)", () => ask(),
-    { size: 14, cls: "sm pane-ask" }) : null;
-  const idleNote = cfg.idle ? h("span", { class: "pane-idle", text: cfg.idle }) : null;
   const modelName = h("span", { class: "name" });
   const modelBtn = h("button", { class: "model-pill", type: "button", "aria-label": "Modèle de l'assistant",
-    onClick: (ev) => openMenuBelow(modelItems(), ev.currentTarget, "right") },
-    modelName, ico("chevron-down", 14));
-  const clearBtn = iconButton("eraser", "Effacer la conversation", clearConvo, { size: 14, cls: "sm" });
+    dataset: { tip: "Modèle de l'assistant" }, onClick: (ev) => openMenuBelow(modelItems(), ev.currentTarget) },
+    ico("sparkles", 14), modelName, ico("chevron-down", 14));
+  const clearBtn = iconButton("eraser", "Effacer la conversation", clearConvo);
   const foldBtn = iconButton("chevron-down", "Masquer la conversation", () => setConvoShown(convo.hidden),
-    { size: 14, cls: "sm pane-fold" });
+    { cls: "pane-fold" });
+  // Zone de saisie : la question (Gmail) ou la consigne des boutons ; Entrée pose la
+  // question, ou (WhatsApp) suggère une réponse — améliore le brouillon s'il n'y a que lui
+  const composer = createComposer(ctx, {
+    label: cfg.ask ? "Question ou consigne" : "Consigne", placeholder: cfg.hint,
+    maxlength: cfg.ask ? 1000 : 500, maxHeight: 120,
+    tools: [iconButton("mic", "Dictée vocale", () => { input.focus(); api.dictate(); }, { kbd: "Win+H" }), modelBtn],
+    extra: [foldBtn, clearBtn],
+    speakKey: `${cfg.id}_speak`,
+    // Activée pendant une réponse ou un résumé : il est lu tout de suite
+    onAutoRead: (on) => {
+      if (!on) return;
+      if (qaTurn && QA_RUNNING.has(S.qa.state)) readQA(qaTurn);
+      else if (digestTurn && DIGEST_RUNNING.has(S.digest.state)) {
+        digestTurn.overviewLast = true;
+        ctx.speak(digestSpeech(S.digest, true), digestTurn.source, false, true);
+      }
+    },
+    read: { source: READ_ALL, match: (source) => source.startsWith(prefix), speak: readAll },
+    hasContent: (text) => !cfg.ask || !!text.trim(),      // consigne facultative
+    onSend: submit,
+    onStop: () => {
+      if (QA_RUNNING.has(S.qa.state)) api.pane_ask_stop(cfg.id);
+      if (DIGEST_RUNNING.has(S.digest.state)) api.pane_digest_stop(cfg.id);
+    },
+    stopTip: "Arrêter",
+  });
+  const { input } = composer;
   // Poignée de la conversation (bord haut) : sa hauteur se règle à la souris
   const grip = h("div", { class: "pane-grip", role: "separator", tabindex: "0",
     "aria-orientation": "horizontal", "aria-label": "Hauteur de la conversation",
@@ -210,9 +232,7 @@ function createAssistBar(ctx, state, cfg) {
   // Demandes toutes prêtes, selon ce qui est ouvert dans le site (toujours affichées)
   const suggestRow = h("div", { class: "pane-suggest", role: "group", "aria-label": "Suggestions" });
   let suggestKey = null;
-  const el = h("div", { class: "pane-assist", dataset: { ollama: "" } }, grip, convo, suggestRow,
-    h("div", { class: "pane-tools" }, idleNote, hint, askBtn, modelBtn,
-      clearBtn, foldBtn));
+  const el = h("div", { class: "pane-assist", dataset: { ollama: "" } }, grip, convo, suggestRow, composer.el);
 
   function model() {
     const wanted = store.settings.assist_model;
@@ -226,18 +246,30 @@ function createAssistBar(ctx, state, cfg) {
   function refresh() {
     modelName.textContent = model() || "Aucun modèle";
     const off = !idle() || !S.ready || !model();
-    for (const btn of [suggestBtn, improveBtn, askBtn, ...Object.values(digestBtns)]) if (btn) btn.disabled = off;
+    for (const btn of [suggestBtn, improveBtn, ...Object.values(digestBtns)]) btn.disabled = off;
     // Seulement ce qui s'applique : « Suggérer » avec un e-mail (une discussion)
     // ouvert, « Améliorer » avec un brouillon écrit
     const { reply, improve: draft } = S.context;
     suggestBtn.hidden = !reply;
     improveBtn.hidden = !draft;
-    const any = reply || draft || !!cfg.digest;
-    hint.hidden = !any;
-    if (askBtn) askBtn.hidden = !any;
-    if (idleNote) idleNote.hidden = any;
+    // Rien à faire (WhatsApp sans discussion ouverte) : le champ le dit
+    const any = reply || draft || !!cfg.ask;
+    input.disabled = !any;
+    composer.setPlaceholder(any ? cfg.hint : cfg.idle);
+    composer.update({ busy: !idle(), ready: any && S.ready && !!model(),
+      // Arrêt : question ou résumé ; une proposition ou un brouillon se finit
+      canStop: QA_RUNNING.has(S.qa.state) || DIGEST_RUNNING.has(S.digest.state),
+      sendTip: cfg.ask ? "Poser la question" : reply ? "Suggérer une réponse" : "Améliorer le brouillon" });
     if (cfg.digest) refreshDigestButtons(reply);
     renderSuggestions();
+  }
+
+  /** Entrée ou bouton d'envoi : la question (Gmail) ; sinon une réponse à la discussion
+   *  ouverte, ou le brouillon amélioré, avec la consigne du champ. */
+  function submit() {
+    if (cfg.ask) ask();
+    else if (S.context.reply) suggest();
+    else if (S.context.improve) improve();
   }
 
   /** E-mails de la liste relevée dans Gmail que résumerait ce choix. */
@@ -311,8 +343,7 @@ function createAssistBar(ctx, state, cfg) {
     ];
   }
 
-  /** Rangée des actions et suggestions, au-dessus du champ ; sans conversation,
-   *  le bandeau est plus haut. */
+  /** Rangée des actions et suggestions, au-dessus de la zone de saisie. */
   function renderSuggestions() {
     const { reply, improve: draft } = S.context;
     const key = `${reply}|${draft}`;
@@ -323,7 +354,6 @@ function createAssistBar(ctx, state, cfg) {
           dataset: { tip: c.tip }, onClick: c.onRun }, ico(c.icon, 13), c.label)));
     }
     suggestRow.hidden = ![...suggestRow.children].some((b) => !b.hidden);
-    el.classList.toggle("no-convo", !convo.childElementCount);
     const off = !idle() || !S.ready || !model();
     for (const b of suggestRow.children) b.disabled = off;
   }
@@ -365,21 +395,64 @@ function createAssistBar(ctx, state, cfg) {
 
   /** Demande de l'utilisateur (bulle à droite) ; consigne en dessous. */
   function userTurn(text, note = "") {
-    convo.append(h("div", { class: "msg msg-user pc-user" },
-      h("div", { class: "bubble" }, text, note ? h("span", { class: "pc-note", text: note }) : null)));
+    const bubble = h("div", { class: "msg msg-user pc-user" },
+      h("div", { class: "bubble" }, text, note ? h("span", { class: "pc-note", text: note }) : null));
+    bubble.turn = { ask: note ? `${text}. ${note}` : text };     // lecture de toute la conversation
+    convo.append(bubble);
     trim();
   }
 
-  /** Réponse de l'assistant ; set(...) remplace son contenu (travail en cours, résultat). */
+  /** Réponse de l'assistant ; set(...) remplace son contenu (travail en cours, résultat),
+   *  say(texte) donne son texte lu (avec toute la conversation) ; source : sa lecture. */
   function botTurn(name = model()) {
     const body = h("div", { class: "pc-body" });
-    convo.append(h("div", { class: "msg msg-bot pc-bot" },
+    const turn = {
+      body, source: `${prefix}${++turnCount}`, answer: "",
+      set(...children) { body.replaceChildren(...children.flat(Infinity).filter(Boolean)); follow(); },
+      say(text) { turn.answer = text || ""; feedAll(); },
+    };
+    const bubble = h("div", { class: "msg msg-bot pc-bot" },
       h("div", { class: "msg-meta" }, h("span", { class: "avatar" }, ico("sparkles", 12)),
         h("span", { class: "msg-model", text: name || "Assistant" })),
-      body));
+      body);
+    bubble.turn = turn;
+    convo.append(bubble);
     trim();
     setConvoShown(true);
-    return { body, set(...children) { body.replaceChildren(...children.flat(Infinity).filter(Boolean)); follow(); } };
+    return turn;
+  }
+
+  // ── Lecture à voix haute de la conversation ──
+  /** Texte lu de toute la conversation (bouton Lire de la zone de saisie). */
+  const convoSpeech = (mode) => conversationSpeech([...convo.children].map((c) => c.turn).filter(Boolean), mode);
+
+  function readAll(mode) {
+    readingMode = mode;
+    readingLive = !idle();         // une réponse s'écrit : la lecture attend la suite
+    ctx.speak(convoSpeech(mode), READ_ALL, true, readingLive);
+  }
+
+  /** Suite de la lecture de toute la conversation (complète quand plus rien ne s'écrit). */
+  function feedAll() {
+    if (!ctx.feeding(READ_ALL)) return;
+    const final = idle();
+    ctx.feed(READ_ALL, convoSpeech(readingMode), final);
+    if (final) readingLive = false;
+  }
+
+  /** Lecture auto d'une réponse arrivée d'un bloc (propositions, brouillon) — sauf si
+   *  la lecture de toute la conversation, commencée avant, va la lire. */
+  function autoSpeak(turn, text) {
+    if (!composer.autoRead() || !text || (readingLive && ctx.speaking(READ_ALL))) return;
+    ctx.speak(text, turn.source);
+  }
+
+  /** Bouton « Lire » sous une réponse arrivée d'un bloc. */
+  function speakButton(turn, text, label) {
+    const btn = iconButton("volume-2", label, () => ctx.toggleSpeak(text, turn.source), { size: 15, cls: "sm" });
+    btn.dataset.speakSource = turn.source;
+    btn.dataset.tipIdle = label;
+    return btn;
   }
 
   function trim() {
@@ -390,6 +463,8 @@ function createAssistBar(ctx, state, cfg) {
     if (DIGEST_RUNNING.has(S.digest.state)) api.pane_digest_stop(cfg.id);
     if (QA_RUNNING.has(S.qa.state)) api.pane_ask_stop(cfg.id);
     if (cfg.ask) api.pane_ask_reset(cfg.id);       // la question suivante repart de zéro
+    // Sa lecture à voix haute s'arrête avec elle (une lecture au fil de l'eau attendrait la suite)
+    if (store.tts.speaking && (store.tts.source || "").startsWith(prefix)) api.tts_stop();
     digestTurn = qaTurn = null;
     convo.replaceChildren();
     setConvoShown(false);
@@ -401,8 +476,8 @@ function createAssistBar(ctx, state, cfg) {
 
   /** Consigne du champ, utilisée par un bouton : affichée sous la demande, puis effacée. */
   function takeHint() {
-    const text = hint.value.trim();
-    hint.value = "";
+    const text = input.value.trim();
+    composer.setValue("");
     return text;
   }
 
@@ -415,11 +490,13 @@ function createAssistBar(ctx, state, cfg) {
     if (px > 0) convo.style.setProperty("--digest-h", `${px}px`);
   }
 
-  /** Plus grande hauteur possible : le site garde SITE_MIN_H au-dessus. */
+  /** Plus grande hauteur possible : le site (et la liste des e-mails) gardent SITE_SHARE de la section. */
   function maxConvoHeight() {
-    const host = el.parentElement?.querySelector(".pane-body, .pane-host");
+    const section = el.parentElement;
+    const host = section?.querySelector(".pane-body, .pane-host");
     const now = convo.getBoundingClientRect().height;
-    return Math.max(CONVO_MIN_H, now + (host ? host.getBoundingClientRect().height - SITE_MIN_H : 0));
+    const keep = (section?.clientHeight || 0) * SITE_SHARE;
+    return Math.max(CONVO_MIN_H, now + (host ? host.getBoundingClientRect().height - keep : 0));
   }
 
   function setConvoHeight(px, save) {
@@ -486,14 +563,19 @@ function createAssistBar(ctx, state, cfg) {
     turn.set(busyStatus(`${label}…`));
     S.busy = true;
     refresh();
+    let res = null;
     try {
-      const res = await call(cfg.id, m, note);
-      if (!res?.ok) { turn.set(errorStatus(res?.error || "Échec de la génération.")); return null; }
-      return { res, turn };
+      res = await call(cfg.id, m, note);
     } finally {
       S.busy = false;
       refresh();
     }
+    if (!res?.ok) {
+      turn.set(errorStatus(res?.error || "Échec de la génération."));
+      turn.say("");     // la lecture de toute la conversation n'attend plus rien
+      return null;
+    }
+    return { res, turn };
   }
 
   async function suggest(note) {
@@ -501,13 +583,15 @@ function createAssistBar(ctx, state, cfg) {
     if (!out) return;
     const { res, turn } = out;
     const undo = h("div", { class: "pane-undo" });
+    // Lues l'une après l'autre (Lecture auto, bouton Lire)
+    const speech = res.replies.map((text, i) => `Proposition ${i + 1} : ${text}`).join("\n\n");
     // E-mails : aperçu compact (sans lignes vides) ; le texte inséré reste complet
     const chips = res.replies.map((text, i) => h("button", { class: "pane-reply", type: "button",
       text: cfg.long ? text.replace(/\n\s*\n/g, "\n") : text,
       dataset: { tip: "Placer cette réponse dans la zone de saisie (rien n'est envoyé)" },
       onContextmenu: (ev) => {
         ev.preventDefault();
-        const source = `reply:${cfg.id}:${i}`;
+        const source = `${turn.source}:${i}`;
         openMenu([
           { label: ctx.speaking(source) ? "Arrêter la lecture" : "Lire", icon: "volume-2",
             onSelect: () => ctx.toggleSpeak(text, source) },
@@ -525,14 +609,21 @@ function createAssistBar(ctx, state, cfg) {
       } }));
     turn.set(h("div", { class: "pane-for", text: res.title ? `Pour « ${res.title} » — cliquez sur une proposition pour la placer dans la réponse :`
         : "Cliquez sur une proposition pour la placer dans la zone de saisie :" }),
-      h("div", { class: `pc-replies${cfg.long ? " long" : ""}` }, chips), undo);
+      h("div", { class: `pc-replies${cfg.long ? " long" : ""}` }, chips), undo,
+      h("div", { class: "msg-actions" }, speakButton(turn, speech, "Lire les propositions")));
+    turn.say(speech);
+    autoSpeak(turn, speech);
   }
 
   async function improve(note) {
     const out = await run("Améliorer le brouillon", "Amélioration du brouillon", api.pane_improve, note);
     if (!out) return;
-    out.turn.set(doneStatus(`Brouillon amélioré dans ${cfg.title}.`),
-      h("div", { class: "pane-undo" }, restoreButton(out.res.draft)));
+    const { res, turn } = out;
+    turn.set(doneStatus(`Brouillon amélioré dans ${cfg.title}.`),
+      h("div", { class: "pane-undo" }, restoreButton(res.draft)),
+      res.text ? h("div", { class: "msg-actions" }, speakButton(turn, res.text, "Lire le brouillon amélioré")) : null);
+    turn.say(res.text);
+    autoSpeak(turn, res.text);
   }
 
   // ── Résumé des e-mails de la liste affichée dans Gmail (en arrière-plan,
@@ -549,10 +640,21 @@ function createAssistBar(ctx, state, cfg) {
     if (!idle() || !S.ready) return;
     const note = takeHint();
     userTurn(digestRequest(scope, ids ? ids.length : count), note ? `Consigne : ${note}` : "");
-    digestTurn = botTurn();
-    digestTurn.set(busyStatus("Lecture des e-mails…"));
+    const turn = digestTurn = botTurn();
+    turn.set(busyStatus("Lecture des e-mails…"));
     const res = await api.pane_digest(cfg.id, model(), note, scope, ids);
-    if (!res?.ok) { digestTurn.set(errorStatus(res?.error || "Résumé impossible.")); digestTurn = null; return; }
+    if (!res?.ok) {
+      turn.set(errorStatus(res?.error || "Résumé impossible."));
+      turn.say("");
+      if (digestTurn === turn) digestTurn = null;
+      return;
+    }
+    // Lecture auto : chaque résumé dès qu'il est prêt, la synthèse à la fin (la suite
+    // arrive par les événements <site>:digest)
+    if (autoOn()) {
+      turn.overviewLast = true;
+      ctx.speak("", turn.source, false, true);
+    }
     renderDigest();
   }
 
@@ -578,15 +680,17 @@ function createAssistBar(ctx, state, cfg) {
   }
 
   function renderDigest() {
-    if (!digestTurn) return;
+    const turn = digestTurn;
+    if (!turn) return;
     const d = S.digest;
+    turn.digest = d;          // ce que lit son bouton, une fois un autre résumé lancé
     const items = d.items || [];
     const running = DIGEST_RUNNING.has(d.state);
     // Plusieurs e-mails, liste affichée à côté : leurs résumés y sont, ici la synthèse seule
     const inList = listShown() && d.scope !== "current" && (d.total || 0) > 1;
     const text = () => digestText(d);
     const count = digestCount(d);
-    digestTurn.set(
+    turn.set(
       d.view ? h("div", { class: "digest-head" },
         h("span", { class: "digest-title" }, ico("scroll-text", 14), d.view),
         count ? h("span", { class: "digest-count", text: count }) : null,
@@ -600,38 +704,54 @@ function createAssistBar(ctx, state, cfg) {
       items.length && !inList ? h("div", { class: "digest-list" }, items.map(digestItem)) : null,
       // « Lire » dès le premier résumé : la lecture suit les suivants
       items.length || running ? h("div", { class: "msg-actions" },
-        digestSpeakButton(),
+        digestSpeakButton(turn),
         running ? h("button", { class: "btn sm", type: "button", onClick: () => api.pane_digest_stop(cfg.id) },
           ico("square", 12), "Arrêter") : [
           iconButton("copy", "Copier le résumé", () => ctx.copy(text()), { size: 15, cls: "sm" }),
           iconButton("notebook-pen", "Ajouter à une note", (ev) => ctx.pickDestination("notes", ev.currentTarget,
             (slot) => ctx.emit("note:insert", { text: text(), slot })), { size: 15, cls: "sm" }),
         ]) : null);
+    // Avec toute la conversation, la synthèse est lue à la fin (le texte ne fait que s'allonger)
+    turn.say(digestSpeech(d, true));
     ctx.emit("speak-sources-changed");
   }
 
   // ── Question sur les e-mails (Gmail, en arrière-plan : événements <site>:qa) ──
   /** preset : question d'une suggestion (le champ garde son texte), sinon celle du champ. */
   async function ask(preset) {
-    const question = preset || hint.value.trim();
-    if (!question) { hint.focus(); return; }
+    const question = preset || input.value.trim();
+    if (!question) { input.focus(); return; }
     if (!idle() || !S.ready) return;
-    if (!preset) hint.value = "";
+    if (!preset) composer.setValue("");
     userTurn(question);
-    qaTurn = botTurn();
-    qaTurn.source = `qa:${cfg.id}:${++qaCount}`;
-    qaTurn.set(busyStatus("Lecture de Gmail…"));
+    const turn = qaTurn = botTurn();
+    turn.set(busyStatus("Lecture de Gmail…"));
     const res = await api.pane_ask(cfg.id, model(), question);
-    if (!res?.ok) { qaTurn.set(errorStatus(res?.error || "Question impossible.")); qaTurn = null; return; }
+    if (!res?.ok) {
+      turn.set(errorStatus(res?.error || "Question impossible."));
+      turn.say("");
+      if (qaTurn === turn) qaTurn = null;
+      return;
+    }
     renderQA();
   }
 
+  /** Lecture de la réponse en cours, dès son début (la suite arrive par renderQA). */
+  function readQA(turn) {
+    turn.autoRead = true;
+    ctx.speak(S.qa.answer || "", turn.source, true, true);
+  }
+
   function renderQA() {
-    if (!qaTurn) return;
+    const turn = qaTurn;
+    if (!turn) return;
     const q = S.qa;
     const running = QA_RUNNING.has(q.state);
-    const { source } = qaTurn;
-    const text = q.answer;
+    const { source } = turn;
+    const text = q.answer || "";
+    // Lecture auto : dès que la réponse commence (Gmail lu)
+    if (q.state === "thinking" && !turn.autoRead && autoOn()) readQA(turn);
+    ctx.feed(source, text, !running);
     const answer = h("div", { class: "md qa-answer" });
     if (text) answer.innerHTML = renderMarkdown(text);
     let speak = null;
@@ -640,7 +760,7 @@ function createAssistBar(ctx, state, cfg) {
       speak.dataset.speakSource = source;
       speak.dataset.tipIdle = "Lire la réponse";
     }
-    qaTurn.set(
+    turn.set(
       running && !text ? busyStatus(q.state === "reading" ? "Lecture de Gmail…" : "Réflexion…") : null,
       text ? answer : null,
       q.state === "stopped" ? h("div", { class: "pane-status", text: "Arrêté." }) : null,
@@ -649,6 +769,7 @@ function createAssistBar(ctx, state, cfg) {
         ? h("button", { class: "btn sm", type: "button", onClick: () => api.pane_ask_stop(cfg.id) }, ico("square", 12), "Arrêter")
         : text ? [speak, iconButton("copy", "Copier la réponse", () => ctx.copy(text), { size: 15, cls: "sm" })] : null));
     if (!running) qaTurn = null;
+    turn.say(text);
     ctx.emit("speak-sources-changed");
   }
 
@@ -662,23 +783,27 @@ function createAssistBar(ctx, state, cfg) {
     if (QA_RUNNING.has(S.qa.state)) {
       userTurn(S.qa.question || "Question");
       qaTurn = botTurn(S.qa.model);
-      qaTurn.source = `qa:${cfg.id}:${++qaCount}`;
       renderQA();
     }
   }
 
   // ── Lecture à voix haute du résumé ──
-  const digestSource = `digest:${cfg.id}`;
-  let overviewLast = false;     // lecture commencée pendant le travail : la synthèse, qui arrive en dernier, est lue à la fin
+  /** Lecture auto possible : pas si celle de toute la conversation, commencée pendant
+   *  la génération, va lire cette réponse. */
+  function autoOn() {
+    return composer.autoRead() && !(readingLive && ctx.speaking(READ_ALL));
+  }
 
-  function digestSpeakButton() {
+  /** Bouton Lire d'un résumé ; commencée pendant le travail, la lecture suit les
+   *  résumés suivants et lit la synthèse, qui arrive en dernier, à la fin. */
+  function digestSpeakButton(turn) {
     const btn = iconButton("volume-2", "Lire le résumé", () => {
-      if (ctx.speaking(digestSource)) { api.tts_stop(); return; }
-      const running = DIGEST_RUNNING.has(S.digest.state);
-      overviewLast = running;
-      ctx.speak(digestSpeech(S.digest), digestSource, false, running);
+      if (ctx.speaking(turn.source)) { api.tts_stop(); return; }
+      const running = turn === digestTurn && DIGEST_RUNNING.has(S.digest.state);
+      turn.overviewLast = running;
+      ctx.speak(digestSpeech(turn.digest, running), turn.source, false, running);
     }, { size: 15, cls: "sm" });
-    btn.dataset.speakSource = digestSource;
+    btn.dataset.speakSource = turn.source;
     btn.dataset.tipIdle = "Lire le résumé";
     return btn;
   }
@@ -687,9 +812,9 @@ function createAssistBar(ctx, state, cfg) {
   const itemSpeech = (i) => [`${i.from || "Expéditeur inconnu"}${i.subject ? ` : ${i.subject}` : ""}.`,
     i.summary, i.action ? `À faire : ${i.action}` : ""].filter(Boolean).join("\n");
 
-  /** Texte lu : la synthèse puis chaque fil ; en cours de travail, il ne fait que
-   *  s'allonger (chaque fil fini, puis la synthèse à la fin). */
-  function digestSpeech(d) {
+  /** Texte lu : la synthèse puis chaque fil ; overviewLast (lecture commencée pendant
+   *  le travail) : il ne fait que s'allonger — chaque fil fini, puis la synthèse à la fin. */
+  function digestSpeech(d, overviewLast = false) {
     const items = (d.items || []).map((i) => `${itemSpeech(i)}\n\n`).join("");
     if (!d.overview) return items;
     return overviewLast ? `${items}En bref : ${d.overview}` : `${d.overview}\n\n${items}`;
@@ -709,7 +834,7 @@ function createAssistBar(ctx, state, cfg) {
       onKeydown: (ev) => { if (link && ev.key === "Enter") open(); },
       onContextmenu: (ev) => {
         ev.preventDefault();
-        const source = `digest-item:${cfg.id}:${item.id}`;
+        const source = `${prefix}item:${item.id}`;
         openMenu([
           { label: ctx.speaking(source) ? "Arrêter la lecture" : "Lire ce résumé", icon: "volume-2",
             onSelect: () => ctx.toggleSpeak(itemSpeech(item), source) },
@@ -746,7 +871,8 @@ function createAssistBar(ctx, state, cfg) {
     on(`${cfg.id}:list`, (mail) => { S.mail = mail; refresh(); });
     on(`${cfg.id}:digest`, (d) => {
       S.digest = d;
-      ctx.feed(digestSource, digestSpeech(d), !DIGEST_RUNNING.has(d.state));
+      // Lecture du résumé en cours (son bouton, Lecture auto) : la suite
+      if (digestTurn) ctx.feed(digestTurn.source, digestSpeech(d, digestTurn.overviewLast), !DIGEST_RUNNING.has(d.state));
       refresh();
       renderDigest();
     });
@@ -774,7 +900,7 @@ function createAssistBar(ctx, state, cfg) {
     setListShown(fn) { listShown = fn; },
     listChanged() { renderDigest(); },
     model,
-    hint: () => hint.value.trim(),
+    hint: () => input.value.trim(),
     canRun: () => idle() && S.ready && !!model(),
     blocked: () => !S.ready ? `${cfg.title} n'est pas chargé.` : !model() ? "Aucun modèle Ollama installé."
       : "Un résumé est déjà en cours.",

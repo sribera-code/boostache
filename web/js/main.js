@@ -105,6 +105,9 @@ const ctx = {
   /** Curseur du volume de la lecture (Paramètres), tenu à jour avec celui du lecteur. */
   volumeControl: () => volumeControl(),
 
+  /** Lecture au fil de l'eau de cette source en cours : elle attend la suite du texte. */
+  feeding: (source) => streamed.has(source),
+
   /** Texte complet (allongé) d'une lecture au fil de l'eau ; final : il est complet. */
   feed(source, text, final = false) {
     if (!streamed.has(source)) return;
@@ -392,8 +395,10 @@ function setupTts() {
       pauseBtn.dataset.tip = t.paused ? "Reprendre" : "Pause";
       pauseBtn.setAttribute("aria-label", pauseBtn.dataset.tip);
     }
+    // speakMatch : bouton qui couvre plusieurs lectures (toute une conversation, voir composer.js)
     for (const btn of document.querySelectorAll("[data-speak-source]")) {
-      setSpeakingButton(btn, ctx.speaking(btn.dataset.speakSource));
+      setSpeakingButton(btn, btn.speakMatch ? !!t.speaking && !!btn.speakMatch(t.source || "")
+        : ctx.speaking(btn.dataset.speakSource));
     }
   };
   on("tts", (data) => {
@@ -556,6 +561,8 @@ async function boot() {
   layout.restore(store.settings.layout, state.visible);
   // (pas de requestAnimationFrame : il ne s'exécute pas tant que la fenêtre est masquée)
   $("#app").classList.remove("booting");
+  // Vues prêtes : Python envoie les événements arrivés depuis l'état initial
+  api.ui_started();
   window.__bootStage = "prêt";
 }
 

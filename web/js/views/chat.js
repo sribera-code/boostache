@@ -2,6 +2,7 @@
 import { h, throttle, plural, parseDate, formatHour, formatShort, formatDay, formatFullDate } from "../dom.js";
 import { ico, iconButton, openLightbox, openMenu, openMenuBelow, TabStrip, toast, kbdCombo } from "../ui.js";
 import { renderMarkdown, renderMarkdownForCopy, splitThinking } from "../markdown.js";
+import { createComposer, conversationSpeech } from "../composer.js";
 
 const wordCount = (s) => (s.trim().match(/\S+/g) || []).length;
 
@@ -50,35 +51,42 @@ export function createChatView(ctx, state) {
     h("div", { class: "inner" }, ico("paperclip", 22), "Déposez les fichiers pour les joindre"));
   body.append(toBottom, dropOverlay);
 
-  const input = h("textarea", { rows: "1", placeholder: "Écrivez un message…", spellcheck: "true",
-    "aria-label": "Message" });
   const attRow = h("div", { class: "attachments", hidden: true });
   const modelName = h("span", { class: "name" });
   const modelBtn = h("button", { class: "model-pill", type: "button", dataset: { tip: "Choisir le modèle" },
     onClick: (ev) => openMenuBelow(modelItems(activeTab()), ev.currentTarget) },
     ico("sparkles", 14), modelName, ico("chevron-down", 14));
-  const ttsBtn = iconButton("volume-2", "Lire la réponse", () => speakMode(activeTab(), ctx.store.settings.tts_mode_chat));
-  ttsBtn.dataset.tipIdle = "Lire (clic droit : mode)";
-  ttsBtn.addEventListener("contextmenu", (ev) => ctx.ttsModeMenu(ev, "tts_mode_chat",
-    [["last", "Lire la dernière réponse"], ["all", "Lire toute la conversation"]]));
-  const sendBtn = h("button", { class: "send-btn", type: "button", onClick: () => send() });
   const helpBar = h("div", { class: "help-bar", hidden: true });   // aide contextuelle : propositions
-  const composer = h("div", { class: "composer" },
-    attRow,
-    input,
-    h("div", { class: "composer-bar" },
+  const composer = createComposer(ctx, {
+    label: "Message", placeholder: "Écrivez un message…", top: attRow,
+    tools: [
       iconButton("paperclip", "Joindre un fichier", attachDialog),
       iconButton("scan", "Capture d'écran", () => { const t = activeTab(); if (t) api.chat_screenshot(t.id); }),
       iconButton("mic", "Dictée vocale", dictate, { kbd: "Win+H" }),
       modelBtn,
-      h("div", { class: "head-spacer" }),
-      ttsBtn,
-      sendBtn));
+    ],
+    speakKey: "chat_speak",
+    // Activée pendant une réponse : elle est lue tout de suite
+    onAutoRead: (on) => { const t = activeTab(); if (on && t?.stream) t.stream.read(); },
+    read: {
+      // Lectures de l'onglet affiché : toute la conversation, ou une réponse
+      match: (source) => {
+        const t = activeTab();
+        return !!t && (source === `chat:${t.id}` || source.startsWith(`chat-msg:${t.id}:`));
+      },
+      speak: (mode) => readAll(activeTab(), mode),
+    },
+    hasContent: (text) => !!text.trim() || !!activeTab()?.data.attachments?.length,
+    onSend: () => send(),
+    onStop: () => { const t = activeTab(); if (t) api.chat_stop(t.id); },
+    sendTip: "Envoyer", stopTip: "Arrêter la génération",
+  });
+  const { input } = composer;
 
   const el = h("section", {},
     h("header", { class: "view-head" }, strip.el),
     body,
-    h("div", { class: "composer-wrap" }, helpBar, composer));
+    h("div", { class: "composer-wrap" }, helpBar, composer.el));
 
   // ── Onglets ─────────────────────────────────
   const activeTab = () => S.tabs.get(S.active);
@@ -114,8 +122,7 @@ export function createChatView(ctx, state) {
     if (prev && prev !== t) prev.draft = input.value;
     S.active = id;
     for (const x of S.tabs.values()) x.pane.classList.toggle("active", x === t);
-    input.value = t.draft;
-    autosize();
+    composer.setValue(t.draft);
     renderStrip();
     renderAttachments();
     updateComposer();
@@ -167,7 +174,7 @@ export function createChatView(ctx, state) {
       t.data = res.reset;
       t.draft = "";
       t.helpUsed.clear();
-      if (S.active === id) input.value = "";
+      if (S.active === id) composer.setValue("");
       renderPane(t);
       toast("Conversation effacée.", "info");
     } else if (res.removed) {
@@ -384,7 +391,10 @@ export function createChatView(ctx, state) {
     };
     const copyBtn = iconButton("copy", "Copier la réponse", copy, { size: 15, cls: "sm" });
     const actions = h("div", { class: "msg-actions" }, copyBtn, speakBtn);
+    // Lecture de la réponse (Lecture auto, menu) ; en cours d'écriture, elle suit la suite
+    const read = () => ctx.speak(state_.text, source, true, state_.streaming);
     root.copyMessage = copy;
+    root.speakMessage = read;
     const time = stamp(m.time);
     root.append(
       h("div", { class: "msg-meta" }, h("span", { class: "avatar" }, ico("sparkles", 13)),
@@ -430,7 +440,7 @@ export function createChatView(ctx, state) {
       copyBtn.hidden = streaming;
     }
     update(m.text, m.thinking, live);
-    return { root, update, setTime: (iso) => setStamp(time, iso),
+    return { root, update, read, setTime: (iso) => setStamp(time, iso),
       /** Génération finie sans réponse : la lecture qui l'attendait s'arrête. */
       finish: () => { if (state_.streaming) { state_.streaming = false; ctx.feed(source, state_.text, true); } } };
   }
@@ -505,11 +515,6 @@ export function createChatView(ctx, state) {
   }
 
   // ── Composition ─────────────────────────────
-  function autosize() {
-    input.style.height = "auto";
-    input.style.height = `${Math.min(input.scrollHeight, 260)}px`;
-  }
-
   function effectiveModel(t) {
     const wanted = t?.data?.model;
     if (wanted && S.models.includes(wanted)) return wanted;
@@ -525,20 +530,15 @@ export function createChatView(ctx, state) {
 
   function updateComposer() {
     const t = activeTab();
-    const streaming = !!t?.data.streaming;
-    const hasContent = input.value.trim() || t?.data.attachments?.length;
-    sendBtn.replaceChildren(ico(streaming ? "square" : "arrow-up", streaming ? 14 : 17, 2.2));
-    sendBtn.disabled = !streaming && !hasContent;
-    sendBtn.dataset.tip = streaming ? "Arrêter la génération" : "Envoyer";
-    sendBtn.setAttribute("aria-label", sendBtn.dataset.tip);
-    if (streaming) delete sendBtn.dataset.kbd; else sendBtn.dataset.kbd = "Entrée";
+    composer.update({ busy: !!t?.data.streaming, ready: !!t });
     const model = effectiveModel(t);
     modelName.textContent = model || (S.modelsError ? "Aucun modèle" : "Chargement…");
-    input.placeholder = t?.data.help && !t.data.messages.length
-      ? "Ou décrivez l'aide souhaitée…" : "Écrivez un message…";
+    composer.setPlaceholder(t?.data.help && !t.data.messages.length
+      ? "Ou décrivez l'aide souhaitée…" : "Écrivez un message…");
+    // Autre onglet : le bouton Lire montre ses lectures à lui
     const source = t ? `chat:${t.id}` : "";
-    if (ttsBtn.dataset.speakSource !== source) {
-      ttsBtn.dataset.speakSource = source;
+    if (composer.readBtn.dataset.speakSource !== source) {
+      composer.readBtn.dataset.speakSource = source;
       ctx.emit("speak-sources-changed");
     }
   }
@@ -582,15 +582,14 @@ export function createChatView(ctx, state) {
     const model = effectiveModel(t);
     if (!model) { noModel(); return; }
     if (chosen === null) {
-      input.value = "";
+      composer.setValue("");
       t.draft = "";
-      autosize();
     }
     updateComposer();
     const res = await api.chat_send(t.id, text, model);
     if (!res?.ok) {
       if (res?.error) toast(res.error, "error");
-      if (chosen === null && !input.value) { input.value = text; t.draft = text; autosize(); updateComposer(); }
+      if (chosen === null && !input.value) { composer.setValue(text); t.draft = text; updateComposer(); }
       return false;
     }
     return true;
@@ -678,8 +677,7 @@ export function createChatView(ctx, state) {
   }
 
   function editHelp(text) {
-    input.value = text;
-    autosize();
+    composer.setValue(text);
     input.focus();
     input.setSelectionRange(text.length, text.length);
     const t = activeTab();
@@ -688,13 +686,8 @@ export function createChatView(ctx, state) {
   }
 
   // ── Lecture & copie ─────────────────────────
-  function conversationText(t, onlyLast = false) {
-    const msgs = t.data.messages;
-    if (onlyLast) {
-      const last = [...msgs].reverse().find((m) => m.role === "assistant");
-      return last ? splitThinking(last.text).content : "";
-    }
-    return msgs.map((m) => {
+  function conversationText(t) {
+    return t.data.messages.map((m) => {
       const d = parseDate(m.time);
       const when = d ? ` (${formatShort(d)})` : "";
       return m.role === "user"
@@ -703,20 +696,20 @@ export function createChatView(ctx, state) {
     }).join("\n\n");
   }
 
-  /** Texte lu par le bouton de la barre : la dernière réponse ou toute la conversation,
-   *  réponse en cours comprise (le texte ne fait que s'allonger : lecture au fil de l'eau). */
+  /** Texte lu par le bouton de la zone de saisie : toutes les réponses ou toute la
+   *  conversation, réponse en cours comprise (le texte ne fait que s'allonger : lecture
+   *  au fil de l'eau). */
   function speakText(t, mode) {
-    const partial = t.data.streaming && t.partial ? splitThinking(t.partial.content).content : null;
-    if (mode !== "all") return partial ?? conversationText(t, true);
-    return [...t.data.messages.map((m) => splitThinking(m.text).content), partial ?? []].join("\n\n");
+    const turns = t.data.messages.map((m) => (m.role === "user" ? { ask: m.text }
+      : { answer: splitThinking(m.text).content }));
+    if (t.data.streaming && t.partial) turns.push({ answer: splitThinking(t.partial.content).content });
+    return conversationSpeech(turns, mode);
   }
 
-  function speakMode(t, mode) {
+  function readAll(t, mode) {
     if (!t) return;
-    const source = `chat:${t.id}`;
-    if (ctx.speaking(source)) { api.tts_stop(); return; }
     t.speakMode = mode;
-    ctx.speak(speakText(t, mode), source, true, !!t.data.streaming);
+    ctx.speak(speakText(t, mode), `chat:${t.id}`, true, !!t.data.streaming);
   }
 
   function paneMenu(t, ev) {
@@ -738,23 +731,16 @@ export function createChatView(ctx, state) {
         onSelect: () => ctx.copy(conversationText(t), "Conversation copiée") },
       "-",
       { label: "Lire la sélection", icon: "volume-2", disabled: !sel, onSelect: () => ctx.speak(sel, `chat:${t.id}`) },
-      { label: "Lire la dernière réponse", icon: "volume-2", disabled: !has, onSelect: () => speakMode(t, "last") },
-      { label: "Tout lire", icon: "volume-2", disabled: !has, onSelect: () => speakMode(t, "all") },
+      msg?.speakMessage ? { label: "Lire cette réponse", icon: "volume-2", onSelect: msg.speakMessage } : null,
+      { label: "Lire toutes les réponses", icon: "volume-2", disabled: !has, onSelect: () => readAll(t, "answers") },
+      { label: "Lire toute la conversation", icon: "volume-2", disabled: !has, onSelect: () => readAll(t, "all") },
     ], ev.clientX, ev.clientY);
   }
 
   // ── Évènements du composer ──────────────────
-  input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey && !ev.isComposing) {
-      ev.preventDefault();
-      send();
-    }
-  });
   input.addEventListener("input", () => {
-    autosize();
     const t = activeTab();
     if (t) t.draft = input.value;
-    updateComposer();
   });
   input.addEventListener("paste", async (ev) => {
     const types = [...(ev.clipboardData?.types || [])];
@@ -773,6 +759,7 @@ export function createChatView(ctx, state) {
     if (!t) return;
     const previous = t.data.messages.length;
     const thread = t.pane.querySelector(".thread");
+    const started = data.streaming && !t.data.streaming;    // nouvelle réponse (envoi, question modifiée)
     t.data = data;
     if (thread && !t.editing && data.streaming && data.messages.length === previous + 1) {
       // Envoi d'un message : on ajoute la question et la bulle de réponse,
@@ -789,6 +776,8 @@ export function createChatView(ctx, state) {
     } else {
       renderPane(t);
     }
+    // Lecture auto : la réponse est lue dès ses premières phrases
+    if (started && composer.autoRead()) t.stream?.read();
     renderStrip();
     if (t.id === S.active) { renderAttachments(); updateComposer(); renderHelp(); }
   });
@@ -799,7 +788,7 @@ export function createChatView(ctx, state) {
     t.partial.content += content;
     t.partial.thinking += thinking;
     t.renderPartial();
-    ctx.feed(`chat:${t.id}`, speakText(t, t.speakMode));
+    if (ctx.feeding(`chat:${t.id}`)) ctx.feed(`chat:${t.id}`, speakText(t, t.speakMode));
   });
 
   on("chat:done", ({ tab, message, error, stopped, title }) => {

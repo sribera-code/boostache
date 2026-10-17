@@ -77,13 +77,13 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
   - **Suggérer une réponse** (une discussion ou un e-mail ouvert) : trois propositions adaptées ; un clic place celle choisie dans la zone de saisie (Gmail : la réponse s'ouvre si besoin, signature et citation sont conservées)
   - **Améliorer le brouillon** (un message en cours d'écriture) : corrige et reformule le message (bouton **Rétablir l'original**)
   - Un brouillon remplacé par une proposition peut être récupéré (**Rétablir mon brouillon**)
-  - Consigne facultative (« plus formel », « décline poliment », « accepte mardi 14 h »…) et choix du modèle
+  - Zone de saisie identique à celle des conversations (dictée vocale, modèle, lecture à voix haute) : consigne facultative (« plus formel », « décline poliment », « accepte mardi 14 h »…) ; Entrée ou le bouton d'envoi suggère une réponse (WhatsApp ; avec seulement un brouillon : l'améliore) ou pose la question (Gmail)
   - Rien n'est jamais envoyé automatiquement : il reste à relire et envoyer
 - **Résumer les e-mails** (Gmail) : chaque fil de la liste affichée dans Gmail (boîte de réception, libellé, recherche… ; page affichée, 50 au plus) est lu en entier en arrière-plan — par la vue « imprimer » de Gmail, donc **sans être marqué comme lu** — puis résumé par Ollama, avec ce qu'il attend de vous (répondre, payer, confirmer…) ; une synthèse fait ensuite le point (à partir de deux e-mails), la consigne facultative s'y applique
   - Un bouton par choix, sans menu : **Résumer les N non lus**, **Résumer tous les e-mails** et, si des cases sont cochées dans Gmail, **Résumer les N sélectionnés** ; un choix sans e-mail n'est pas proposé (mêmes boutons sous l'en-tête de la liste à côté de Gmail : **Non lus**, **Tous**, **Sélection**, avec leur nombre)
   - Un e-mail ouvert : le bouton devient **Résumer cet e-mail** et ne résume que lui (tout le fil, y compris les messages repliés)
   - Les résumés s'affichent au fur et à mesure (bouton **Arrêter**) ; un clic sur un e-mail l'ouvre dans Gmail ; **Lire** (dès le premier résumé, la lecture suit les suivants ; la synthèse est lue en premier, ou à la fin si elle n'était pas encore prête), **Copier** ou **Ajouter à une note**
-  - Hauteur du panneau réglable par la poignée de son bord haut (gardée d'une fois sur l'autre ; double-clic : hauteur automatique ; flèches haut/bas au clavier) — Gmail reste visible au-dessus
+  - Hauteur du panneau réglable par la poignée de son bord haut (gardée d'une fois sur l'autre ; double-clic : hauteur automatique ; flèches haut/bas au clavier) — Gmail et la liste des e-mails gardent au moins 40 % de la hauteur : si la fenêtre manque de place, c'est la conversation qui rétrécit (elle défile)
   - Résumés gardés pendant la session : une relance ne refait que les nouveaux fils et ceux qui ont reçu un message, puis la synthèse
 - Bouton **Recharger** (ou **Réessayer** si le site s'est arrêté)
 
@@ -103,7 +103,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 
 ### Assistant
 Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
-- **Questions** (champ en bas, dictée vocale Win+H) : « Quels e-mails demandent une action ? », « Qui m'a écrit sur WhatsApp aujourd'hui ? », « Ai-je reçu un e-mail de ma banque ? »… Gmail et WhatsApp sont relus à chaque question (chargés en arrière-plan s'ils ne l'étaient pas) et un modèle Ollama répond au fil de l'eau, en tenant compte des questions précédentes ; sous la réponse, ce qui a été lu (« Gmail · 12 non lus, liste « Boîte de réception », 2 lus en entier »). Option **Lire les réponses** : à voix haute, dès les premières phrases. Copier, lire, reposer la question, retirer
+- **Questions** (champ en bas, dictée vocale Win+H) : « Quels e-mails demandent une action ? », « Qui m'a écrit sur WhatsApp aujourd'hui ? », « Ai-je reçu un e-mail de ma banque ? »… Gmail et WhatsApp sont relus à chaque question (chargés en arrière-plan s'ils ne l'étaient pas) et un modèle Ollama répond au fil de l'eau, en tenant compte des questions précédentes ; sous la réponse, ce qui a été lu (« Gmail · 12 non lus, liste « Boîte de réception », 2 lus en entier »). **Lecture auto** dans la zone de saisie : chaque réponse lue à voix haute dès ses premières phrases. Copier, lire, reposer la question, retirer
   - Gmail : e-mails non lus de la boîte de réception (flux Atom de Gmail), liste affichée (ou e-mail ouvert) et, en entier, les fils dont parle la question (mots communs avec l'expéditeur, l'objet ou l'extrait)
   - WhatsApp : liste des discussions avec le dernier message de chacune, discussion ouverte et messages arrivés pendant les annonces. L'assistant n'ouvre jamais une discussion (elle serait marquée comme lue)
 - **Annonces vocales** (bouton cloche) : chaque nouvel e-mail de la boîte de réception et chaque nouveau message WhatsApp est annoncé à voix haute. Discussions WhatsApp en sourdine ignorées ; option **Lire le contenu** (sinon l'expéditeur seul) ; bouton **Exemple**. Une lecture en cours n'est pas coupée : l'annonce attend sa fin (2 min au plus) et regroupe les messages arrivés entre-temps. Reprises au démarrage si elles étaient actives
@@ -125,8 +125,11 @@ Questions et résumés sur des dossiers du PC (RAG local : rien ne quitte le PC)
 - Modèle des réponses choisi sous le champ de question ou dans la section Ollama (sinon celui de l'assistant, puis des conversations) ; modèle d'embeddings dans le menu des réglages (le changer recalcule les vecteurs)
 
 ### Lecture à voix haute
-- Boutons **Lire** des conversations, consoles, notes, du presse-papiers, des transcriptions, des réponses et messages de l'assistant et du résumé des e-mails (Gmail) ; clic droit sur un e-mail résumé ou sur une proposition de réponse (WhatsApp, Gmail) : **Lire**
-- **Lecture au fil de l'eau** : une réponse en cours de génération (conversation, résumé des e-mails) se lit dès ses premières phrases, sans attendre la fin — la lecture suit le texte qui arrive (« En attente de la suite… » dans le lecteur quand elle l'a rattrapé)
+- Boutons **Lire** sous chaque réponse (conversations, assistant, documents, propositions et brouillon amélioré de WhatsApp et Gmail, réponses et résumés de Gmail), des consoles, notes, du presse-papiers, des transcriptions et des messages de l'assistant ; clic droit sur un e-mail résumé ou sur une proposition de réponse : **Lire**
+- **Zones de saisie** (Conversations, Assistant, Documents, WhatsApp, Gmail), à côté du bouton d'envoi :
+  - Interrupteur **Lecture auto** : chaque réponse est lue à voix haute au fur et à mesure qu'elle s'écrit (propositions et brouillon amélioré : dès qu'ils arrivent) ; réglé séparément pour chaque section, activé pendant une réponse il la lit aussitôt
+  - Bouton **Lire** : toutes les réponses, ou toute la conversation avec les demandes (« Demande : … Réponse : … ») — clic droit pour choisir, commun à toutes les sections ; une réponse en cours est suivie jusqu'au bout. Pendant une lecture de la conversation (une réponse, la lecture auto), il l'arrête
+- **Lecture au fil de l'eau** : une réponse en cours de génération (conversation, assistant, documents, question et résumé des e-mails) se lit dès ses premières phrases, sans attendre la fin — la lecture suit le texte qui arrive (« En attente de la suite… » dans le lecteur quand elle l'a rattrapé)
 - Trois voix au choix dans les **Paramètres** (même choix que le projet audio-report) :
   - **Voix naturelle** (par défaut) : voix neuronales de Microsoft, celles de « Lire à voix haute » d'Edge, via [edge-tts] — gratuites, sans clé, très expressives (13 voix françaises : France, Québec, Belgique, Suisse ; Sylvie par défaut). Le texte lu est **envoyé à Microsoft** : il faut une connexion
   - **Hors ligne** : voix neuronale [Piper], calculée sur le PC (siwis par défaut ; autres voix avec `python -m piper.download_voices fr_FR-tom-medium`, rangées dans `%USERPROFILE%\.local\share\piper\voices`)
@@ -260,7 +263,7 @@ boostache/
 ├── web/
 │   ├── index.html
 │   ├── css/app.css       # Thème et mise en page
-│   ├── js/               # main.js (coquille), layout.js (écran partagé), ui.js (composants), pin.js (panneau premier plan), views/ (une vue par section)
+│   ├── js/               # main.js (coquille), layout.js (écran partagé), ui.js (composants), composer.js (zone de saisie des sections avec un modèle), pin.js (panneau premier plan), views/ (une vue par section)
 │   └── vendor/           # Bibliothèques embarquées (voir vendor/licenses)
 └── requirements.txt
 ```

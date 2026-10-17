@@ -97,7 +97,7 @@ _DEFAULTS = {
     "always_on_top":        True,
     "window_opacity":       100,           # en %, de 20 (MIN_OPACITY) à 100
     "system_prompt":        "",
-    "tts_mode_chat":        "last",        # "last" | "all"
+    "tts_mode_answers":     "answers",     # bouton Lire des zones de saisie : "answers" (les réponses) | "all" (questions comprises)
     "tts_mode_console":     "last",        # "last" | "all"
     "tts_mode_note":        "all",         # "all" | "sel"
     "tts_engine":           "edge",        # "edge" (voix naturelle, en ligne) | "piper" (hors ligne) | "sapi"
@@ -129,7 +129,11 @@ _DEFAULTS = {
     "assistant_whatsapp":   True,          # assistant : WhatsApp lu (questions, annonces)
     "assistant_content":    True,          # annonces : objet de l'e-mail, texte du message (sinon l'expéditeur seul)
     "assistant_summary":    True,          # annonces : résumé par Ollama (importance, action attendue), lu à la place
-    "assistant_speak":      False,         # réponses aux questions lues à voix haute
+    "assistant_speak":      False,         # Lecture auto : réponses de l'assistant lues au fil de l'eau
+    "chat_speak":           False,         # … des conversations
+    "rag_speak":            False,         # … de la section Documents
+    "gmail_speak":          False,         # … de l'assistant de Gmail
+    "whatsapp_speak":       False,         # … de l'assistant de WhatsApp
     "assistant_model":      "",            # "" : celui de l'assistant de réponse, sinon des conversations
     "ollama_num_ctx":       0,             # contexte des appels (chat.CTX_SIZES) ; 0 : chat.DEFAULT_CTX
     "ollama_keep_alive":    "5m",          # modèle gardé en mémoire après un appel (chat.KEEP_ALIVE)

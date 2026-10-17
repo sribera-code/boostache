@@ -41,6 +41,9 @@ class Api:
     def ui_ready(self):
         return self._app.ui_ready()
 
+    def ui_started(self):
+        self._app.ui_started()
+
     def copy_text(self, text):
         return set_clipboard_text(str(text or ""))
 
