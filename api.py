@@ -535,10 +535,7 @@ class Api:
     def pane_insert(self, pane, text):
         return self._app.panes[pane].insert(str(text or ""))
 
-    # Résumé des e-mails de la liste affichée (Gmail) : scope = selection | unread | all
-    def pane_digest_scopes(self, pane):
-        return self._app.panes[pane].digest_scopes()
-
+    # Résumé des e-mails (Gmail) : scope = current | selection | unread | all ;
     # ids : e-mails choisis dans la liste à côté du site (sinon la liste affichée dans Gmail)
     def pane_digest(self, pane, model, hint="", scope="all", ids=None):
         ids = None if ids is None else [str(i) for i in ids][:100]

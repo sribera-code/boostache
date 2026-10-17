@@ -164,7 +164,9 @@ function createAssistBar(ctx, state, cfg) {
     // Ce qui s'applique à la page du site (webpane.WATCH_JS) : e-mail ou discussion
     // ouvert (reply), brouillon écrit (improve) — les autres boutons sont masqués
     context: state.panes?.[cfg.id]?.context || { reply: false, improve: false },
-    qa: state.panes?.[cfg.id]?.qa || { state: "idle" } };
+    qa: state.panes?.[cfg.id]?.qa || { state: "idle" },
+    // Liste affichée dans Gmail (événements <site>:list) : nombres des boutons « Résumer »
+    mail: state.panes?.[cfg.id]?.mail || { rows: [], view: "" } };
   let listShown = () => false;   // liste des e-mails affichée à côté du site (maillist.js)
   let digestTurn = null;         // réponse qui suit le résumé en cours (événements <site>:digest)
   let qaTurn = null;             // réponse qui suit la question en cours (événements <site>:qa)
@@ -176,10 +178,13 @@ function createAssistBar(ctx, state, cfg) {
     ico("sparkles", 14), "Suggérer une réponse");
   const improveBtn = h("button", { class: "pane-chip pc-main", type: "button", onClick: () => improve() },
     ico("pencil-line", 14), "Améliorer le brouillon");
-  // Un e-mail ouvert : lui seul ; sinon la liste affichée (menu sélection / non lus / tous)
-  const digestLabel = h("span");
-  const digestBtn = cfg.digest ? h("button", { class: "pane-chip pc-main", type: "button", onClick: digest },
-    ico("scroll-text", 14), digestLabel) : null;
+  // Résumer, sans menu : un e-mail ouvert, lui seul ; sinon un bouton par choix sur
+  // la liste affichée dans Gmail — les non-lus, tous, la sélection (s'il y en a une,
+  // en dernier : les autres ne bougent pas)
+  const digestBtns = cfg.digest ? Object.fromEntries([["current", "scroll-text"], ["unread", "mail"],
+    ["all", "scroll-text"], ["selection", "text-select"]].map(([scope, icon]) => [scope, h("button",
+      { class: "pane-chip pc-main", type: "button", onClick: () => startDigest(scope, null, scopeCount(scope)) },
+      ico(icon, 14), h("span"))])) : {};
   const hint = h("input", { class: "field pane-hint", type: "text", maxlength: "500", spellcheck: "true",
     placeholder: cfg.hint,
     onKeydown: (ev) => {
@@ -221,23 +226,53 @@ function createAssistBar(ctx, state, cfg) {
   function refresh() {
     modelName.textContent = model() || "Aucun modèle";
     const off = !idle() || !S.ready || !model();
-    for (const btn of [suggestBtn, improveBtn, digestBtn, askBtn]) if (btn) btn.disabled = off;
+    for (const btn of [suggestBtn, improveBtn, askBtn, ...Object.values(digestBtns)]) if (btn) btn.disabled = off;
     // Seulement ce qui s'applique : « Suggérer » avec un e-mail (une discussion)
     // ouvert, « Améliorer » avec un brouillon écrit
     const { reply, improve: draft } = S.context;
     suggestBtn.hidden = !reply;
     improveBtn.hidden = !draft;
-    const any = reply || draft || !!digestBtn;
+    const any = reply || draft || !!cfg.digest;
     hint.hidden = !any;
     if (askBtn) askBtn.hidden = !any;
     if (idleNote) idleNote.hidden = any;
+    if (cfg.digest) refreshDigestButtons(reply);
     renderSuggestions();
-    if (digestBtn) {
-      digestLabel.textContent = reply ? "Résumer cet e-mail" : "Résumer les e-mails";
-      digestBtn.dataset.tip = reply ? "Résume l'e-mail ouvert (tout le fil) et ce qu'il attend de vous"
-        : "Lit les e-mails de la liste affichée dans Gmail — sélectionnés, non lus ou tous — "
-          + "sans les marquer comme lus, et fait le point";
-    }
+  }
+
+  /** E-mails de la liste relevée dans Gmail que résumerait ce choix. */
+  function scopeCount(scope) {
+    const rows = S.mail.rows || [];
+    if (scope === "unread") return rows.filter((r) => r.unread).length;
+    if (scope === "selection") return rows.filter((r) => r.selected).length;
+    return scope === "all" ? Math.min(rows.length, DIGEST_MAX) : 0;
+  }
+
+  /** Boutons « Résumer » : un choix sans e-mail est masqué (aucune liste relevée
+   *  encore : non lus et tous, de la boîte de réception). */
+  function refreshDigestButtons(reply) {
+    const known = !!S.mail.view;
+    const all = (S.mail.rows || []).length;
+    const unread = scopeCount("unread");
+    const selected = scopeCount("selection");
+    const where = S.mail.view ? `de « ${S.mail.view} »` : "de la liste affichée dans Gmail";
+    const set = (scope, shown, label, tip) => {
+      const btn = digestBtns[scope];
+      btn.hidden = !shown;
+      btn.lastChild.textContent = label;
+      btn.dataset.tip = tip;
+    };
+    set("current", reply, "Résumer cet e-mail", "Résume l'e-mail ouvert (tout le fil) et ce qu'il attend de vous");
+    set("selection", !reply && selected > 0,
+      selected > 1 ? `Résumer les ${selected} sélectionnés` : "Résumer l'e-mail sélectionné",
+      "Lit les e-mails cochés dans Gmail, sans les marquer comme lus, et fait le point");
+    set("unread", !reply && (!known || unread > 0),
+      unread > 1 ? `Résumer les ${unread} non lus` : unread ? "Résumer l'e-mail non lu" : "Résumer les non lus",
+      `Lit les e-mails non lus ${where}, sans les marquer comme lus, et fait le point`);
+    set("all", !reply && (!known || all > 0),
+      all > DIGEST_MAX ? `Résumer les ${DIGEST_MAX} premiers` : "Résumer tous les e-mails",
+      `Lit tous les e-mails ${where}${all > DIGEST_MAX ? ` (les ${DIGEST_MAX} premiers)` : ""}, `
+        + "sans les marquer comme lus, et fait le point");
   }
 
   // ── Suggestions (conversation vide) ──
@@ -283,7 +318,7 @@ function createAssistBar(ctx, state, cfg) {
     const key = `${reply}|${draft}`;
     if (key !== suggestKey) {
       suggestKey = key;
-      suggestRow.replaceChildren(suggestBtn, improveBtn, ...(digestBtn ? [digestBtn] : []),
+      suggestRow.replaceChildren(suggestBtn, improveBtn, ...Object.values(digestBtns),
         ...suggestions().map((c) => h("button", { class: "pane-chip", type: "button",
           dataset: { tip: c.tip }, onClick: c.onRun }, ico(c.icon, 13), c.label)));
     }
@@ -363,10 +398,6 @@ function createAssistBar(ctx, state, cfg) {
   const busyStatus = (text) => h("div", { class: "pane-status" }, h("span", { class: "pane-busy" }), text);
   const errorStatus = (text) => h("div", { class: "pane-status error" }, ico("triangle-alert", 14), text);
   const doneStatus = (text) => h("div", { class: "pane-status" }, ico("check", 14), text);
-
-  function showError(message) {
-    botTurn().set(errorStatus(message));
-  }
 
   /** Consigne du champ, utilisée par un bouton : affichée sous la demande, puis effacée. */
   function takeHint() {
@@ -505,33 +536,7 @@ function createAssistBar(ctx, state, cfg) {
   }
 
   // ── Résumé des e-mails de la liste affichée dans Gmail (en arrière-plan,
-  //    événements <site>:digest) : sélectionnés, non lus ou tous ──
-  async function digest() {
-    if (!idle() || !S.ready) return;
-    if (S.context.reply) { startDigest("current"); return; }    // e-mail ouvert : lui seul
-    const scopes = await api.pane_digest_scopes(cfg.id);
-    if (!scopes?.ok) { userTurn("Résumer les e-mails"); showError(scopes?.error || `${cfg.title} ne répond pas.`); return; }
-    const items = scopeItems(scopes);
-    // Rien à choisir (ni sélection, ni non-lus) : tous, directement
-    if (items.length === 1) { items[0].onSelect(); return; }
-    const menu = openMenuBelow([{ section: `Résumer — ${scopes.view}` }, ...items], digestBtn);
-    menu.focusEntry(menu.entries[0]);      // le plus précis en premier (Entrée)
-  }
-
-  /** Choix proposés : la sélection s'il y en a une, les non-lus s'il y en a, et tout.
-   *  Sans liste affichée (fil ouvert) : non lus ou tous de la boîte de réception. */
-  function scopeItems(s) {
-    const item = (scope, label, icon, count) => ({ label, icon, hint: count ? String(count) : "",
-      onSelect: () => startDigest(scope, null, count) });
-    return [
-      s.list && s.selection ? item("selection", s.selection > 1 ? "Les e-mails sélectionnés" : "L'e-mail sélectionné",
-        "text-select", s.selection) : null,
-      !s.list || s.unread ? item("unread", s.unread === 1 ? "L'e-mail non lu" : "Les e-mails non lus", "mail", s.unread) : null,
-      item("all", !s.list ? "Toute la boîte de réception" : s.all > DIGEST_MAX ? `Les ${DIGEST_MAX} premiers e-mails`
-        : "Tous les e-mails", "scroll-text", s.list ? Math.min(s.all, DIGEST_MAX) : 0),
-    ].filter(Boolean);
-  }
-
+  //    événements <site>:digest) : l'e-mail ouvert, sélectionnés, non lus ou tous ──
   /** La demande telle qu'elle apparaît dans la conversation. */
   function digestRequest(scope, n) {
     if (scope === "current") return "Résumer cet e-mail";
@@ -738,6 +743,7 @@ function createAssistBar(ctx, state, cfg) {
   }
 
   if (cfg.digest) {
+    on(`${cfg.id}:list`, (mail) => { S.mail = mail; refresh(); });
     on(`${cfg.id}:digest`, (d) => {
       S.digest = d;
       ctx.feed(digestSource, digestSpeech(d), !DIGEST_RUNNING.has(d.state));

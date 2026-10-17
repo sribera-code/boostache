@@ -3,8 +3,9 @@
 // avec le résumé de chaque e-mail à la demande : par e-mail, pour tous (le
 // résumé de l'assistant, synthèse comprise), ou d'office pour les nouveaux.
 import { h } from "../dom.js";
-import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
+import { ico, iconButton, openMenu, toast } from "../ui.js";
 
+const DIGEST_MAX = 50;           // e-mails résumés au plus (gmail.py)
 const WIDTH_DEFAULT = 340;
 const WIDTH_MIN = 220;
 const SITE_MIN = 320;            // le site garde au moins cette largeur (px)
@@ -33,12 +34,22 @@ export function createMailList(ctx, state, cfg, assist) {
   const stopBtn = iconButton("square", "Arrêter les résumés en attente", () => api.pane_list_stop(cfg.id),
     { size: 12, cls: "sm" });
   const autoBtn = iconButton("zap", "", toggleAuto, { size: 15, cls: "sm" });
-  const sumBtn = iconButton("sparkles", "Résumer les e-mails de la liste…", (ev) => summarizeMenu(ev.currentTarget),
-    { size: 15, cls: "sm" });
+  // Résumer, sans menu : un bouton par choix (non lus, tous, sélection dans Gmail),
+  // sur une rangée sous l'en-tête ; la sélection en dernier, les autres ne bougent pas
+  const scopeBtn = (scope, label) => {
+    const n = h("span", { class: "ml-scope-n" });
+    const btn = h("button", { class: "pane-chip ml-scope", type: "button", onClick: () => summarizeScope(scope) }, label, n);
+    btn.count = n;
+    return btn;
+  };
+  const sumBtns = { unread: scopeBtn("unread", "Non lus"), all: scopeBtn("all", "Tous"),
+    selection: scopeBtn("selection", "Sélection") };
+  const scopesRow = h("div", { class: "ml-scopes", role: "group", "aria-label": "Résumer les e-mails" },
+    h("span", { class: "ml-scopes-label" }, ico("sparkles", 13), "Résumer"), ...Object.values(sumBtns));
   const rowsEl = h("div", { class: "ml-rows", role: "list" });
   const el = h("aside", { class: "mail-list", "aria-label": "Liste des e-mails" },
-    h("div", { class: "ml-head" }, title, count, h("span", { class: "head-spacer" }), stopBtn, autoBtn, sumBtn),
-    rowsEl);
+    h("div", { class: "ml-head" }, title, count, h("span", { class: "head-spacer" }), stopBtn, autoBtn),
+    scopesRow, rowsEl);
   const splitter = h("div", { class: "ml-splitter", role: "separator", tabindex: "0",
     "aria-orientation": "vertical", "aria-label": "Largeur de la liste des e-mails",
     dataset: { tip: "Glisser pour changer la largeur — double-clic : largeur par défaut" } });
@@ -58,6 +69,7 @@ export function createMailList(ctx, state, cfg, assist) {
       : "Résumer automatiquement les nouveaux e-mails de la boîte de réception";
     autoBtn.setAttribute("aria-label", "Résumé automatique des nouveaux e-mails");
     autoBtn.setAttribute("aria-pressed", String(auto));
+    renderScopes();
     if (!rows.length) {
       cache = new Map();
       rowsEl.replaceChildren(h("p", { class: "ml-empty", text: view ? "Aucun e-mail dans cette liste."
@@ -218,24 +230,34 @@ export function createMailList(ctx, state, cfg, assist) {
 
   /** Plusieurs e-mails : le résumé de l'assistant (chacun, puis la synthèse), sur
    *  les e-mails sélectionnés dans Gmail, les non lus ou tous ceux de la liste. */
-  function summarizeMenu(anchor) {
+  function scopeIds(scope) {
     const rows = S.mail.rows || [];
-    if (!rows.length) { toast("Aucun e-mail dans la liste.", "error"); return; }
+    if (scope === "all") return rows.slice(0, DIGEST_MAX).map((r) => r.id);
+    return rows.filter((r) => (scope === "unread" ? r.unread : r.selected)).map((r) => r.id);
+  }
+
+  /** Un bouton par choix qui a des e-mails, avec leur nombre. */
+  function renderScopes() {
+    const tips = {
+      selection: (k) => k > 1 ? `Résumer les ${k} e-mails sélectionnés dans Gmail` : "Résumer l'e-mail sélectionné dans Gmail",
+      unread: (k) => k > 1 ? `Résumer les ${k} e-mails non lus` : "Résumer l'e-mail non lu",
+      all: (k) => (S.mail.rows || []).length > k ? `Résumer les ${k} premiers e-mails de la liste`
+        : k > 1 ? `Résumer les ${k} e-mails de la liste` : "Résumer l'e-mail de la liste",
+    };
+    for (const [scope, btn] of Object.entries(sumBtns)) {
+      const k = scopeIds(scope).length;
+      btn.hidden = !k;
+      btn.count.textContent = k ? String(k) : "";
+      btn.dataset.tip = k ? `${tips[scope](k)} — chacun, puis une synthèse` : "";
+    }
+    scopesRow.hidden = Object.values(sumBtns).every((b) => b.hidden);
+  }
+
+  function summarizeScope(scope) {
+    const ids = scopeIds(scope);
+    if (!ids.length) return;
     if (!assist.canRun()) { toast(assist.blocked(), "error"); return; }
-    const pick = (test) => rows.filter(test).map((r) => r.id);
-    const item = (scope, label, icon, ids) => ({ label, icon, hint: String(ids.length),
-      onSelect: () => assist.runDigest(scope, ids) });
-    const selected = pick((r) => r.selected);
-    const unread = pick((r) => r.unread);
-    const items = [
-      selected.length ? item("selection", selected.length > 1 ? "Les e-mails sélectionnés" : "L'e-mail sélectionné",
-        "text-select", selected) : null,
-      unread.length ? item("unread", unread.length > 1 ? "Les e-mails non lus" : "L'e-mail non lu", "mail", unread) : null,
-      item("all", "Tous les e-mails de la liste", "scroll-text", rows.slice(0, 50).map((r) => r.id)),
-    ].filter(Boolean);
-    if (items.length === 1) { items[0].onSelect(); return; }
-    const menu = openMenuBelow([{ section: `Résumer — ${S.mail.view || "Gmail"}` }, ...items], anchor, "right");
-    menu.focusEntry(menu.entries[0]);
+    assist.runDigest(scope, ids);
   }
 
   function toggleAuto() {

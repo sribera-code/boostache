@@ -700,18 +700,6 @@ class GmailPane(WebPane):
     # ─────────────────────────────────────────
     #  Résumé des e-mails (liste affichée dans Gmail)
     # ─────────────────────────────────────────
-    def digest_scopes(self) -> dict:
-        """Ce que « Résumer » peut proposer pour la liste affichée dans Gmail : nombre
-        d'e-mails sélectionnés, non lus et en tout. list: false quand aucune liste
-        n'est affichée (fil ouvert…) : le résumé portera sur la boîte de réception."""
-        res = self._eval(f"{LIST_JS}(false)")
-        if not res.get("ok") or not res.get("list"):
-            return {**res, "view": "Boîte de réception"} if res.get("ok") else res
-        rows = res.get("rows") or []
-        return {"ok": True, "list": True, "view": res.get("view") or "Gmail", "all": len(rows),
-                "unread": sum(1 for r in rows if r.get("unread")),
-                "selection": sum(1 for r in rows if r.get("selected"))}
-
     def digest(self, model: str, hint: str = "", scope: str = "all", ids=None) -> dict:
         """Lit chaque fil de la liste affichée dans Gmail — tous, les non lus ou les
         sélectionnés — et le résume, puis fait le point ; ou (current) seulement

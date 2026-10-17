@@ -2501,6 +2501,13 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .ml-head { display: flex; flex-shrink: 0; align-items: center; gap: 4px; min-height: 40px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line); }
 .ml-title { flex-shrink: 0; max-width: 60%; overflow: hidden; color: var(--fg); font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .ml-count { min-width: 0; margin-left: 4px; overflow: hidden; color: var(--fg-3); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+/* Résumer les non lus / tous / la sélection : boutons directs sous l'en-tête */
+.ml-scopes { display: flex; flex-shrink: 0; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px 6px 12px; border-bottom: 1px solid var(--line); }
+.ml-scopes[hidden] { display: none; }
+.ml-scopes-label { display: inline-flex; align-items: center; gap: 5px; margin-right: 2px; color: var(--fg-3); font-size: 12px; }
+.ml-scopes-label .icon { color: var(--link); }
+.pane-chip.ml-scope { height: 24px; padding: 0 9px; color: var(--fg); font-size: 12px; }
+.ml-scope-n { color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .ml-rows { display: flex; flex: 1; flex-direction: column; gap: 6px; min-height: 0; padding: 6px; overflow-y: auto; }
 .ml-empty { margin: 16px 10px; color: var(--fg-3); font-size: 12.5px; line-height: 1.55; }
 /* Chaque e-mail dans son cadre, séparé des voisins */
