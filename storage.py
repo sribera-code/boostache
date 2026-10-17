@@ -128,6 +128,7 @@ _DEFAULTS = {
     "assistant_gmail":      True,          # assistant : Gmail lu (questions, annonces)
     "assistant_whatsapp":   True,          # assistant : WhatsApp lu (questions, annonces)
     "assistant_content":    True,          # annonces : objet de l'e-mail, texte du message (sinon l'expéditeur seul)
+    "assistant_summary":    True,          # annonces : résumé par Ollama (importance, action attendue), lu à la place
     "assistant_speak":      False,         # réponses aux questions lues à voix haute
     "assistant_model":      "",            # "" : celui de l'assistant de réponse, sinon des conversations
     "ollama_num_ctx":       0,             # contexte des appels (chat.CTX_SIZES) ; 0 : chat.DEFAULT_CTX

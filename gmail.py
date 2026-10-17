@@ -614,7 +614,7 @@ class GmailPane(WebPane):
 
     def new_messages(self) -> dict:
         """E-mails arrivés depuis le relevé précédent : {ok, unread, messages: [{from, email,
-        subject, snippet}]}. Le premier relevé ne fait que noter l'état. Un e-mail plus ancien
+        subject, snippet, msg}]}. Le premier relevé ne fait que noter l'état. Un e-mail plus ancien
         que le début de la surveillance (remonté parmi les 20 non lus du flux) n'est pas nouveau."""
         res = self.inbox()
         if not res.get("ok"):
@@ -630,10 +630,22 @@ class GmailPane(WebPane):
             when = _feed_date(e.get("date"))
             if first or (when and when < self._watch_since - OLD_MAIL):
                 continue
-            found.append({k: e.get(k) or "" for k in ("from", "email", "subject", "snippet")})
+            found.append({k: e.get(k) or "" for k in ("from", "email", "subject", "snippet", "msg")})
         while len(self._feed_seen) > SEEN_MAX:
             self._feed_seen.pop(next(iter(self._feed_seen)))
         return {"ok": True, "unread": res.get("count", 0), "messages": found}
+
+    def announce_text(self, item: dict) -> str:
+        """Nouvel e-mail tel que le lit l'assistant pour l'annoncer : le fil en entier, par
+        la vue « imprimer » (rien n'est marqué comme lu) ; illisible : objet et début du texte."""
+        msg = item.get("msg") or ""
+        if THREAD_ID_RE.fullmatch(msg):
+            thread = self._eval(f"{THREAD_JS}({json.dumps(msg)}, \"all\")", timeout=20, awaits=True)
+            if thread.get("messages"):
+                return ("Nouvel e-mail : c'est le dernier message du fil qui vient d'arriver.\n\n"
+                        + _transcript(thread.get("subject") or item.get("text", ""), thread["messages"], DIGEST_ME))
+        return (f"Nouvel e-mail de {item.get('title') or 'expéditeur inconnu'}, objet « {item.get('text') or '(sans objet)'} ».\n"
+                f"Début du texte : {item.get('snippet') or '(vide)'}")
 
     def assistant_context(self, question: str) -> dict:
         """Ce que l'assistant peut lire de Gmail pour une question : non lus de la boîte de

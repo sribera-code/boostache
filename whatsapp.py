@@ -233,6 +233,15 @@ class WhatsAppPane(WebPane):
         self._seen = seen
         return {"ok": True, "messages": found}
 
+    @staticmethod
+    def announce_text(item: dict) -> str:
+        """Nouveau message tel que le lit l'assistant pour l'annoncer : seul le dernier
+        message de la discussion est visible (l'ouvrir la marquerait comme lue)."""
+        count = int(item.get("count") or 1)
+        head = f"Discussion WhatsApp « {item.get('title') or 'Contact'} »"
+        return (f"{head} : {count} nouveaux messages, seul le dernier est visible :\n{item.get('text') or '(vide)'}"
+                if count > 1 else f"{head}, nouveau message :\n{item.get('text') or '(vide)'}")
+
     def assistant_context(self) -> dict:
         """Ce que l'assistant peut lire de WhatsApp : {ok, text, note} ou {ok: False, error}."""
         res = self.chats()

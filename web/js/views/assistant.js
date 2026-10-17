@@ -4,6 +4,7 @@
 import { h, plural } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
+import { importanceIcon } from "./maillist.js";
 
 const SOURCES = {
   gmail:    { label: "Gmail",    icon: "mail" },
@@ -42,12 +43,15 @@ export function createAssistantView(ctx, state) {
   const exampleBtn = h("button", { class: "btn ghost sm", type: "button", onClick: () => api.assistant_example(),
     dataset: { tip: "Entendre une annonce d'exemple" } }, ico("volume-2", 14), "Exemple");
   const sourcesRow = h("div", { class: "asst-sources" });
+  const summaryBtn = settingToggle("sparkles", "Résumer", "assistant_summary",
+    "Ollama résume chaque nouveau message pour l'oral, dit s'il est urgent ou important et ce qu'il attend "
+    + "de vous ; c'est ce résumé qui est lu (sinon l'objet ou le texte tel quel)");
   const contentBtn = settingToggle("text-select", "Lire le contenu", "assistant_content",
-    "Annonce aussi l'objet de l'e-mail ou le texte du message (sinon l'expéditeur seul)");
+    "Annonce aussi le résumé, l'objet de l'e-mail ou le texte du message (sinon l'expéditeur seul)");
   const problems = h("div", { class: "asst-problems" });
   const deck = h("div", { class: "asst-deck" },
     h("div", { class: "asst-main" }, toggleBtn, h("div", { class: "asst-status" }, headline, detail), exampleBtn),
-    h("div", { class: "asst-options" }, sourcesRow, h("div", { class: "head-spacer" }), contentBtn),
+    h("div", { class: "asst-options" }, sourcesRow, h("div", { class: "head-spacer" }), summaryBtn, contentBtn),
     problems);
 
   // ── Messages arrivés ────────────────────────
@@ -104,9 +108,12 @@ export function createAssistantView(ctx, state) {
     toggleBtn.setAttribute("aria-pressed", String(watching));
     const names = Object.keys(SOURCES).filter(enabled).map((k) => SOURCES[k].label);
     headline.textContent = watching ? "Annonces vocales activées" : "Annonces vocales désactivées";
+    const summarized = !!store.settings.assistant_summary;
     detail.textContent = !names.length ? "Activez Gmail ou WhatsApp ci-dessous."
-      : watching ? `Chaque nouveau message ${names.join(" ou ")} est annoncé à voix haute.`
-      : `Activez-les pour entendre l'arrivée des nouveaux messages ${names.join(" et ")}.`;
+      : watching ? `Chaque nouveau message ${names.join(" ou ")} est ${summarized ? "résumé puis annoncé" : "annoncé"} à voix haute`
+        + (summarized && !store.ollama ? " (sans résumé tant qu'Ollama ne répond pas)." : ".")
+      : `Activez-les pour entendre l'arrivée des nouveaux messages ${names.join(" et ")}`
+        + (summarized ? ", résumés avec ce qu'ils attendent de vous." : ".");
     sub.textContent = watching ? "annonces actives" : "";
 
     sourcesRow.replaceChildren(...Object.entries(SOURCES).map(([key, src]) => {
@@ -148,7 +155,7 @@ export function createAssistantView(ctx, state) {
       btn.classList.toggle("on", !!store.settings[key]);
       btn.setAttribute("aria-checked", String(!!store.settings[key]));
     };
-    btn.addEventListener("click", async () => { await ctx.saveSetting(key, !store.settings[key]); sync(); });
+    btn.addEventListener("click", async () => { await ctx.saveSetting(key, !store.settings[key]); sync(); renderStatus(); });
     sync();
     return btn;
   }
@@ -167,10 +174,25 @@ export function createAssistantView(ctx, state) {
   }
 
   // ── Rendu : messages arrivés ────────────────
+  /** Le texte de l'annonce (résumé compris) : lu et copié tel quel. */
   function feedText(item) {
+    if (item.spoken) return item.spoken;
     return item.source === "gmail"
       ? `E-mail de ${item.title} : ${item.text}`
       : `Message WhatsApp de ${item.title} : ${item.text}`;
+  }
+
+  /** Résumé de l'annonce (Ollama) avec ce que le message attend de vous ; sans
+   *  résumé, le début du texte de l'e-mail. */
+  function summaryEl(item) {
+    if (item.summary_state === "pending") {
+      return h("div", { class: "asst-msg-pending" }, h("span", { class: "pane-busy" }), "Résumé en cours…");
+    }
+    if (!item.summary) return item.snippet ? h("div", { class: "asst-msg-snippet", text: item.snippet }) : null;
+    return h("div", { class: "asst-msg-summary", dataset: { tip: item.model ? `Résumé par ${item.model}` : null } },
+      h("span", { class: "asst-msg-summary-text" }, ico("sparkles", 11), item.summary),
+      item.action ? h("span", { class: "asst-msg-action" }, ico("chevron-right", 12), h("span", { text: item.action }))
+        : null);
   }
 
   function feedEl(item) {
@@ -186,10 +208,11 @@ export function createAssistantView(ctx, state) {
       onKeydown: (ev) => { if (ev.key === "Enter") ctx.navigate(item.source); } },
       h("span", { class: `asst-msg-icon ${item.source}` }, ico(src.icon, 14)),
       h("div", { class: "asst-msg-text" },
-        h("div", { class: "asst-msg-head" }, h("span", { class: "asst-msg-from", text: item.title }), count,
+        h("div", { class: "asst-msg-head" }, importanceIcon(item.summary ? item.importance : ""),
+          h("span", { class: "asst-msg-from", text: item.title }), count,
           h("span", { class: "asst-msg-time", text: hhmm(item.at) })),
         h("div", { class: "asst-msg-body", text: item.text || "…" }),
-        item.snippet ? h("div", { class: "asst-msg-snippet", text: item.snippet }) : null),
+        summaryEl(item)),
       h("div", { class: "asst-msg-actions" }, speak));
     row.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
