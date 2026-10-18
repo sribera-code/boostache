@@ -894,8 +894,12 @@ class TTSEngine:
         if session is self._session:
             if not nxt:
                 notice = "Lecture impossible : aucune voix ne répond."
+            elif engine == "edge" and error.startswith("403"):
+                # Microsoft refuse le client (edge-tts trop ancien) : la connexion n'y est pour rien
+                notice = ("Voix naturelle refusée par Microsoft (pip install -U edge-tts) : "
+                          f"lecture avec la {VOICE_NAMES[nxt]}.")
             elif engine == "edge":
-                notice = "Voix naturelle injoignable (connexion ?) : lecture avec la voix hors ligne."
+                notice = f"Voix naturelle injoignable (connexion ?) : lecture avec la {VOICE_NAMES[nxt]}."
             else:
                 notice = f"{VOICE_NAMES[engine].capitalize()} indisponible : lecture avec la {VOICE_NAMES[nxt]}."
             self._emit(notice, error=not nxt)
