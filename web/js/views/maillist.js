@@ -205,8 +205,9 @@ export function createMailList(ctx, state, cfg, assist) {
     if (!res?.ok) toast(res?.error || "Résumé impossible.", "error");
   }
 
-  const speech = (r, sum) => [`${r.from || "Expéditeur inconnu"}${r.subject ? ` : ${r.subject}` : ""}.`,
-    sum.summary, sum.action ? `À faire : ${sum.action}` : ""].filter(Boolean).join("\n");
+  // Lu : le résumé suffit ; copié : avec expéditeur et objet
+  const speech = (sum) => [sum.summary, sum.action ? `À faire : ${sum.action}` : ""].filter(Boolean).join("\n");
+  const copyText = (r, sum) => `${r.from || "Expéditeur inconnu"}${r.subject ? ` : ${r.subject}` : ""}.\n${speech(sum)}`;
 
   function rowMenu(ev, r) {
     ev.preventDefault();
@@ -223,8 +224,8 @@ export function createMailList(ctx, state, cfg, assist) {
         disabled: RUNNING.has(sum?.state), onSelect: () => summarize([r.id]) },
       done ? "-" : null,
       done ? { label: ctx.speaking(source) ? "Arrêter la lecture" : "Lire le résumé", icon: "volume-2",
-        onSelect: () => ctx.toggleSpeak(speech(r, sum), source) } : null,
-      done ? { label: "Copier le résumé", icon: "copy", onSelect: () => ctx.copy(speech(r, sum)) } : null,
+        onSelect: () => ctx.toggleSpeak(speech(sum), source) } : null,
+      done ? { label: "Copier le résumé", icon: "copy", onSelect: () => ctx.copy(copyText(r, sum)) } : null,
     ].filter(Boolean), ev.clientX, ev.clientY);
   }
 

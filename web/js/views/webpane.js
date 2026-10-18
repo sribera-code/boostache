@@ -808,9 +808,10 @@ function createAssistBar(ctx, state, cfg) {
     return btn;
   }
 
-  /** Un fil, tel qu'il est lu. */
-  const itemSpeech = (i) => [`${i.from || "Expéditeur inconnu"}${i.subject ? ` : ${i.subject}` : ""}.`,
-    i.summary, i.action ? `À faire : ${i.action}` : ""].filter(Boolean).join("\n");
+  /** Un fil, tel qu'il est lu : son résumé suffit, sans expéditeur ni objet. */
+  const itemSpeech = (i) => [i.summary, i.action ? `À faire : ${i.action}` : ""].filter(Boolean).join("\n");
+  /** Un fil, tel qu'il est copié : avec expéditeur et objet. */
+  const itemCopy = (i) => `${i.from || "Expéditeur inconnu"}${i.subject ? ` : ${i.subject}` : ""}.\n${itemSpeech(i)}`;
 
   /** Texte lu : la synthèse puis chaque fil ; overviewLast (lecture commencée pendant
    *  le travail) : il ne fait que s'allonger — chaque fil fini, puis la synthèse à la fin. */
@@ -838,7 +839,7 @@ function createAssistBar(ctx, state, cfg) {
         openMenu([
           { label: ctx.speaking(source) ? "Arrêter la lecture" : "Lire ce résumé", icon: "volume-2",
             onSelect: () => ctx.toggleSpeak(itemSpeech(item), source) },
-          { label: "Copier", icon: "copy", onSelect: () => ctx.copy(itemSpeech(item)) },
+          { label: "Copier", icon: "copy", onSelect: () => ctx.copy(itemCopy(item)) },
           link ? { label: "Ouvrir dans Gmail", icon: "mail", onSelect: open } : null,
         ], ev.clientX, ev.clientY);
       } },
