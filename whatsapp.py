@@ -7,10 +7,13 @@ ensuite conservée dans DATA_DIR/whatsapp.
 Pour l'assistant (assistant.py) : liste des discussions (nom, heure, non lus,
 aperçu du dernier message) et nouveaux messages, repérés à la hausse du
 nombre de non-lus d'une discussion — sans rien ouvrir ni marquer comme lu.
+Leur texte vient des notifications de WhatsApp Web (tous les messages arrivés),
+sinon de l'aperçu de la liste (le dernier seulement).
 """
 
 import json
 import re
+import threading
 import time
 from datetime import datetime
 
@@ -23,6 +26,8 @@ TYPING_RE = re.compile(r"(est en train d|écrit…|écrit\.\.\.|enregistre|typin
 HOUR_RE = re.compile(r"^(\d{1,2})[:h](\d{2})$")
 RECENT_MINUTES = 10        # discussion jamais vue : nouvelle si son dernier message date de moins
 LIST_CHATS = 40            # discussions transmises au modèle (les plus récentes)
+NOTIFIED_KEEP = 600        # s : texte des notifications gardé pour l'annonce des messages
+NOTIFIED_MAX = 20          # messages gardés par discussion
 
 # Discussions de la liste (#pane-side ; seules celles affichées : la liste est virtuelle) :
 # nom (premier span[title]), heure (premier texte en forme d'heure ou de date), non lus
@@ -49,8 +54,11 @@ CHATS_JS = r"""
     }
     const lines = (row.innerText || "").split("\n").map((l) => l.trim()).filter(Boolean);
     const rest = lines.filter((l) => l !== name && l !== time && l !== String(unread));
+    // Sinon : le dernier message, en title de son span
+    const titled = [...row.querySelectorAll("span[title]")].map((e) => e.getAttribute("title").trim())
+      .filter((t) => t && t !== name);
     chats.push({ name, time, unread, muted: !!row.querySelector('[data-icon*="muted"]'),
-      preview: rest.join(" ").slice(0, 600) });
+      preview: (rest.join(" ") || titled.at(-1) || "").slice(0, 600) });
   }
   return { ok: true, ready: true, chats };
 })()
@@ -171,6 +179,11 @@ def _transcript(chat: str, messages: list[dict], limit: int = CONTEXT_MESSAGES) 
     return f"{head} (du plus ancien au plus récent) :\n" + "\n".join(reversed(lines))
 
 
+def _chat_key(name: str) -> str:
+    """Nom de discussion comparable (liste et notifications)."""
+    return " ".join(str(name or "").split()).casefold()
+
+
 def _recent(when: str) -> bool:
     """Heure de la liste (« 14:05 ») dans les RECENT_MINUTES dernières minutes."""
     m = HOUR_RE.match(when or "")
@@ -188,10 +201,31 @@ class WhatsAppPane(WebPane):
     hosts = ("whatsapp.com", "whatsapp.net")
     read_js = READ_CHAT_JS
     context_js = CONTEXT_JS
+    notifications = True
 
     def __init__(self, app):
         super().__init__(app)
         self._seen: dict[str, tuple[int, str]] | None = None    # discussion → (non lus, aperçu)
+        self._notified: dict[str, list[tuple[float, str]]] = {}  # discussion → [(moment, message)]
+        self._notified_lock = threading.Lock()
+
+    def _on_page_notification(self, title: str, body: str):
+        """Notification de WhatsApp Web : la discussion en titre, le message en texte
+        (dans un groupe, « Auteur: message ») ; gardée pour l'annonce du message."""
+        chat, body = _chat_key(title), body.strip()
+        if not chat or not body:
+            return
+        now = time.monotonic()
+        with self._notified_lock:
+            kept = [(t, b) for t, b in self._notified.get(chat, []) if now - t < NOTIFIED_KEEP]
+            self._notified[chat] = (kept + [(now, body)])[-NOTIFIED_MAX:]
+
+    def _take_notified(self, chat: str) -> list[str]:
+        """Messages des notifications récentes d'une discussion (retirés)."""
+        with self._notified_lock:
+            found = self._notified.pop(_chat_key(chat), [])
+        now = time.monotonic()
+        return [b for t, b in found if now - t < NOTIFIED_KEEP]
 
     # ─────────────────────────────────────────
     #  Assistant (assistant.py)
@@ -207,12 +241,15 @@ class WhatsAppPane(WebPane):
     def reset_watch(self):
         """Le prochain relevé sert de référence (rien d'annoncé)."""
         self._seen = None
+        with self._notified_lock:
+            self._notified.clear()
 
     def new_messages(self) -> dict:
-        """Messages arrivés depuis le relevé précédent : {ok, messages: [{chat, text, count}]}.
+        """Messages arrivés depuis le relevé précédent : {ok, messages: [{chat, text, count, all}]}.
         Le premier relevé ne fait que noter l'état. Une discussion a du nouveau quand son
         nombre de non-lus augmente (discussions en sourdine ignorées) ; jamais vue (hors de
-        la partie affichée de la liste jusque-là) : si son dernier message est récent."""
+        la partie affichée de la liste jusque-là) : si son dernier message est récent.
+        text : les messages des notifications, sinon l'aperçu de la liste ; all : tous y sont."""
         res = self.chats()
         if not res.get("ok") or not res.get("ready"):
             return {**res, "ok": False}
@@ -229,18 +266,29 @@ class WhatsAppPane(WebPane):
                 continue
             if before is None and not _recent(chat.get("time", "")):
                 continue
-            found.append({"chat": name, "text": preview, "count": unread - (before[0] if before else 0)})
+            count = unread - (before[0] if before else 0)
+            notified = self._take_notified(name)[-count:]
+            found.append({"chat": name, "text": "\n".join(notified) or preview, "count": count,
+                          "all": len(notified) >= count})
+        if first:
+            with self._notified_lock:
+                self._notified.clear()
         self._seen = seen
         return {"ok": True, "messages": found}
 
     @staticmethod
     def announce_text(item: dict) -> str:
-        """Nouveau message tel que le lit l'assistant pour l'annoncer : seul le dernier
-        message de la discussion est visible (l'ouvrir la marquerait comme lue)."""
+        """Nouveaux messages tels que les lit l'assistant pour les annoncer : tous (par
+        les notifications) ou le dernier seulement (aperçu de la liste ; ouvrir la
+        discussion la marquerait comme lue)."""
         count = int(item.get("count") or 1)
         head = f"Discussion WhatsApp « {item.get('title') or 'Contact'} »"
-        return (f"{head} : {count} nouveaux messages, seul le dernier est visible :\n{item.get('text') or '(vide)'}"
-                if count > 1 else f"{head}, nouveau message :\n{item.get('text') or '(vide)'}")
+        text = item.get("text") or "(vide)"
+        if count == 1:
+            return f"{head}, nouveau message :\n{text}"
+        if item.get("all"):
+            return f"{head} : {count} nouveaux messages, du plus ancien au plus récent :\n{text}"
+        return f"{head} : {count} nouveaux messages, seul le dernier est visible :\n{text}"
 
     def assistant_context(self) -> dict:
         """Ce que l'assistant peut lire de WhatsApp : {ok, text, note} ou {ok: False, error}."""

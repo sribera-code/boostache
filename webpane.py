@@ -113,6 +113,7 @@ class WebPane:
     context_js = ""          # fonction de la page → { reply, improve } (voir WATCH_JS)
     page_scripts: tuple = ()  # autres scripts injectés dans la page (messages : _on_page_message)
     shown_js = ""            # exécuté dans la page chaque fois que le site s'affiche dans l'interface
+    notifications = False    # notifications de la page transmises à _on_page_notification
 
     def __init__(self, app):
         self._app = app
@@ -408,6 +409,11 @@ class WebPane:
         core.DocumentTitleChanged += self._on_title
         core.WebMessageReceived += self._on_message
         core.ProcessFailed += self._on_process_failed
+        if self.notifications:
+            try:
+                core.NotificationReceived += self._on_notification
+            except Exception as e:      # runtime WebView2 trop ancien
+                logger.log(f"{self.name} : notifications de la page illisibles ({e})")
         core.AddScriptToExecuteOnDocumentCreatedAsync(SHORTCUTS_JS)
         if self.context_js:
             core.AddScriptToExecuteOnDocumentCreatedAsync(WATCH_JS.replace("__CONTEXT__", self.context_js))
@@ -469,6 +475,17 @@ class WebPane:
             self._app.bridge.emit(f"{self.key}:unread", {"count": unread})
             if self.on_unread:
                 self.on_unread(self.key)
+
+    def _on_notification(self, sender, args):
+        # Lue seulement : Windows affiche toujours la notification du site
+        try:
+            note = args.Notification
+            self._on_page_notification(str(note.Title or ""), str(note.Body or ""))
+        except Exception as e:
+            logger.log(f"{self.name} : notification illisible ({e})")
+
+    def _on_page_notification(self, title: str, body: str):
+        pass
 
     def _on_message(self, sender, args):
         try:

@@ -31,7 +31,6 @@ import json
 import re
 import threading
 import time
-import unicodedata
 import uuid
 from datetime import datetime
 
@@ -126,12 +125,6 @@ def _today(hour: bool = True) -> str:
             + (f", il est {now:%H:%M}." if hour else "."))
 
 
-def _fold(text: str) -> str:
-    """Minuscules sans accents (l'expéditeur est-il nommé dans le résumé ?)."""
-    text = unicodedata.normalize("NFKD", (text or "").casefold())
-    return "".join(c for c in text if not unicodedata.combining(c))
-
-
 def _cut(text: str, size: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= size else text[:size - 1].rstrip() + "…"
@@ -147,12 +140,6 @@ def _spoken_dates(text: str) -> str:
     return re.sub(rf"\b(\d{{1,2}}(?:er)? (?:{'|'.join(MONTHS)})) {datetime.now().year}\b", r"\1", text)
 
 
-def _named(title: str, summary: str) -> bool:
-    """L'expéditeur est-il nommé dans le résumé (un mot de son nom suffit : « Julien ») ?"""
-    text = _fold(summary)
-    return any(re.search(rf"\b{re.escape(w)}\b", text) for w in re.findall(r"\w{3,}", _fold(title)))
-
-
 def _header(it: dict) -> str:
     """« E-mail urgent », « 3 messages WhatsApp importants » (importance du résumé)."""
     adj = {"urgent": " urgent", "important": " important"}.get(it.get("importance"), "")
@@ -164,24 +151,23 @@ def _header(it: dict) -> str:
 
 
 def _item_spoken(it: dict, content: bool = True) -> str:
-    """Annonce d'un message : son résumé (qui nomme l'expéditeur), avec l'importance
-    et ce qu'il attend de l'utilisateur — « E-mail urgent : EDF vous informe… À faire :
-    … » ; sans résumé, l'objet de l'e-mail ou le texte du message.
-    content : faux → l'expéditeur seul (et s'il attend une action)."""
+    """Annonce d'un message : son résumé seul (il nomme l'expéditeur), avec ce qu'il
+    attend de l'utilisateur — « EDF vous informe… À faire : … » ; sans résumé,
+    l'expéditeur puis l'objet de l'e-mail ou le texte du message.
+    content : faux → l'expéditeur seul, avec l'importance (et s'il attend une action)."""
     if it.get("summary"):
-        head, action = _header(it), it.get("action", "")
-        if not content or not _named(it["title"], it["summary"]):
-            head += f" de {it['title']}"
+        action = it.get("action", "")
         if not content:
-            return _sentence(head) + (" Une action est attendue de votre part." if action else "")
-        return " ".join(x for x in (f"{head} : {_sentence(it['summary'])}",
+            return (_sentence(f"{_header(it)} de {it['title']}")
+                    + (" Une action est attendue de votre part." if action else ""))
+        return " ".join(x for x in (_sentence(it["summary"]),
                                     _sentence(f"À faire : {action[:1].lower() + action[1:]}") if action else "") if x)
     text = _cut(it.get("text", ""), SPOKEN_TEXT) if content else ""
     if it["source"] == "gmail":
         return f"E-mail de {it['title']} : {text}" if text else f"Nouvel e-mail de {it['title']}"
     if it.get("count", 1) > 1:
         head = f"{it['count']} messages WhatsApp de {it['title']}"
-        return f"{head}. Le dernier : {text}" if text else head
+        return f"{head}{' : ' if it.get('all') else '. Le dernier : '}{text}" if text else head
     return (f"Message WhatsApp de {it['title']} : {text}" if text
             else f"Nouveau message WhatsApp de {it['title']}")
 
@@ -375,7 +361,7 @@ class AssistantService:
                      "text": m["subject"] or "(sans objet)", "snippet": m["snippet"], "msg": m.get("msg", "")}
                     for m in res["messages"]], True
         return [{"id": uuid.uuid4().hex[:10], "source": key, "at": at, "title": m["chat"],
-                 "text": m["text"], "count": m["count"]} for m in res["messages"]], True
+                 "text": m["text"], "count": m["count"], "all": m.get("all", False)} for m in res["messages"]], True
 
     def _arrived(self, items: list[dict]):
         summarize = self._summaries_on()

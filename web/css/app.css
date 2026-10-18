@@ -1837,7 +1837,7 @@ mark { border-radius: 3px; background: rgba(255, 214, 102, .28); color: inherit;
 .asst-msg-from { min-width: 0; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .asst-count { flex-shrink: 0; color: var(--fg-3); font-size: 11.5px; }
 .asst-msg-time { flex-shrink: 0; margin-left: auto; color: var(--fg-3); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.asst-msg-body { color: var(--fg-2); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
+.asst-msg-body { color: var(--fg-2); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; white-space: pre-line; }
 .asst-msg-snippet { color: var(--fg-3); font-size: 12px; line-height: 1.5; display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 .asst-msg-head .imp { align-self: center; }
 /* Résumé lu dans l'annonce (Ollama) et ce que le message attend de vous : même bloc que la liste des e-mails */
