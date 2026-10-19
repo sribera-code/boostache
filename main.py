@@ -12,6 +12,11 @@ import subprocess
 import sys
 import threading
 
+# En premier (avant pywebview) : journal sur disque, exceptions, logging et sorties
+# standard capturés dès le démarrage — pythonw.exe n'a pas de console
+import diagnostics
+diagnostics.install()
+
 import pystray
 
 from engine import create_tray_icon, logger, task_manager, hotkey_manager

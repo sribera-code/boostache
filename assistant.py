@@ -130,6 +130,11 @@ def _cut(text: str, size: int) -> str:
     return text if len(text) <= size else text[:size - 1].rstrip() + "…"
 
 
+def _loading(error: str) -> bool:
+    """Erreur d'un site qui finit de se charger (WhatsApp synchronise ses discussions…)."""
+    return "chargement" in error or "n'est pas chargé" in error
+
+
 def _sentence(text: str) -> str:
     text = text.strip()
     return text if not text or text.endswith((".", "!", "?", "…")) else text + "."
@@ -350,8 +355,7 @@ class AssistantService:
             error = res.get("error") or f"{name} illisible."
             # Tout juste chargé : le site peut encore paraître déconnecté (page de connexion, QR code)
             starting = time.monotonic() - self._preloaded.get(key, float("-inf")) < LOAD_WAIT
-            self._set_source(key, "loading" if starting or "chargement" in error or "n'est pas chargé" in error
-                             else "error", error)
+            self._set_source(key, "loading" if starting or _loading(error) else "error", error)
             return [], False
         self._set_source(key, "ok")
         at = _now()
@@ -620,11 +624,13 @@ class AssistantService:
         return "\n\n".join(parts)
 
     def _read(self, key: str, item: dict) -> dict:
-        """Lit un site pour une question ; tout juste chargé, attend qu'il soit prêt (LOAD_WAIT au plus)."""
+        """Lit un site pour une question ; tout juste chargé ou encore en chargement, attend
+        qu'il soit prêt (LOAD_WAIT au plus)."""
         pane, name = self._app.panes[key], SOURCE_NAMES[key]
         fresh = not pane.loaded
         if fresh:
             pane.preload()
+            self._preloaded[key] = time.monotonic()
         deadline = time.monotonic() + LOAD_WAIT
         res = {"ok": False, "error": f"{name} ne s'est pas chargé à temps."}
         item["phase"] = f"{'Chargement' if fresh else 'Lecture'} de {name}…"
@@ -638,8 +644,15 @@ class AssistantService:
                 except Exception as e:
                     logger.log(f"Assistant : lecture de {name} impossible ({e})")
                     res = {"ok": False, "error": f"{name} illisible."}
-                if res.get("ok") or not fresh:
+                if res.get("ok"):
                     return res
+                # Tout juste chargé (aussi par la surveillance), le site peut encore paraître déconnecté
+                starting = time.monotonic() - self._preloaded.get(key, float("-inf")) < LOAD_WAIT
+                if not starting and not _loading(res.get("error", "")):
+                    return res
+                if item["phase"] != f"{name} se charge…":
+                    item["phase"] = f"{name} se charge…"
+                    self._emit_qa(item)
             if time.monotonic() > deadline:
                 return res
             time.sleep(2)

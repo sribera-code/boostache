@@ -15,6 +15,7 @@ import webview
 from webview.dom import DOMEventHandler
 
 import custom_tasks
+import diagnostics
 from api import Api
 from assistant import AssistantService
 from bridge import Bridge
@@ -751,5 +752,23 @@ class BoostacheApp:
         if clipboard_history.add(text, max_items=max_items):
             self.emit_clipboard()
 
-    def _on_log(self, line: str):
-        self.bridge.emit("log", {"seq": logger.last_seq, "line": line})
+    def _on_log(self, entry: dict):
+        self.bridge.emit("log", entry)
+
+    def diagnostic_report(self, client: dict) -> str:
+        """Rapport de diagnostic (Journal → Copier le rapport) : état de l'application en plus."""
+        chat = self.chat
+        if chat is None:
+            ollama = f"Ollama : {NO_OLLAMA_LIB}"
+        elif chat.online:
+            ollama = f"Ollama : en ligne, {len(chat.models)} modèle(s)"
+        else:
+            ollama = f"Ollama : {'injoignable' if chat.online is False else 'pas encore testé'}" \
+                     + (f" ({chat.models_error})" if chat.models_error else "")
+        layout = settings.get("layout") or {}
+        sections = " | ".join(layout.get("panes") or []) or "?"
+        rec = self.recorder
+        return diagnostics.report(extra=[
+            f"{ollama} · fenêtre {'affichée' if self._visible else 'masquée'} · sections : {sections}"
+            + (" · enregistrement en cours" if rec.recording else ""),
+        ], client=client)

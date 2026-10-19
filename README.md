@@ -103,7 +103,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 
 ### Assistant
 Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
-- **Questions** (champ en bas, dictée vocale Win+H) : « Quels e-mails demandent une action ? », « Qui m'a écrit sur WhatsApp aujourd'hui ? », « Ai-je reçu un e-mail de ma banque ? »… Gmail et WhatsApp sont relus à chaque question (chargés en arrière-plan s'ils ne l'étaient pas) et un modèle Ollama répond au fil de l'eau, en tenant compte des questions précédentes ; sous la réponse, ce qui a été lu (« Gmail · 12 non lus, liste « Boîte de réception », 2 lus en entier »). **Lecture auto** dans la zone de saisie : chaque réponse lue à voix haute dès ses premières phrases. Copier, lire, reposer la question, retirer
+- **Questions** (champ en bas, dictée vocale Win+H) : « Quels e-mails demandent une action ? », « Qui m'a écrit sur WhatsApp aujourd'hui ? », « Ai-je reçu un e-mail de ma banque ? »… Gmail et WhatsApp sont relus à chaque question (chargés en arrière-plan s'ils ne l'étaient pas) et un modèle Ollama répond au fil de l'eau, en tenant compte des questions précédentes ; sous la réponse, ce qui a été lu (« Gmail · 12 non lus, liste « Boîte de réception », 2 lus en entier »). **Lecture auto** dans la zone de saisie : chaque réponse lue à voix haute dès ses premières phrases. Copier, lire, reposer la question, retirer. Des questions toutes prêtes restent proposées au-dessus du champ, même quand des questions ont déjà été posées
   - Gmail : e-mails non lus de la boîte de réception (flux Atom de Gmail), liste affichée (ou e-mail ouvert) et, en entier, les fils dont parle la question (mots communs avec l'expéditeur, l'objet ou l'extrait)
   - WhatsApp : liste des discussions avec le dernier message de chacune, discussion ouverte et messages arrivés pendant les annonces. L'assistant n'ouvre jamais une discussion (elle serait marquée comme lue)
 - **Annonces vocales** (bouton cloche) : chaque nouvel e-mail de la boîte de réception et chaque nouveau message WhatsApp est annoncé à voix haute. Discussions WhatsApp en sourdine ignorées ; option **Lire le contenu** (sinon l'expéditeur seul) ; bouton **Exemple**. Une lecture en cours n'est pas coupée : l'annonce attend sa fin (2 min au plus) et regroupe les messages arrivés entre-temps. Reprises au démarrage si elles étaient actives
@@ -147,8 +147,15 @@ Questions et résumés sur des dossiers du PC (RAG local : rien ne quitte le PC)
 - **Options** de tous les appels de Boostache : **contexte** (4K à 64K tokens, 8K par défaut), durée pendant laquelle un modèle reste **en mémoire** après un appel (de « aussitôt » à « jamais », 5 min par défaut), **modèle de chaque fonction** (Conversations, aide contextuelle, WhatsApp et Gmail, assistant, documents)
 - Les modèles d'embeddings (qui ne conversent pas) et les entrées internes d'Ollama ne sont pas proposés dans les listes de modèles ; « Gérer les modèles… » dans ces listes ouvre la section
 
-### Historique, tâches et raccourcis
-- **Historique** : journal de l'application
+### Journal, tâches et raccourcis
+- **Journal** : ce que fait Boostache et surtout ce qui échoue, pour suivre un problème et le résoudre
+  - Chaque entrée a un niveau — **Erreurs**, **Avertissements**, **Infos**, **Détails** (techniques, masqués par défaut) — et sa source (Gmail, Documents, Enregistreur, Interface…) ; filtres par niveau (avec leur nombre), par source et par texte
+  - Une erreur rattrapée dans le code garde la **trace de l'exception** : clic sur la ligne pour la déplier. Un message répété est compté (×12) au lieu d'être répété
+  - Rien ne se perd plus sans console (`pythonw.exe`) : exceptions non rattrapées (threads, callbacks Windows), messages des bibliothèques (pywebview, asyncio…), sorties stdout/stderr, appels de l'interface vers Python en échec et erreurs JavaScript de l'interface (exceptions, promesses rejetées, `console.error`)
+  - Pastille rouge dans la barre latérale : erreurs arrivées depuis la dernière visite du Journal
+  - **Copier le rapport** : versions (commit, Python, pywebview, WebView2, Windows), état (Ollama, mémoire, threads), erreurs et avertissements avec leurs traces et dernières entrées — à coller dans une conversation pour analyser le problème
+  - Sur disque : un fichier par lancement dans le dossier `logs` des données (les 20 derniers gardés), écrit au fil de l'eau ; bouton **Fichiers du journal** : celui de la session, le dossier, les sessions précédentes (plantage ou arrêt anormal signalés)
+  - Plantage natif (DLL, WebView2…) : la pile de chaque thread est relevée (faulthandler) ; au lancement suivant, une session qui ne s'est pas terminée normalement est signalée dans le Journal avec la fin de son journal (un arrêt de Windows n'est pas compté comme anormal)
 - **Tâches** : tâches de `tasks.py` + tâches créées depuis l'interface (intervalle ou heure fixe, code Python avec accès au `logger`), exécution manuelle
 - **Raccourcis** : raccourcis globaux de `bindings.py` (et Impr. écran, Ctrl+Impr. écran), actifs même fenêtre masquée, déclenchables à la main
 
@@ -211,6 +218,8 @@ def register():
     )
 ```
 
+`logger.log(message)` choisit le niveau tout seul (erreur avec la trace de l'exception dans un bloc `except`, avertissement pour un message d'échec, info sinon) ; `logger.debug`, `logger.info`, `logger.warning` et `logger.error` le fixent.
+
 ### Raccourcis clavier — `bindings.py`
 
 ```python
@@ -256,7 +265,8 @@ boostache/
 ├── custom_tasks.py       # Tâches créées depuis l'interface, raccourcis
 ├── clipboard_listener.py # Presse-papiers Win32 (écoute push, lecture, écriture)
 ├── winutil.py            # Utilitaires Win32 (premier plan, fenêtre active, icônes, miniatures et captures des fenêtres, explorateur, corbeille, liens, touche Impr. écran, inactivité)
-├── engine.py             # Logger, TaskManager, HotkeyManager, instance de lecture (tts)
+├── engine.py             # Logger (journal), TaskManager, HotkeyManager, instance de lecture (tts)
+├── diagnostics.py        # Journal sur disque, exceptions, logging et stdout/stderr capturés, plantages, rapport de diagnostic
 ├── storage.py            # Persistance (réglages, conversations, consoles, notes, captures)
 ├── tasks.py              # Tâches planifiées (à personnaliser)
 ├── bindings.py           # Raccourcis clavier (à personnaliser)
@@ -268,7 +278,7 @@ boostache/
 └── requirements.txt
 ```
 
-Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte), l'index des documents dans `rag` (le supprimer, Boostache fermé, le fait reconstruire). Les enregistrements audio sont à part, dans `Musique\Boostache` par défaut. La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
+Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **Ouvrir** dans les paramètres) ; les sessions WhatsApp Web et Gmail sont dans les sous-dossiers `whatsapp` et `gmail` (les supprimer déconnecte), l'index des documents dans `rag` (le supprimer, Boostache fermé, le fait reconstruire), les journaux dans `logs`. Les enregistrements audio sont à part, dans `Musique\Boostache` par défaut. La variable d'environnement `BOOSTACHE_DATA_DIR` permet d'utiliser un autre dossier, par exemple pour des essais.
 
 ---
 

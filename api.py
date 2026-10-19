@@ -12,9 +12,10 @@ from pathlib import Path
 import webview
 
 import custom_tasks
+import diagnostics
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 import speech
-from engine import logger, tts, strip_markdown
+from engine import LEVELS, logger, tts, strip_markdown
 from ollama_admin import DOWNLOAD_PAGE, USES as MODEL_USES, models_dir
 from storage import DATA_DIR, clipboard_history, settings
 from winutil import (list_windows, open_url, reveal_in_explorer, set_opacity, set_topmost,
@@ -590,10 +591,28 @@ class Api:
         self._app.emit_clipboard()
 
     # ─────────────────────────────────────────
-    #  Historique
+    #  Journal
     # ─────────────────────────────────────────
     def logs_clear(self):
         logger.clear_history()
+
+    def logs_client(self, level, message, details=""):
+        """Erreur ou avertissement de l'interface (errors.js) : rejoint le journal."""
+        logger.log(str(message or "")[:2000] or "(sans message)", level=level if level in LEVELS else "error",
+                   details=str(details or "")[:12000] or None, source="interface")
+
+    def logs_report(self, client=None):
+        """Rapport de diagnostic (texte) ; client : navigateur et taille de la fenêtre."""
+        return self._app.diagnostic_report(client if isinstance(client, dict) else {})
+
+    def logs_sessions(self):
+        return diagnostics.sessions()
+
+    def logs_open(self, name=None):
+        return diagnostics.open_log(str(name) if name else None)
+
+    def logs_open_folder(self):
+        return diagnostics.open_folder()
 
     # ─────────────────────────────────────────
     #  Tâches & raccourcis

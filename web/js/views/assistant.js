@@ -105,7 +105,10 @@ export function createAssistantView(ctx, state) {
     sendTip: "Demander", stopTip: "Arrêter la réponse",
   });
   const { input } = composer;
-  const askBar = h("div", { class: "composer-wrap" }, composer.el);
+  // Suggestions : au-dessus du champ, proposées aussi quand des questions ont déjà été posées
+  const suggestRow = h("div", { class: "asst-suggestions", role: "group", "aria-label": "Suggestions" },
+    ...SUGGESTIONS.map((q) => h("button", { class: "chip small asst-suggestion", type: "button", onClick: () => ask(q) }, q)));
+  const askBar = h("div", { class: "composer-wrap" }, suggestRow, composer.el);
 
   const sub = h("span", { class: "view-sub" });
   const el = h("section", {},
@@ -151,6 +154,8 @@ export function createAssistantView(ctx, state) {
     const ollama = !!store.ollama;
     composer.update({ busy: !!S.st.asking, ready: ollama });
     input.disabled = !ollama;
+    suggestRow.hidden = !ollama;
+    for (const btn of suggestRow.children) btn.disabled = !!S.st.asking;
     composer.setPlaceholder(ollama ? "Une question sur vos e-mails ou vos messages WhatsApp ?"
       : "Les questions ont besoin d'Ollama (en local), qui ne répond pas.");
     modelName.textContent = S.st.model || "Aucun modèle";
@@ -256,8 +261,6 @@ export function createAssistantView(ctx, state) {
       intro.replaceChildren(
         h("p", { class: "asst-intro-text", text: "Posez une question sur vos e-mails et vos messages WhatsApp : "
           + "l'assistant relit Gmail et WhatsApp (ouverts en arrière-plan si besoin) et répond avec Ollama, en local." }),
-        h("div", { class: "asst-suggestions" }, ...SUGGESTIONS.map((q) =>
-          h("button", { class: "chip small asst-suggestion", type: "button", onClick: () => ask(q) }, q))),
         h("p", { class: "asst-privacy" }, ico("lock", 13),
           h("span", { text: "Rien ne quitte ce PC, rien n'est envoyé ni marqué comme lu. Pour WhatsApp, l'assistant voit "
             + "le dernier message de chaque discussion, la discussion ouverte et les messages arrivés pendant les annonces." })));

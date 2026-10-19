@@ -307,7 +307,7 @@ function createAssistBar(ctx, state, cfg) {
         + "sans les marquer comme lus, et fait le point");
   }
 
-  // ── Suggestions (conversation vide) ──
+  // ── Suggestions ──
   /** Brouillon écrit : le retoucher ; e-mail (discussion) ouvert : y répondre ;
    *  sinon (Gmail) : des questions sur les e-mails. */
   function suggestions() {

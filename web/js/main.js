@@ -31,7 +31,7 @@ const NAV = [
   { id: "assistant", label: "Assistant",      icon: "sparkles",        create: createAssistantView },
   { id: "rag",       label: "Documents",      icon: "library",         create: createRagView },
   "-",
-  { id: "logs",      label: "Historique",     icon: "scroll-text",     create: createLogsView },
+  { id: "logs",      label: "Journal",        icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
   { id: "hotkeys",   label: "Raccourcis",     icon: "keyboard",        create: createHotkeysView },
   { id: "ollama",    label: "Ollama",         icon: "cpu",             create: createOllamaView },

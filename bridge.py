@@ -97,6 +97,9 @@ class Bridge:
                 if event == "rag:state":       # seul le dernier état compte
                     out[-1] = (event, dict(payload))
                     continue
+                if event == "log" and prev["seq"] == payload["seq"]:   # message répété : dernier compteur
+                    out[-1] = (event, dict(payload))
+                    continue
             if isinstance(payload, dict):
                 payload = dict(payload)
             out.append((event, payload))

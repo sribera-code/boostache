@@ -1452,7 +1452,7 @@ class RagService:
                                     f"WHERE chunks_fts MATCH ?{where} ORDER BY bm25(chunks_fts) LIMIT ?",
                                     (fts, *args, TOP_LEXICAL))
             except sqlite3.OperationalError as e:
-                logger.log(f"Documents : recherche plein texte impossible ({e})")
+                logger.warning(f"Documents : recherche plein texte impossible ({e})")
                 rows = []
             for rank, (cid,) in enumerate(rows):
                 scores[cid] += 1 / (RRF_K + rank + 1)

@@ -55,6 +55,7 @@ export const api = new Proxy({}, {
       const fn = window.pywebview?.api?.[name];
       if (!fn) {
         errorHandler(`Fonction indisponible : ${String(name)}`);
+        window.__journal?.("error", `Fonction Python indisponible : api.${String(name)}`, new Error().stack);
         return null;
       }
       try {

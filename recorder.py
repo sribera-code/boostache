@@ -280,7 +280,7 @@ class Session(threading.Thread):
             except comtypes.COMError as e:
                 if not wasapi.is_invalidated(e):
                     raise
-                logger.log(f"Enregistreur : « {self.device_name} » perdu, nouvel essai…")
+                logger.warning(f"Enregistreur : « {self.device_name} » perdu, nouvel essai…")
                 self._close_output()
                 lost = now
                 continue
