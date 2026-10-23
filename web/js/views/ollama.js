@@ -27,6 +27,8 @@ const USES = [
   ["assist", "WhatsApp et Gmail", "assist_model", "Assistant de réponse sous les sites intégrés"],
   ["assistant", "Assistant", "assistant_model", "Questions sur Gmail et WhatsApp"],
   ["rag", "Documents", "rag_model", "Questions et résumés sur vos dossiers"],
+  ["files", "Fichiers", "files_model", "Résumé et questions sur un fichier ou un dossier déposé"],
+  ["calc", "Calculatrice", "calc_model", "Assistant qui calcule et modifie vos calculs ; il lui faut un modèle à outils"],
 ];
 const EMBED_USE = "Documents (embeddings)";     // modèle d'embeddings de la section Documents (uses.rag_embed)
 

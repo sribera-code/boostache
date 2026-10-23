@@ -13,6 +13,8 @@ import { createCapturesView } from "./views/captures.js";
 import { createRecorderView } from "./views/recorder.js";
 import { createAssistantView } from "./views/assistant.js";
 import { createRagView } from "./views/rag.js";
+import { createFilesView } from "./views/files.js";
+import { createCalcView } from "./views/calc.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
@@ -31,6 +33,8 @@ const NAV = [
   { id: "recorder",  label: "Enregistreur",   icon: "audio-lines",     create: createRecorderView },
   { id: "assistant", label: "Assistant",      icon: "sparkles",        create: createAssistantView },
   { id: "rag",       label: "Documents",      icon: "library",         create: createRagView },
+  { id: "files",     label: "Fichiers",       icon: "folder-search",   create: createFilesView },
+  { id: "calc",      label: "Calculatrice",   icon: "calculator",      create: createCalcView },
   "-",
   { id: "logs",      label: "Journal",        icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
@@ -492,7 +496,7 @@ function setupGlobalHandlers() {
     if (!drop || Date.now() - drop.at > 10000 || !paths?.length) return;
     const view = views.get(drop.view)?.view;
     if (view?.onDrop) view.onDrop(paths, drop.zone);
-    else toast("Déposez des fichiers dans Conversations, Consoles, Captures ou Documents.", "info");
+    else toast("Déposez des fichiers dans Conversations, Consoles, Captures, Documents ou Fichiers.", "info");
   });
 
   // Raccourcis de l'interface

@@ -65,7 +65,7 @@ MANIFEST_TYPES = "application/vnd.ollama.manifest.list.v2+json, " + MANIFEST_SIN
 
 # Fonctions de Boostache qui utilisent un modèle → réglage où il est choisi
 USES = {"chat": "last_model", "help": "help_model", "assist": "assist_model", "assistant": "assistant_model",
-        "rag": "rag_model"}
+        "rag": "rag_model", "files": "files_model", "calc": "calc_model"}
 
 # Étapes d'un « pull » (statut envoyé par Ollama → texte affiché)
 _PHASES = (
@@ -540,6 +540,11 @@ class OllamaAdmin:
             if self._rag is not None:
                 out["rag"] = self._rag.model() or ""
                 out["rag_embed"] = self._rag.embed_model() or ""     # embeddings (pas une fonction de USES)
+                # Fichiers : comme FilesService.model()
+                out["files"] = pick(settings.get("files_model", ""), out["rag"],
+                                    out.get("assistant", ""), last)
+                # Calculatrice : comme CalcService.model()
+                out["calc"] = pick(settings.get("calc_model", ""), out["files"])
         except Exception:
             pass
         return out
@@ -645,7 +650,8 @@ class OllamaAdmin:
         # Ordre : les fonctions dont les autres prennent le modèle par défaut d'abord
         for use, prefer in (("chat", ("assist", "assistant", "help")), ("assist", ("chat",)),
                             ("assistant", ("assist", "chat")), ("rag", ("assistant", "assist", "chat")),
-                            ("help", ())):
+                            ("files", ("rag", "assistant", "assist", "chat")),
+                            ("calc", ("files", "rag", "assistant", "assist", "chat")), ("help", ())):
             key = USES[use]
             if chosen[use] != name:
                 continue

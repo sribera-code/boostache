@@ -20,10 +20,12 @@ import ducking
 from api import Api
 from assistant import AssistantService
 from bridge import Bridge
+from calc import CalcService
 from captures import CapturesService, Snipper
 from chat import CTX_SIZES, KEEP_ALIVE, ChatService, OLLAMA_OK
 from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
+from files import FilesService
 from gmail import GmailPane
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
@@ -48,7 +50,8 @@ PRINT_SCREEN = "print screen"
 CTRL_PRINT_SCREEN = "ctrl+print screen"
 NO_OLLAMA_LIB = "librairie 'ollama' absente (pip install ollama)"
 # Lecture auto des zones de saisie (réponses lues au fil de l'eau), une par section
-SPEAK_SETTINGS = ("chat_speak", "assistant_speak", "rag_speak", "gmail_speak", "whatsapp_speak")
+SPEAK_SETTINGS = ("chat_speak", "assistant_speak", "rag_speak", "gmail_speak", "whatsapp_speak", "files_speak",
+                  "calc_speak")
 
 
 def _force_dark_titlebar():
@@ -147,6 +150,10 @@ class BoostacheApp:
         self.assistant = AssistantService(self)
         # Section Documents : index des dossiers choisis, questions et résumés (Ollama)
         self.rag = RagService(self.bridge, self.chat)
+        # Section Fichiers : fiche d'un fichier ou d'un dossier, résumé et questions (Ollama)
+        self.files = FilesService(self.bridge, self.chat)
+        # Section Calculatrice : console Python (processus à part), assistant (Ollama)
+        self.calc = CalcService(self.bridge, self.chat)
         # Section Ollama : serveur, modèles, téléchargements
         self.ollama = (OllamaAdmin(self.bridge, self.chat, self.assistant, is_visible=self.is_visible,
                                    notify=self._notify, rag=self.rag) if self.chat else None)
@@ -518,6 +525,7 @@ class BoostacheApp:
         self.recorder.shutdown()
         self.assistant.shutdown()
         self.rag.shutdown()
+        self.calc.shutdown()
         try:
             tts.shutdown()
         except Exception:
@@ -542,7 +550,8 @@ class BoostacheApp:
                 "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed", "tts_volume",
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
-                "mail_list", "mail_list_width", "gmail_auto_summary")},
+                "mail_list", "mail_list_width", "gmail_auto_summary", "files_model", "files_auto_summary",
+                "calc_model")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -552,6 +561,8 @@ class BoostacheApp:
             "recorder":  self.recorder.snapshot(),
             "assistant": self.assistant.snapshot(),
             "rag":       self.rag.snapshot(),
+            "files":     self.files.snapshot(),
+            "calc":      self.calc.state(),
             "ollama":    self.ollama.boot_state() if self.ollama else
                          {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
@@ -673,6 +684,8 @@ class BoostacheApp:
         elif key == "rag_model":
             settings.set(key, str(value or ""))
             self.rag.refresh()
+        elif key in ("files_model", "calc_model"):
+            settings.set(key, str(value or ""))
         elif key == "rag_tree_width":
             # Largeur de l'arborescence de la section Documents (px)
             try:
@@ -682,7 +695,7 @@ class BoostacheApp:
             settings.set(key, value)
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
-        elif key in ("mail_list", "gmail_auto_summary"):
+        elif key in ("mail_list", "gmail_auto_summary", "files_auto_summary"):
             settings.set(key, bool(value))
         elif key == "mail_list_width":
             # Largeur de la liste des e-mails à côté de Gmail (px)

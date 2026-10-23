@@ -143,12 +143,17 @@ class SHFILEOPSTRUCTW(ctypes.Structure):
 
 FO_DELETE = 3
 FOF_SILENT, FOF_NOCONFIRMATION, FOF_ALLOWUNDO, FOF_NOERRORUI = 0x4, 0x10, 0x40, 0x400
+FOF_WANTNUKEWARNING = 0x4000
 
 
-def recycle(path: str) -> bool:
-    """Envoie un fichier à la corbeille (récupérable), sans confirmation."""
-    op = SHFILEOPSTRUCTW(wFunc=FO_DELETE, pFrom=os.path.abspath(path) + "\0",
-                         fFlags=FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI)
+def recycle(path: str, warn_permanent: bool = False, owner: int = 0) -> bool:
+    """Envoie un fichier (ou un dossier) à la corbeille (récupérable), sans
+    confirmation. warn_permanent : demander confirmation si l'élément serait
+    supprimé définitivement (lecteur sans corbeille, réseau, élément trop gros),
+    dans une fenêtre posée sur `owner`."""
+    flags = FOF_SILENT | FOF_NOCONFIRMATION | FOF_ALLOWUNDO | FOF_NOERRORUI
+    op = SHFILEOPSTRUCTW(hwnd=owner or None, wFunc=FO_DELETE, pFrom=os.path.abspath(path) + "\0",
+                         fFlags=flags | (FOF_WANTNUKEWARNING if warn_permanent else 0))
     return shell32.SHFileOperationW(ctypes.byref(op)) == 0 and not op.fAnyOperationsAborted
 
 
@@ -531,6 +536,14 @@ def _exe_icon(path: str) -> str | None:
                 user32.DestroyIcon(large)
         _exe_icons[key] = url
     return _exe_icons[key]
+
+
+def exe_icon(path: str) -> str | None:
+    """Icône d'un exécutable (data URL PNG), None s'il n'en a pas."""
+    try:
+        return _exe_icon(path)
+    except Exception:
+        return None
 
 
 def window_icon(hwnd: int, exe_path: str = "") -> str | None:

@@ -14,13 +14,14 @@ import webview
 import custom_tasks
 import assistant
 import diagnostics
+import locks
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 import speech
 from engine import LEVELS, logger, tts, strip_markdown
 from ollama_admin import DOWNLOAD_PAGE, INSTALLER, USES as MODEL_USES, models_dir
 from storage import DATA_DIR, clipboard_history, settings
-from winutil import (list_windows, open_url, reveal_in_explorer, set_opacity, set_topmost,
-                     window_thumbnail)
+from winutil import (exe_icon, list_windows, open_url, recycle, reveal_in_explorer, set_opacity,
+                     set_topmost, window_thumbnail)
 
 ATTACH_TYPES = (
     "Texte & code (*.txt;*.md;*.py;*.js;*.ts;*.json;*.yaml;*.yml;*.csv;*.xml;*.html;*.css;"
@@ -581,6 +582,160 @@ class Api:
 
     def pane_list_action(self, pane, thread_id, action):
         return self._app.panes[pane].list_action(str(thread_id or ""), str(action or ""))
+
+    # ─────────────────────────────────────────
+    #  Fichiers
+    # ─────────────────────────────────────────
+    def files_inspect(self, path):
+        return self._app.files.inspect(str(path or ""))
+
+    def files_details(self, path):
+        return self._app.files.details(str(path or ""))
+
+    def files_text(self, path):
+        return self._app.files.text(str(path or ""))
+
+    def files_scan(self, path):
+        return self._app.files.scan(str(path or ""))
+
+    def files_stop_scan(self, path):
+        self._app.files.stop_scan(str(path or ""))
+
+    def files_hashes(self, path):
+        return self._app.files.hashes(str(path or ""))
+
+    def files_remember(self, paths):
+        self._app.files.remember([str(p) for p in (paths or [])])
+
+    def files_forget(self, path):
+        self._app.files.forget(str(path or ""))
+
+    def files_refresh(self, path):
+        self._app.files.refresh(str(path or ""))
+
+    def files_thread(self, path):
+        return self._app.files.thread(str(path or ""))
+
+    def files_summarize(self, path):
+        return self._app.files.summarize(str(path or ""))
+
+    def files_ask(self, path, question):
+        return self._app.files.ask(str(path or ""), question)
+
+    def files_stop(self):
+        self._app.files.stop()
+
+    def files_delete(self, path, entry_id):
+        self._app.files.delete(str(path or ""), str(entry_id or ""))
+
+    def files_model(self):
+        return self._app.files.model()
+
+    def files_open(self, path):
+        """Ouvre l'élément avec son application (un dossier dans l'Explorateur)."""
+        path = str(path or "")
+        if not os.path.exists(path):
+            return False
+        try:
+            os.startfile(path)
+            return True
+        except OSError as e:
+            logger.log(f"Fichiers : ouverture de {path} impossible ({e}).", level="warning")
+            return False
+
+    def locks_scan(self, paths, elevated=False):
+        """Processus qui utilisent ces fichiers ou dossiers ; elevated : en
+        administrateur (fenêtre UAC). {cancelled} si l'UAC est refusée."""
+        paths = [str(p) for p in (paths or []) if p]
+        try:
+            result = locks.scan(paths, elevated=bool(elevated))
+        except PermissionError:
+            return {"cancelled": True}
+        except Exception as e:
+            logger.log(f"Fichiers bloqués : analyse impossible ({e}).", level="warning")
+            return {"error": str(e)}
+        for p in result["processes"]:
+            p["icon"] = exe_icon(p["exe"]) if p["exe"] else None
+        return result
+
+    def locks_kill(self, targets, elevated=False):
+        """targets : [{pid, start, name}] (start : vérifie que le pid n'a pas été repris)."""
+        targets = [{"pid": int(t["pid"]), "start": str(t.get("start") or 0), "name": str(t.get("name") or "")}
+                   for t in (targets or [])]
+        try:
+            result = locks.terminate(targets, elevated=bool(elevated))
+        except PermissionError:
+            return {"cancelled": True}
+        except Exception as e:
+            logger.log(f"Fichiers bloqués : fin de processus impossible ({e}).", level="warning")
+            return {"error": str(e)}
+        names = {t["pid"]: t["name"] for t in targets}
+        for pid in result["killed"]:
+            logger.log(f"Fichiers bloqués : {names.get(pid) or 'processus'} (PID {pid}) terminé.")
+        return result
+
+    def locks_close(self, pid):
+        """Demande à l'application de fermer ses fenêtres : nombre de fenêtres prévenues."""
+        return locks.close_windows(int(pid))
+
+    def locks_recycle(self, path):
+        path = str(path or "")
+        if not os.path.exists(path):
+            return {"ok": True}
+        if recycle(path, warn_permanent=True, owner=self._app._hwnd) and not os.path.exists(path):
+            logger.log(f"Fichiers bloqués : {path} mis à la corbeille.")
+            return {"ok": True}
+        return {"ok": False}
+
+    def locks_pick_file(self):
+        paths = self._app.window.create_file_dialog(webview.FileDialog.OPEN, allow_multiple=True)
+        return list(paths) if paths else []
+
+    # ─────────────────────────────────────────
+    #  Calculatrice
+    # ─────────────────────────────────────────
+    def calc_state(self):
+        return self._app.calc.state()
+
+    def calc_warm_up(self):
+        self._app.calc.warm_up()
+
+    def calc_run(self, code):
+        return self._app.calc.run(code)
+
+    def calc_interrupt(self):
+        return self._app.calc.interrupt()
+
+    def calc_reset(self):
+        return self._app.calc.reset()
+
+    def calc_replay(self, session):
+        return self._app.calc.replay(str(session or ""))
+
+    def calc_delete(self, n):
+        return self._app.calc.delete(int(n))
+
+    def calc_clear(self):
+        return self._app.calc.clear()
+
+    def calc_edit(self, n, code):
+        """Modifie un calcul de l'historique : lui et ceux qui le suivent sont recalculés."""
+        return self._app.calc.recompute(int(n), code)
+
+    def calc_ask(self, question):
+        return self._app.calc.ask(question)
+
+    def calc_stop(self):
+        self._app.calc.stop()
+
+    def calc_delete_turn(self, turn_id):
+        self._app.calc.delete_turn(str(turn_id or ""))
+
+    def calc_clear_conversation(self):
+        self._app.calc.clear_conversation()
+
+    def calc_model(self):
+        return self._app.calc.model()
 
     # ─────────────────────────────────────────
     #  Presse-papiers

@@ -149,6 +149,12 @@ _DEFAULTS = {
     "mail_list":            True,          # Gmail : liste des e-mails à côté du site
     "mail_list_width":      340,           # largeur de cette liste (px)
     "gmail_auto_summary":   False,         # Gmail : nouveaux e-mails de la boîte résumés d'office
+    "files_model":          "",            # section Fichiers : modèle des résumés et questions ("" : celui des documents…)
+    "calc_model":           "",            # Calculatrice : modèle de l'assistant ("" : celui des fichiers…)
+    "files_auto_summary":   True,          # section Fichiers : résumé lancé dès qu'un élément est affiché
+    "files_speak":          False,         # Lecture auto des réponses de la section Fichiers
+    "calc_speak":           False,         # … de l'assistant de la Calculatrice
+    "files_recent":         [],            # section Fichiers : éléments de la barre du haut
 }
 
 
