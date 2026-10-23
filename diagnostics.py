@@ -28,6 +28,7 @@ import logging
 import os
 import platform
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -67,6 +68,17 @@ _k32.GetCurrentProcess.restype = wintypes.HANDLE
 _k32.GetTickCount64.restype = ctypes.c_ulonglong
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 STILL_ACTIVE = 259
+CREATE_NO_WINDOW = 0x08000000
+# Arrêt de Windows dans le journal Système : début de l'arrêt (User32 1074), service des
+# journaux arrêté (EventLog 6006), transition d'arrêt du noyau (Kernel-Power 109) et — avec
+# le démarrage rapide, réglage par défaut — mise en veille prolongée du noyau à l'arrêt
+# (Kernel-Power 42, état visé 6 : arrêt ; 4 ou 5, une simple veille, garde les processus)
+SHUTDOWN_QUERY = ("*[System[TimeCreated[@SystemTime>='{since}' and @SystemTime<='{until}'] and ("
+                  "(Provider[@Name='Microsoft-Windows-Kernel-Power'] and (EventID=42 or EventID=109)) or "
+                  "(Provider[@Name='User32'] and EventID=1074) or "
+                  "(Provider[@Name='EventLog'] and EventID=6006))]]")
+_EVENT = re.compile(r"<Event .*?</Event>", re.S)
+_stopped: dict[tuple[str, float], bool] = {}     # journal de session (nom, date) → arrêt de Windows après
 
 
 class _MemoryCounters(ctypes.Structure):
@@ -507,9 +519,10 @@ def _tail(path: Path, size: int = 64 * 1024) -> list[str]:
         return []
 
 
-def _session_state(path: Path) -> str:
+def _session_state(path: Path, until: float | None = None) -> str:
     """ok (terminée normalement), running (une autre instance tourne), crash
-    (plantage relevé par faulthandler), shutdown (arrêtée avec Windows) ou abnormal."""
+    (plantage relevé par faulthandler), shutdown (arrêtée avec Windows, avant until :
+    le début de la session suivante) ou abnormal."""
     lines = _tail(path, 4096)
     if lines and lines[-1].strip() == END_MARK:
         return "ok"
@@ -523,10 +536,11 @@ def _session_state(path: Path) -> str:
     except OSError:
         pass
     try:
-        if path.stat().st_mtime < _boot_time():
-            return "shutdown"
+        mtime = path.stat().st_mtime
     except OSError:
-        pass
+        return "abnormal"
+    if mtime < _boot_time() or _windows_stopped_since(path.name, mtime, until):
+        return "shutdown"
     return "abnormal"
 
 
@@ -579,7 +593,30 @@ def _is_python(pid: int) -> bool:
 
 
 def _boot_time() -> float:
+    """Dernier démarrage complet. Avec le démarrage rapide, l'arrêt de Windows ne le
+    change pas (le noyau est mis en veille prolongée) : voir _windows_stopped_since."""
     return time.time() - _k32.GetTickCount64() / 1000
+
+
+def _windows_stopped_since(name: str, since: float, until: float | None = None) -> bool:
+    """Windows s'est arrêté (ou a redémarré) entre la dernière écriture du journal d'une
+    session et until (maintenant par défaut), d'après le journal Système (wevtutil,
+    gardé en cache par session)."""
+    key = (name, since)
+    if key not in _stopped:
+        def stamp(t):
+            return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        query = SHUTDOWN_QUERY.format(since=stamp(since), until=stamp(until or time.time() + 60))
+        try:
+            r = subprocess.run(["wevtutil", "qe", "System", "/q:" + query,
+                                "/f:xml", "/c:50"], capture_output=True, timeout=10,
+                               creationflags=CREATE_NO_WINDOW)
+            events = _EVENT.findall(r.stdout.decode("utf-8", "replace")) if r.returncode == 0 else []
+        except (OSError, subprocess.SubprocessError):
+            events = []
+        _stopped[key] = any("<EventID>42</EventID>" not in e or "<Data Name='TargetState'>6</Data>" in e
+                            for e in events)
+    return _stopped[key]
 
 
 # ─────────────────────────────────────────────
@@ -588,16 +625,18 @@ def _boot_time() -> float:
 def sessions() -> list[dict]:
     """Journaux sur disque, du plus récent au plus ancien."""
     out = []
+    following = None           # début de la session suivante (la plus récente : maintenant)
     for path in reversed(_session_files()):
         m = _SESSION_NAME.fullmatch(path.name)
+        start = datetime.datetime.strptime(m.group(1), "%Y-%m-%d_%H-%M-%S")
+        until, following = following, start.timestamp()
         try:
             size = path.stat().st_size
         except OSError:
             continue
-        start = datetime.datetime.strptime(m.group(1), "%Y-%m-%d_%H-%M-%S")
         current = _session is not None and path == _session.path
         out.append({"name": path.name, "start": start.isoformat(), "size": size,
-                    "state": "current" if current else _session_state(path)})
+                    "state": "current" if current else _session_state(path, until)})
     return out
 
 

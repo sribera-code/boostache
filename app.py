@@ -49,6 +49,7 @@ PREVIEW_LEN = 2000
 PRINT_SCREEN = "print screen"
 CTRL_PRINT_SCREEN = "ctrl+print screen"
 NO_OLLAMA_LIB = "librairie 'ollama' absente (pip install ollama)"
+SESSION_END_WAIT = 4.0         # s laissées à la fermeture quand Windows s'arrête (il en accorde 5)
 # Lecture auto des zones de saisie (réponses lues au fil de l'eau), une par section
 SPEAK_SETTINGS = ("chat_speak", "assistant_speak", "rag_speak", "gmail_speak", "whatsapp_speak", "files_speak",
                   "calc_speak")
@@ -124,6 +125,9 @@ class BoostacheApp:
         self._visible = False
         self._was_minimized = False
         self._quitting = False
+        self._ending: threading.Thread | None = None    # arrêt de Windows : récupération de l'état de la page
+        self._shutdown_lock = threading.Lock()
+        self._shut_down = False
         self._size = tuple(settings.get("window_size", [980, 680]))
         self._size_timer: threading.Timer | None = None
 
@@ -354,6 +358,48 @@ class BoostacheApp:
         except Exception:
             self._hwnd = 0
         dark_title_bar(self._hwnd, TITLEBAR_RGB)
+        try:
+            # Abonnés après pywebview : appelés après lui (et donc après _on_closing)
+            window.native.FormClosing += self._on_form_closing
+            window.native.FormClosed += self._on_form_closed
+        except Exception as e:
+            logger.log(f"Arrêt de Windows : fermeture non suivie ({e})")
+
+    def _on_form_closing(self, sender, args):
+        """Arrêt de Windows (WM_QUERYENDSESSION) : la fermeture que _on_closing vient
+        d'annuler (✕ range dans le tray) est acceptée — annulée, Boostache empêcherait
+        l'arrêt et Windows finirait par le tuer. L'état de la page est récupéré pendant
+        que Windows interroge les autres applications."""
+        from System.Windows.Forms import CloseReason
+        if args.CloseReason != CloseReason.WindowsShutDown or self._quitting:
+            return
+        args.Cancel = False
+        if self._ending is None or not self._ending.is_alive():
+            self._ending = threading.Thread(target=self._collect_ui_state, daemon=True, name="session-end")
+            self._ending.start()
+
+    def _on_form_closed(self, sender, args):
+        """Fin de la session Windows (WM_ENDSESSION) : Windows termine le processus peu
+        après le retour de ce message, le thread principal n'irait pas au bout de
+        _shutdown — ce que fait Quitter est fait ici, SESSION_END_WAIT s au plus."""
+        from System.Windows.Forms import CloseReason
+        if args.CloseReason != CloseReason.WindowsShutDown or self._quitting:
+            return
+        self._quitting = True
+        logger.info("Arrêt de Windows : fermeture de Boostache.")
+        collect = self._ending
+
+        def end():
+            if collect is not None:
+                collect.join(1.0)
+            self._shutdown()
+
+        worker = threading.Thread(target=end, daemon=True, name="session-end")
+        worker.start()
+        worker.join(SESSION_END_WAIT)
+        if worker.is_alive():
+            logger.warning("Arrêt de Windows : fermeture pas terminée à temps.")
+        diagnostics.close()        # marque de fin : session terminée avec Windows
 
     def _on_closing(self):
         # Exécuté dans le thread de l'interface : ne rien bloquer ici
@@ -512,25 +558,32 @@ class BoostacheApp:
             settings.set("window_size", [w, h])
 
     def _shutdown(self):
-        self._save_size()
-        if self._print_screen:
-            self._print_screen.stop()
-        self.foreground.stop()
-        if self._clip_listener:
+        """Une seule fois (fin de webview.start, ou arrêt de Windows : l'autre appel
+        attend qu'elle soit finie). D'abord ce qui laisserait une trace : enregistrement
+        en cours, son des autres applications baissé par une annonce."""
+        with self._shutdown_lock:
+            if self._shut_down:
+                return
+            self._shut_down = True
+            self._save_size()
+            self.recorder.shutdown()
             try:
-                self._clip_listener.stop()
+                tts.shutdown()
             except Exception:
                 pass
-        self.terminals.shutdown()
-        self.recorder.shutdown()
-        self.assistant.shutdown()
-        self.rag.shutdown()
-        self.calc.shutdown()
-        try:
-            tts.shutdown()
-        except Exception:
-            pass
-        self.bridge.stop()
+            if self._print_screen:
+                self._print_screen.stop()
+            self.foreground.stop()
+            if self._clip_listener:
+                try:
+                    self._clip_listener.stop()
+                except Exception:
+                    pass
+            self.terminals.shutdown()
+            self.assistant.shutdown()
+            self.rag.shutdown()
+            self.calc.shutdown()
+            self.bridge.stop()
 
     # ─────────────────────────────────────────
     #  Données envoyées à l'interface

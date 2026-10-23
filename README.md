@@ -187,7 +187,7 @@ Console Python pour les calculs, avec un assistant en conversation :
   - Pastille rouge dans la barre latérale : erreurs arrivées depuis la dernière visite du Journal
   - **Copier le rapport** : versions (commit, Python, pywebview, WebView2, Windows), état (Ollama, mémoire, threads), erreurs et avertissements avec leurs traces et dernières entrées — à coller dans une conversation pour analyser le problème
   - Sur disque : un fichier par lancement dans le dossier `logs` des données (les 20 derniers gardés), écrit au fil de l'eau ; bouton **Fichiers du journal** : celui de la session, le dossier, les sessions précédentes (plantage ou arrêt anormal signalés)
-  - Plantage natif (DLL, WebView2…) : la pile de chaque thread est relevée (faulthandler) ; au lancement suivant, une session qui ne s'est pas terminée normalement est signalée dans le Journal avec la fin de son journal (un arrêt de Windows n'est pas compté comme anormal)
+  - Plantage natif (DLL, WebView2…) : la pile de chaque thread est relevée (faulthandler) ; au lancement suivant, une session qui ne s'est pas terminée normalement est signalée dans le Journal avec la fin de son journal. Un arrêt de Windows n'est pas compté comme anormal : Boostache accepte l'arrêt (il ne le bloque plus), enregistre, remet le son des autres applications et se ferme proprement ; un arrêt avec le démarrage rapide de Windows (qui ne remet pas l'heure de démarrage à zéro) est reconnu dans le journal Système
 - **Tâches** : tâches de `tasks.py` + tâches créées depuis l'interface (intervalle ou heure fixe, code Python avec accès au `logger`), exécution manuelle
 - **Raccourcis** : raccourcis globaux de `bindings.py` (et Impr. écran, Ctrl+Impr. écran), actifs même fenêtre masquée, déclenchables à la main
 
