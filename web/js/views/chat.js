@@ -2,9 +2,29 @@
 import { h, throttle, plural, parseDate, formatHour, formatShort, formatDay, formatFullDate } from "../dom.js";
 import { ico, iconButton, openLightbox, openMenu, openMenuBelow, TabStrip, toast, kbdCombo } from "../ui.js";
 import { renderMarkdown, renderMarkdownForCopy, splitThinking } from "../markdown.js";
-import { createComposer, conversationSpeech } from "../composer.js";
+import { createComposer, createSuggestions, conversationSpeech } from "../composer.js";
 
 const wordCount = (s) => (s.trim().match(/\S+/g) || []).length;
+
+// Suggestions au-dessus du champ (gardées quand la conversation avance) : sur la dernière
+// réponse, sur les pièces jointes, et des demandes à compléter (« … »)
+const FOLLOW_UPS = [
+  { icon: "list-checks", label: "Résumer", ask: "Résume ta dernière réponse en quelques points clés." },
+  { icon: "lightbulb", label: "Plus simplement", ask: "Explique plus simplement, sans jargon." },
+  { icon: "sparkles", label: "Un exemple", ask: "Donne un exemple concret." },
+  { icon: "arrow-down", label: "Développer", ask: "Développe davantage." },
+];
+const ON_IMAGE = [
+  { icon: "image", label: "Décrire l'image", ask: "Décris cette image." },
+  { icon: "text-select", label: "Lire le texte de l'image", ask: "Recopie le texte visible sur cette image." },
+];
+const ON_FILE = [{ icon: "file-text", label: "Résumer le document", ask: "Résume ce document en quelques points." }];
+const STARTERS = [
+  { icon: "type", label: "Corriger un texte", fill: "Corrige l'orthographe et la grammaire de ce texte, sans changer le style :\n…" },
+  { icon: "mail", label: "Rédiger un e-mail", fill: "Rédige un e-mail court et poli pour …" },
+  { icon: "scroll-text", label: "Résumer un texte", fill: "Résume ce texte en quelques points :\n…" },
+  { icon: "message-square", label: "Traduire", fill: "Traduis en anglais :\n…" },
+];
 
 /** Heure d'un message : "14:32", la date complète au survol ; masquée s'il n'en a pas
  *  (conversations d'avant l'horodatage, réponse en cours). */
@@ -82,11 +102,12 @@ export function createChatView(ctx, state) {
     sendTip: "Envoyer", stopTip: "Arrêter la génération",
   });
   const { input } = composer;
+  const suggest = createSuggestions(composer, (text) => send(text));
 
   const el = h("section", {},
     h("header", { class: "view-head" }, strip.el),
     body,
-    h("div", { class: "composer-wrap" }, helpBar, composer.el));
+    h("div", { class: "composer-wrap" }, helpBar, suggest.el, composer.el));
 
   // ── Onglets ─────────────────────────────────
   const activeTab = () => S.tabs.get(S.active);
@@ -535,6 +556,7 @@ export function createChatView(ctx, state) {
     modelName.textContent = model || (S.modelsError ? "Aucun modèle" : "Chargement…");
     composer.setPlaceholder(t?.data.help && !t.data.messages.length
       ? "Ou décrivez l'aide souhaitée…" : "Écrivez un message…");
+    renderSuggest(t, model);
     // Autre onglet : le bouton Lire montre ses lectures à lui
     const source = t ? `chat:${t.id}` : "";
     if (composer.readBtn.dataset.speakSource !== source) {
@@ -626,6 +648,20 @@ export function createChatView(ctx, state) {
       if (t.data.help?.status === "error" && !t.data.messages.length) api.chat_help_suggest(t.id);
     });
     updateComposer();
+  }
+
+  /** Suggestions de l'onglet : sur la dernière réponse et les pièces jointes, puis des demandes à
+   *  compléter (l'aide contextuelle a ses propositions à elle, au-dessus). */
+  function renderSuggest(t, model) {
+    if (!t) { suggest.set([]); return; }
+    const answered = t.data.messages.some((m) => m.role !== "user");
+    const files = t.data.attachments || [];
+    const items = [];
+    if (files.some((a) => a.type === "image")) items.push(...ON_IMAGE);
+    if (files.some((a) => a.type !== "image")) items.push(...ON_FILE);
+    if (answered) items.push(...FOLLOW_UPS);
+    if (!t.data.help) items.push(...STARTERS);
+    suggest.set(items, !!t.data.streaming || !model);
   }
 
   // ── Aide contextuelle (Ctrl+Impr. écran) ────

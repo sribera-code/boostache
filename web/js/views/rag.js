@@ -5,7 +5,7 @@
 import { h, plural, formatShort, parseDate } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
-import { createComposer, conversationSpeech } from "../composer.js";
+import { createComposer, createSuggestions, conversationSpeech } from "../composer.js";
 
 const EXPANDED_KEY = "boostache.rag.expanded";     // dossiers dépliés (localStorage)
 const SELECTED_KEY = "boostache.rag.selected";     // élément choisi
@@ -24,6 +24,16 @@ const TASKS = {
   overview:  { label: "Présenter le dossier", title: "Présentation", icon: "library" },
 };
 const FILE_TASKS = ["summary", "keypoints", "explain"];
+// Suggestions au-dessus du champ, gardées quand des questions ont été posées
+const FOLLOW_UPS = [
+  { icon: "arrow-down", label: "Développer", ask: "Développe ta dernière réponse." },
+  { icon: "lightbulb", label: "Plus simplement", ask: "Explique plus simplement ta dernière réponse." },
+  { icon: "text-select", label: "Citer les passages", ask: "Cite mot pour mot les passages qui appuient ta dernière réponse." },
+];
+const STARTERS = [
+  { icon: "search", label: "Quels documents parlent de…", fill: "Quels documents parlent de … ?" },
+  { icon: "message-square", label: "Que disent mes documents sur…", fill: "Que disent mes documents sur … ?" },
+];
 const STOP = new Set(("les des une pour dans avec sans par sur que qui quoi quel quelle quels quelles est sont "
   + "aux ces cet cette mais donc comme plus moins tout tous toute toutes leur leurs nos vos notre votre "
   + "the and for with from this that what which").split(" "));
@@ -247,7 +257,8 @@ export function createRagView(ctx, state) {
     sendTip: "Demander", stopTip: "Arrêter la réponse",
   });
   const { input } = composer;
-  const askBar = h("div", { class: "composer-wrap" }, composer.el);
+  const suggest = createSuggestions(composer, (text) => ask(text));
+  const askBar = h("div", { class: "composer-wrap" }, suggest.el, composer.el);
   const main = h("div", { class: "rag-main" }, detail, scroller, askBar);
 
   const body = h("div", { class: "rag-body" }, side, splitter, main);
@@ -923,6 +934,7 @@ export function createRagView(ctx, state) {
     const ollama = !!store.ollama;
     composer.setPlaceholder(!ollama ? "Les réponses ont besoin d'Ollama (en local), qui ne répond pas."
       : s ? `Une question sur « ${s.name} » ?` : "Une question sur vos documents ?");
+    renderSuggest();
   }
 
   function scopeMenu(ev) {
@@ -951,6 +963,19 @@ export function createRagView(ctx, state) {
     const res = await api.rag_ask(question, S.scope?.path || null);
     if (!res?.ok) { toast(res?.error || "Question impossible.", "error"); return; }
     if (text === undefined) composer.setValue("");
+  }
+
+  /** Suggestions : les actions de la portée choisie (fichier, dossier), la suite de la dernière
+   *  réponse, des questions à compléter. */
+  function renderSuggest() {
+    if (!store.ollama || !S.st.available) { suggest.set([]); return; }
+    const scope = S.scope;
+    const items = (scope ? (scope.dir ? ["overview"] : FILE_TASKS) : []).map((k) => ({ icon: TASKS[k].icon,
+      label: TASKS[k].label, tip: `${TASKS[k].title} de « ${scope.name} »`, run: () => runTask(k, scope) }));
+    const last = S.history[S.history.length - 1];
+    if (last?.state === "done" && last.answer) items.push(...FOLLOW_UPS);
+    items.push(...STARTERS);
+    suggest.set(items, !!S.st.asking);
   }
 
   async function runTask(kind, node) {
@@ -1339,7 +1364,7 @@ export function createRagView(ctx, state) {
       // Lecture auto : dès que la réponse commence (passages trouvés et lus)
       if (item.state === "thinking" && !entry.autoRead && composer.autoRead()) autoRead(entry);
       feedAnswer(entry);
-      if (!BUSY.has(item.state)) renderDetail();
+      if (!BUSY.has(item.state)) { renderDetail(); renderSuggest(); }
       return;
     }
     S.history.push(item);
@@ -1363,6 +1388,7 @@ export function createRagView(ctx, state) {
   on("rag:history", ({ items }) => {
     S.history = items || [];
     renderThread();
+    renderSuggest();
   });
 
   on("ollama:pull", (p) => {

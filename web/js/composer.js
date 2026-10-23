@@ -1,5 +1,6 @@
 // Zone de saisie des sections qui dialoguent avec un modèle (Conversations, Assistant,
-// Documents, WhatsApp, Gmail) : le champ s'agrandit avec le texte ; dessous, les outils
+// Documents, Fichiers, Calculatrice, WhatsApp, Gmail), et suggestions au-dessus
+// (createSuggestions) : le champ s'agrandit avec le texte ; dessous, les outils
 // de la section à gauche puis, à droite, la lecture à voix haute — interrupteur
 // « Lecture auto » (chaque réponse lue au fur et à mesure qu'elle s'écrit) et bouton
 // qui lit toutes les réponses ou toute la conversation (clic droit : choisir) — et le
@@ -25,6 +26,46 @@ export function conversationSpeech(turns, mode) {
     if (answer?.trim()) parts.push(mode === "all" ? `Réponse : ${answer.trim()}` : answer.trim());
   }
   return parts.join("\n\n");
+}
+
+/**
+ * Suggestions au-dessus de la zone de saisie d'une conversation, toujours proposées (même
+ * quand la conversation n'est pas vide) : set(items, disabled) les remplace.
+ * item : { icon, label, tip, main, ask, fill, run } — ask : demande envoyée par onAsk(texte) ;
+ * fill : texte mis dans le champ, à compléter (« … » sélectionné, Tab : le « … » suivant) ;
+ * run() : action de la section (résumer un fichier…).
+ */
+export function createSuggestions(composer, onAsk) {
+  const { input } = composer;
+  const el = h("div", { class: "pane-suggest", role: "group", "aria-label": "Suggestions", hidden: true });
+
+  function use(item) {
+    if (item.run) { item.run(); return; }
+    if (item.ask) { onAsk(item.ask); return; }
+    composer.setValue(item.fill);
+    input.focus();
+    const i = item.fill.indexOf("…");
+    if (i >= 0) input.setSelectionRange(i, i + 1);
+    else input.setSelectionRange(item.fill.length, item.fill.length);
+  }
+
+  input.addEventListener("keydown", (ev) => {
+    if (ev.key !== "Tab" || ev.shiftKey || ev.ctrlKey || !input.value.includes("…")) return;
+    ev.preventDefault();
+    let i = input.value.indexOf("…", input.selectionEnd);
+    if (i < 0) i = input.value.indexOf("…");
+    input.setSelectionRange(i, i + 1);
+  });
+
+  return {
+    el,
+    set(items, disabled = false) {
+      el.hidden = !items.length;
+      el.replaceChildren(...items.map((c) => h("button", { class: `pane-chip${c.main ? " pc-main" : ""}`, type: "button",
+        disabled, dataset: { tip: c.tip || (c.fill ? "À compléter dans le champ (Tab : « … » suivant)" : c.ask) },
+        onClick: () => use(c) }, ico(c.icon, 13), c.label)));
+    },
+  };
 }
 
 /**
