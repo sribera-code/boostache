@@ -129,6 +129,8 @@ _DEFAULTS = {
     "assistant_whatsapp":   True,          # assistant : WhatsApp lu (questions, annonces)
     "assistant_content":    True,          # annonces : objet de l'e-mail, texte du message (sinon l'expéditeur seul)
     "assistant_summary":    True,          # annonces : résumé par Ollama (importance, action attendue), lu à la place
+    "assistant_duck":       True,          # annonces : son des autres applications baissé pendant la lecture
+    "assistant_duck_level": 10,            # … à ce % de leur volume (ducking.LEVELS ; 0 : coupé)
     "assistant_speak":      False,         # Lecture auto : réponses de l'assistant lues au fil de l'eau
     "chat_speak":           False,         # … des conversations
     "rag_speak":            False,         # … de la section Documents

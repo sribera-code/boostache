@@ -1,6 +1,7 @@
 // Vue Paramètres.
 import { h } from "../dom.js";
 import { card, ico, toast, kbdCombo, openMenuBelow } from "../ui.js";
+import { DUCK_LEVELS, duckLevel, setDuck } from "./assistant.js";
 
 export function createSettingsView(ctx, state) {
   const { api, store } = ctx;
@@ -59,6 +60,17 @@ export function createSettingsView(ctx, state) {
   const voiceBtn = h("button", { class: "btn sm voice-btn", type: "button", onClick: (ev) => voiceMenu(ev.currentTarget) });
   const previewBtn = h("button", { class: "btn sm", type: "button", onClick: preview });
   const speedSeg = h("div", { class: "segmented" });
+  // Son des autres applications pendant une annonce de l'assistant
+  const duckSeg = h("div", { class: "segmented" });
+  const renderDuck = () => {
+    const current = duckLevel(settings);
+    duckSeg.replaceChildren(...DUCK_LEVELS.map(([v, label]) => h("button", {
+      type: "button", class: v === current ? "active" : "", text: label,
+      onClick: async () => { await setDuck(ctx, v); renderDuck(); },
+    })));
+  };
+  renderDuck();
+  ctx.on("setting", ({ key }) => { if (key.startsWith("assistant_duck")) renderDuck(); });
   const speedText = (v) => `${String(Number(v)).replace(".", ",")}×`;
   const engineOf = () => settings.tts_engine || "edge";
   const voiceKey = () => `tts_voice_${engineOf()}`;
@@ -181,7 +193,12 @@ export function createSettingsView(ctx, state) {
         h("div", { class: "row", style: { marginTop: "12px" } },
           h("span", { class: "muted", text: "Vitesse" }), speedSeg),
         h("div", { class: "row", style: { marginTop: "12px" } },
-          h("span", { class: "muted", text: "Volume" }), ctx.volumeControl())),
+          h("span", { class: "muted", text: "Volume" }), ctx.volumeControl()),
+        h("div", { class: "row", style: { marginTop: "12px" } },
+          h("div", {}, h("div", { class: "muted", text: "Autres sons pendant une notification" }),
+            h("div", { class: "hint-text", text: "Pendant qu'un nouveau message est annoncé (Assistant), le son des autres "
+              + "applications (vidéo, musique, appel…) baisse à ce niveau, puis remonte." })),
+          duckSeg)),
       card("palette", "Captures", null,
         h("div", { class: "row" },
           h("div", {}, h("div", {}, "Capturer avec la touche ", ...kbdCombo("print screen")),

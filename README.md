@@ -109,6 +109,7 @@ Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
   - Gmail : e-mails non lus de la boîte de réception (flux Atom de Gmail), liste affichée (ou e-mail ouvert) et, en entier, les fils dont parle la question (mots communs avec l'expéditeur, l'objet ou l'extrait)
   - WhatsApp : liste des discussions avec le dernier message de chacune, discussion ouverte et messages arrivés pendant les annonces. L'assistant n'ouvre jamais une discussion (elle serait marquée comme lue)
 - **Annonces vocales** (bouton cloche) : chaque nouvel e-mail de la boîte de réception et chaque nouveau message WhatsApp est annoncé à voix haute. Discussions WhatsApp en sourdine ignorées ; option **Lire le contenu** (sinon l'expéditeur seul) ; bouton **Exemple**. Une lecture en cours n'est pas coupée : l'annonce attend sa fin (2 min au plus) et regroupe les messages arrivés entre-temps. Reprises au démarrage si elles étaient actives
+  - **Autres sons** pendant une notification — son annonce, ou un message arrivé relu avec **Lire** (bouton de l'Assistant, ou Paramètres › Lecture à voix haute) : le son des autres applications ouvertes sur la sortie audio (vidéo, musique, appel… même muettes à cet instant) descend dans le mélangeur de Windows à **10 %** de son volume par défaut — ou 50 %, 25 %, coupé, ou pas du tout (Normaux) — puis remonte doucement à la fin ; chaque baisse est notée dans le Journal ; un volume changé entre-temps n'est pas touché, et si Boostache s'arrête en pleine annonce, les volumes sont remis au lancement suivant
   - Option **Résumer** (activée par défaut) : Ollama résume d'abord le message pour l'oral — l'e-mail est lu en entier (vue « imprimer » de Gmail, sans le marquer comme lu), pour WhatsApp le dernier message visible — et c'est ce résumé qui est lu, en disant si c'est urgent ou important et ce qu'on attend de vous : « E-mail urgent de EDF. Votre facture d'octobre de 84,30 euros est disponible, à régler avant le 25 octobre. À faire : payer la facture. » Le résumé, l'importance (drapeau, étoile) et l'action s'affichent aussi dans **Messages arrivés**. Sans Ollama, ou s'il échoue : l'objet de l'e-mail ou le texte du message, tel quel (« Message WhatsApp de Marie : on se retrouve à 18 h ? »)
 - Sources **Gmail** et **WhatsApp** activables séparément (questions et annonces), avec leur état (chargement, surveillé, à vérifier : connexion à faire dans la section du site)
 - **Messages arrivés** : la liste des messages annoncés (clic : ouvre le site, bouton Lire) ; pastille verte dans la barre latérale tant que les annonces sont actives, compteur des messages pas encore vus
@@ -258,8 +259,9 @@ boostache/
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
 ├── recorder.py           # Enregistreur : son du PC (+ micro) ou micro seul, WAV, conversion MP3/M4A, texte en direct, fichiers
-├── wasapi.py             # Audio Windows (WASAPI) : périphériques, capture loopback et micro, lecture
+├── wasapi.py             # Audio Windows (WASAPI) : périphériques, capture loopback et micro, lecture, volume des applications
 ├── speech.py             # Lecture à voix haute : edge-tts, Piper ou SAPI, phrase par phrase, lecteur
+├── ducking.py            # Son des autres applications baissé pendant les annonces (mélangeur de Windows)
 ├── transcriber.py        # Transcription en texte (Whisper via faster-whisper), file d'attente, en direct
 ├── webpane.py           # Sites intégrés : contrôle WebView2 posé sur la fenêtre, assistant de réponse
 ├── whatsapp.py           # WhatsApp Web (lecture de la discussion et de la liste, zone de saisie, nouveaux messages)

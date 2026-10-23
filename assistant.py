@@ -16,7 +16,8 @@ sans Ollama, ou s'il échoue : l'expéditeur et, au choix, l'objet ou le texte.
 Ils s'ajoutent aux « Messages arrivés » (avec leur résumé), que l'assistant
 connaît aussi pour répondre. Une autre lecture en cours n'est pas coupée :
 l'annonce attend sa fin (SPEAK_WAIT au plus) et regroupe les messages arrivés
-entre-temps.
+entre-temps. Pendant l'annonce, le son des autres applications baisse
+(réglages assistant_duck et assistant_duck_level, ducking.py).
 
 Ce que l'assistant voit : pour Gmail, les e-mails non lus de la boîte de
 réception, la liste affichée (ou l'e-mail ouvert) et, en entier, les fils dont
@@ -34,6 +35,7 @@ import time
 import uuid
 from datetime import datetime
 
+import ducking
 from chat import _ollama, keep_alive, num_ctx
 from engine import logger, tts
 from gmail import IMPORTANCE, NO_ACTION_RE
@@ -55,6 +57,7 @@ SPOKEN_ITEMS = 4           # messages annoncés un par un ; au-delà, « et N au
 DELTA_INTERVAL = 0.05      # regroupement des tokens envoyés à l'interface (s)
 SUMMARY_TIMEOUT = 90       # résumé d'un message pour l'annonce (s, chargement du modèle compris)
 ANNOUNCE = "assistant:announce"     # source des annonces (lecture à voix haute)
+FEED_READ = "assistant:feed:"       # … d'un message arrivé relu (bouton Lire, views/assistant.js)
 DAYS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 MONTHS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
           "octobre", "novembre", "décembre")
@@ -175,6 +178,15 @@ def _item_spoken(it: dict, content: bool = True) -> str:
         return f"{head}{' : ' if it.get('all') else '. Le dernier : '}{text}" if text else head
     return (f"Message WhatsApp de {it['title']} : {text}" if text
             else f"Nouveau message WhatsApp de {it['title']}")
+
+
+def duck_level() -> float | None:
+    """Volume des autres applications pendant la lecture d'une notification (annonce, message
+    arrivé relu) : part du leur ; None : pas de baisse."""
+    if not settings.get("assistant_duck", True):
+        return None
+    level = settings.get("assistant_duck_level", ducking.DEFAULT_LEVEL)
+    return (level if level in ducking.LEVELS else ducking.DEFAULT_LEVEL) / 100
 
 
 def _spoken(items: list[dict]) -> str:
@@ -465,14 +477,14 @@ class AssistantService:
                 if not items or not self.watching:
                     self._speaker = None
                     return
-            tts.speak(_spoken(items), source=ANNOUNCE)
+            tts.speak(_spoken(items), source=ANNOUNCE, duck=duck_level())
             waited = 0.0
             time.sleep(0.5)
 
     def example(self):
         """Fait entendre une annonce d'exemple (résumée si les résumés sont activés)."""
         items = EXAMPLE if settings.get("assistant_summary", True) else [{**i, "summary": ""} for i in EXAMPLE]
-        tts.speak("Exemple d'annonce. " + _spoken(items), source=ANNOUNCE)
+        tts.speak("Exemple d'annonce. " + _spoken(items), source=ANNOUNCE, duck=duck_level())
 
     def clear_feed(self):
         with self._lock:

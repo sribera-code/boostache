@@ -21,6 +21,9 @@ Un texte encore en cours d'écriture (réponse d'un modèle) se lit au fil de
 l'eau : speak(…, stream=True) lit les phrases déjà finies, feed() apporte le
 texte complet à chaque ajout, jusqu'au dernier appel (final=True).
 
+speak(…, duck=0.1) baisse le son des autres applications le temps de la
+lecture, à 10 % de leur volume (annonces des nouveaux messages, ducking.py).
+
 Usage :
     tts.speak("Bonjour", on_done=ma_callback, source="notes:1")
     tts.speak(debut, source="chat:1", stream=True); tts.feed("chat:1", suite, final=True)
@@ -480,8 +483,9 @@ class _AudioCache:
 class _Session:
     """Une lecture : un thread synthétise les phrases à venir, un autre les joue."""
 
-    def __init__(self, owner: "TTSEngine", chunks, source, on_done, engines, voice, feed=None):
+    def __init__(self, owner: "TTSEngine", chunks, source, on_done, engines, voice, feed=None, duck=None):
         self.owner = owner
+        self.duck = duck                  # volume des autres applications pendant la lecture (ducking.py) ; None : inchangé
         self.chunks = chunks
         self.feed = feed                  # _Feed : texte au fil de l'eau, des phrases peuvent s'ajouter
         self.open = feed is not None      # … tant que le dernier morceau n'est pas arrivé
@@ -707,6 +711,14 @@ class TTSEngine:
         self.voices = dict(DEFAULT_VOICES)
         self.speed = 1.0
         self.volume = 100                      # %, voir amplitude()
+        self._ducker = None                    # ducking.Ducker, créé au premier besoin
+
+    @property
+    def ducker(self):
+        if self._ducker is None:
+            from ducking import Ducker
+            self._ducker = Ducker(self._logger)
+        return self._ducker
 
     def configure(self, engine: str | None = None, voices: dict | None = None, speed: float | None = None,
                   volume: int | None = None):
@@ -732,11 +744,14 @@ class TTSEngine:
 
     # ── Commandes ──────────────────────────
     def speak(self, text: str, on_done=None, source: str | None = None,
-              engine: str | None = None, voice: str = "", stream: bool = False, prepare=None):
+              engine: str | None = None, voice: str = "", stream: bool = False, prepare=None,
+              duck: float | None = None):
         """Lit text à haute voix. engine / voice : pour essayer une voix sans la
         choisir (sinon, réglages de configure()). stream : texte encore en cours
         d'écriture, la suite arrive par feed() ; prepare(texte) → texte à lire
-        (appliqué à chaque morceau, sinon par l'appelant)."""
+        (appliqué à chaque morceau, sinon par l'appelant). duck : le son des
+        autres applications baisse jusqu'à la fin de la lecture, à cette part
+        de leur volume (0 : coupé) ; None : il n'est pas touché."""
         with self._lock:
             old, self._session = self._session, None
         if old:
@@ -755,9 +770,11 @@ class TTSEngine:
                 except Exception:
                     pass
             return
-        session = _Session(self, chunks, source, on_done, self._engines(engine or self.engine), voice, feed)
+        session = _Session(self, chunks, source, on_done, self._engines(engine or self.engine), voice, feed, duck)
         with self._lock:
             self._session = session
+        if duck is not None:
+            self.ducker.hold(duck)             # relâché par _session_ended
         self._emit()
         session.start()
 
@@ -787,6 +804,12 @@ class TTSEngine:
         if session:
             session.stop()
             session.join(1.0)
+
+    def shutdown(self):
+        """Fermeture : lecture arrêtée, son des autres applications remonté."""
+        self.stop()
+        if self._ducker is not None:
+            self._ducker.close()
 
     def pause(self, paused: bool | None = None):
         """Met en pause ou reprend (bascule si paused vaut None)."""
@@ -911,6 +934,8 @@ class TTSEngine:
                 self._session = None
         if current:
             self._emit()
+        if session.duck is not None:
+            self.ducker.release()
         if _piper_loaded:
             _piper_release_later()
         if session.on_done:

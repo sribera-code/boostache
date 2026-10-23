@@ -12,6 +12,7 @@ from pathlib import Path
 import webview
 
 import custom_tasks
+import assistant
 import diagnostics
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 import speech
@@ -68,7 +69,10 @@ class Api:
 
     def speak(self, text, source=None, markdown=False, stream=False):
         """stream : texte encore en cours d'écriture, la suite arrive par tts_feed."""
-        tts.speak(text or "", source=source, stream=bool(stream), prepare=strip_markdown if markdown else None)
+        # Message arrivé relu (une notification) : les autres applications baissent, comme à son annonce
+        duck = assistant.duck_level() if str(source or "").startswith(assistant.FEED_READ) else None
+        tts.speak(text or "", source=source, stream=bool(stream), prepare=strip_markdown if markdown else None,
+                  duck=duck)
 
     def tts_feed(self, source, text, final=False):
         return tts.feed(source, text or "", bool(final))

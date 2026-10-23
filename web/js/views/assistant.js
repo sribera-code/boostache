@@ -24,6 +24,22 @@ const SUGGESTIONS = [
 const hhmm = (iso) => (iso || "").slice(11, 16);
 const BUSY = new Set(["reading", "thinking"]);
 const READ_ALL = "assistant:all";              // lecture de toutes les questions (bouton Lire)
+// Son des autres applications pendant une annonce (ducking.py) : null, pas de baisse ; sinon % de leur volume
+export const DUCK_LEVELS = [[null, "Normaux"], [50, "50 %"], [25, "25 %"], [10, "10 %"], [0, "Coupés"]];
+
+/** Niveau choisi : null (autres sons normaux) ou le % gardé par les autres applications. */
+export function duckLevel(settings) {
+  if (settings.assistant_duck === false) return null;
+  const level = settings.assistant_duck_level;
+  return DUCK_LEVELS.some(([v]) => v === level && v !== null) ? level : 10;
+}
+
+/** Choix d'un niveau (assistant, paramètres) ; les autres vues l'apprennent par « setting ». */
+export async function setDuck(ctx, level) {
+  await ctx.saveSetting("assistant_duck", level !== null);
+  if (level !== null) await ctx.saveSetting("assistant_duck_level", level);
+  ctx.emit("setting", { key: "assistant_duck", value: ctx.store.settings.assistant_duck });
+}
 const sourceOf = (id) => `assistant:${id}`;    // lecture d'une réponse
 
 export function createAssistantView(ctx, state) {
@@ -52,10 +68,12 @@ export function createAssistantView(ctx, state) {
     + "de vous ; c'est ce résumé qui est lu (sinon l'objet ou le texte tel quel)");
   const contentBtn = settingToggle("text-select", "Lire le contenu", "assistant_content",
     "Annonce aussi le résumé, l'objet de l'e-mail ou le texte du message (sinon l'expéditeur seul)");
+  const duckBtn = h("button", { class: "btn sm asst-toggle", type: "button", onClick: (ev) => duckMenu(ev.currentTarget),
+    dataset: { tip: "Pendant une annonce, le son des autres applications (vidéo, musique, appel…) baisse, puis remonte à la fin" } });
   const problems = h("div", { class: "asst-problems" });
   const deck = h("div", { class: "asst-deck" },
     h("div", { class: "asst-main" }, toggleBtn, h("div", { class: "asst-status" }, headline, detail), exampleBtn),
-    h("div", { class: "asst-options" }, sourcesRow, h("div", { class: "head-spacer" }), summaryBtn, contentBtn),
+    h("div", { class: "asst-options" }, sourcesRow, h("div", { class: "head-spacer" }), summaryBtn, contentBtn, duckBtn),
     problems);
 
   // ── Messages arrivés ────────────────────────
@@ -164,6 +182,23 @@ export function createAssistantView(ctx, state) {
   }
 
   function enabled(key) { return store.settings[`assistant_${key}`] !== false; }
+
+  function renderDuck() {
+    const level = duckLevel(store.settings);
+    duckBtn.classList.toggle("on", level !== null);
+    duckBtn.replaceChildren(ico(level === 0 ? "volume-x" : "volume-1", 14),
+      level === null ? "Autres sons normaux" : level === 0 ? "Autres sons coupés" : `Autres sons à ${level} %`,
+      ico("chevron-down", 13));
+  }
+
+  function duckMenu(anchor) {
+    const current = duckLevel(store.settings);
+    openMenuBelow([{ section: "Pendant une annonce, les autres sons" },
+      ...DUCK_LEVELS.map(([v, label]) => ({ label: v === null ? "Normaux (pas de baisse)" : label, checked: v === current,
+        onSelect: () => setDuck(ctx, v) }))], anchor);
+  }
+  on("setting", ({ key }) => { if (key.startsWith("assistant_duck")) renderDuck(); });
+  renderDuck();
 
   function settingToggle(iconName, label, key, tip) {
     const btn = h("button", { class: "btn sm asst-toggle", type: "button", role: "switch", dataset: { tip } },

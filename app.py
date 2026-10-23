@@ -16,6 +16,7 @@ from webview.dom import DOMEventHandler
 
 import custom_tasks
 import diagnostics
+import ducking
 from api import Api
 from assistant import AssistantService
 from bridge import Bridge
@@ -128,6 +129,7 @@ class BoostacheApp:
         tts.subscribe(lambda state: self.bridge.emit("tts", state))
         self._configure_tts()
         threading.Thread(target=speech.warm_up, args=(tts.engine,), daemon=True, name="tts-warm-up").start()
+        tts.ducker.recover()      # volumes restés baissés par une annonce (arrêt pendant la lecture)
 
         self.snipper = Snipper()
         # Le service surveille lui-même le serveur Ollama (fonctions affichées tant qu'il répond)
@@ -517,7 +519,7 @@ class BoostacheApp:
         self.assistant.shutdown()
         self.rag.shutdown()
         try:
-            tts.stop()
+            tts.shutdown()
         except Exception:
             pass
         self.bridge.stop()
@@ -536,7 +538,7 @@ class BoostacheApp:
                 "console_shell", "tts_mode_answers", "tts_mode_console", "tts_mode_note",
                 "sidebar_collapsed", "print_screen_capture", "help_capture", "assist_model",
                 "layout", "assistant_announce", "assistant_gmail", "assistant_whatsapp",
-                "assistant_content", "assistant_summary", *SPEAK_SETTINGS,
+                "assistant_content", "assistant_summary", "assistant_duck", "assistant_duck_level", *SPEAK_SETTINGS,
                 "tts_engine", "tts_voice_edge", "tts_voice_piper", "tts_voice_sapi", "tts_speed", "tts_volume",
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
@@ -635,7 +637,8 @@ class BoostacheApp:
             if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
                 return settings.get(key)
             settings.set(key, value)
-        elif key in ("audio_transcribe", "assistant_content", "assistant_summary", "ollama_autostart", *SPEAK_SETTINGS):
+        elif key in ("audio_transcribe", "assistant_content", "assistant_summary", "assistant_duck", "ollama_autostart",
+                     *SPEAK_SETTINGS):
             settings.set(key, bool(value))
         elif key == "ollama_num_ctx":
             try:
@@ -643,6 +646,10 @@ class BoostacheApp:
             except (TypeError, ValueError):
                 return settings.get(key)
             if value not in CTX_SIZES:
+                return settings.get(key)
+            settings.set(key, value)
+        elif key == "assistant_duck_level":
+            if value not in ducking.LEVELS:
                 return settings.get(key)
             settings.set(key, value)
         elif key == "ollama_keep_alive":

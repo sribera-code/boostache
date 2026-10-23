@@ -2,7 +2,8 @@
 wasapi.py – Accès minimal à WASAPI (API audio de Windows) par comtypes :
 liste des périphériques, capture « loopback » du son qui sort d'une sortie
 audio, capture d'un micro, lecture de silence et lecture d'un son PCM
-(lecture à voix haute, speech.py).
+(lecture à voix haute, speech.py), volume des applications dans le mélangeur
+de Windows (ducking.py).
 
 Les captures sont demandées au même format (float 32 bits, 48 kHz, stéréo) :
 Windows convertit lui-même depuis le format du périphérique
@@ -17,7 +18,7 @@ com_thread().
 import ctypes
 from contextlib import contextmanager
 from ctypes import POINTER, Structure, Union, byref, c_float, c_uint32, c_uint64, c_void_p, wstring_at
-from ctypes.wintypes import DWORD, LPCWSTR, WORD
+from ctypes.wintypes import BOOL, DWORD, LPCWSTR, WORD
 
 import comtypes
 from comtypes import CLSCTX_ALL, COMMETHOD, GUID, HRESULT, IUnknown
@@ -38,6 +39,7 @@ AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY = 0x08000000
 AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM = 0x80000000
 AUDCLNT_BUFFERFLAGS_SILENT = 0x2
 AUDCLNT_E_DEVICE_INVALIDATED = -2004287484     # 0x88890004
+AUDIO_SESSION_EXPIRED = 2                       # AudioSessionState : application fermée
 WAVE_FORMAT_PCM = 1
 WAVE_FORMAT_IEEE_FLOAT = 3
 BUFFER_HNS = 2_000_000                          # 200 ms, en unités de 100 ns
@@ -168,6 +170,58 @@ class IAudioStreamVolume(IUnknown):
     ]
 
 
+class ISimpleAudioVolume(IUnknown):
+    """Volume d'une application (session audio), celui du mélangeur de volume."""
+    _iid_ = GUID("{87CE5498-68D6-44E5-9215-6DA47EF883D8}")
+    _methods_ = [
+        COMMETHOD([], HRESULT, "SetMasterVolume", (["in"], c_float, "level"), (["in"], POINTER(GUID), "context")),
+        COMMETHOD([], HRESULT, "GetMasterVolume", (["out"], POINTER(c_float), "level")),
+        COMMETHOD([], HRESULT, "SetMute", (["in"], BOOL, "mute"), (["in"], POINTER(GUID), "context")),
+        COMMETHOD([], HRESULT, "GetMute", (["out"], POINTER(BOOL), "mute")),
+    ]
+
+
+class IAudioSessionControl2(IUnknown):
+    _iid_ = GUID("{BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D}")
+    _methods_ = [
+        # IAudioSessionControl
+        COMMETHOD([], HRESULT, "GetState", (["out"], POINTER(DWORD), "state")),
+        COMMETHOD([], HRESULT, "GetDisplayName", (["out"], POINTER(c_void_p), "name")),
+        COMMETHOD([], HRESULT, "SetDisplayName", (["in"], LPCWSTR, "name"), (["in"], POINTER(GUID), "context")),
+        COMMETHOD([], HRESULT, "GetIconPath", (["out"], POINTER(c_void_p), "path")),
+        COMMETHOD([], HRESULT, "SetIconPath", (["in"], LPCWSTR, "path"), (["in"], POINTER(GUID), "context")),
+        COMMETHOD([], HRESULT, "GetGroupingParam", (["out"], POINTER(GUID), "param")),
+        COMMETHOD([], HRESULT, "SetGroupingParam", (["in"], POINTER(GUID), "param"), (["in"], POINTER(GUID), "context")),
+        COMMETHOD([], HRESULT, "RegisterAudioSessionNotification", (["in"], c_void_p, "events")),
+        COMMETHOD([], HRESULT, "UnregisterAudioSessionNotification", (["in"], c_void_p, "events")),
+        # IAudioSessionControl2
+        COMMETHOD([], HRESULT, "GetSessionIdentifier", (["out"], POINTER(c_void_p), "id")),
+        COMMETHOD([], HRESULT, "GetSessionInstanceIdentifier", (["out"], POINTER(c_void_p), "id")),
+        COMMETHOD([], HRESULT, "GetProcessId", (["out"], POINTER(DWORD), "pid")),
+        COMMETHOD([], HRESULT, "IsSystemSoundsSession"),
+    ]
+
+
+class IAudioSessionEnumerator(IUnknown):
+    _iid_ = GUID("{E2F5BB11-0570-40CA-ACDD-3AA01277DEE8}")
+    _methods_ = [
+        COMMETHOD([], HRESULT, "GetCount", (["out"], POINTER(ctypes.c_int), "count")),
+        COMMETHOD([], HRESULT, "GetSession", (["in"], ctypes.c_int, "index"),
+                  (["out"], POINTER(POINTER(IUnknown)), "session")),
+    ]
+
+
+class IAudioSessionManager2(IUnknown):
+    _iid_ = GUID("{77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F}")
+    _methods_ = [
+        COMMETHOD([], HRESULT, "GetAudioSessionControl", (["in"], POINTER(GUID), "session"), (["in"], DWORD, "flags"),
+                  (["out"], POINTER(POINTER(IUnknown)), "control")),
+        COMMETHOD([], HRESULT, "GetSimpleAudioVolume", (["in"], POINTER(GUID), "session"), (["in"], DWORD, "flags"),
+                  (["out"], POINTER(POINTER(IUnknown)), "volume")),
+        COMMETHOD([], HRESULT, "GetSessionEnumerator", (["out"], POINTER(POINTER(IAudioSessionEnumerator)), "sessions")),
+    ]
+
+
 @contextmanager
 def com_thread():
     """COM initialisé pour le thread courant (déjà fait par un autre module : rien à défaire)."""
@@ -246,6 +300,43 @@ def get_device(flow: int, device_id: str = ""):
 
 def _client(device):
     return device.Activate(byref(IAudioClient._iid_), CLSCTX_ALL, None).QueryInterface(IAudioClient)
+
+
+def _co_string(raw) -> str:
+    """Texte alloué par COM (CoTaskMemAlloc), libéré après lecture."""
+    if not raw:
+        return ""
+    try:
+        return wstring_at(raw)
+    finally:
+        _ole32.CoTaskMemFree(raw)
+
+
+def app_sessions(exclude_pid: int = 0) -> list[dict]:
+    """Applications de la sortie par défaut dans le mélangeur de volume, hors sons
+    système, hors applications fermées et hors le processus exclude_pid :
+    [{"key", "name", "pid", "volume"}]. key : identifiant stable de l'application
+    (Windows y attache son volume), qui finit par son exécutable ; volume :
+    ISimpleAudioVolume (GetMasterVolume / SetMasterVolume, de 0 à 1)."""
+    device = _enumerator().GetDefaultAudioEndpoint(E_RENDER, E_CONSOLE)
+    manager = device.Activate(byref(IAudioSessionManager2._iid_), CLSCTX_ALL, None).QueryInterface(IAudioSessionManager2)
+    sessions = manager.GetSessionEnumerator()
+    out = []
+    for i in range(sessions.GetCount()):
+        try:
+            control = sessions.GetSession(i).QueryInterface(IAudioSessionControl2)
+            pid = control.GetProcessId()
+            if (pid in (0, exclude_pid) or control.IsSystemSoundsSession() == 0       # S_OK : sons système
+                    or control.GetState() == AUDIO_SESSION_EXPIRED):
+                continue
+            key = _co_string(control.GetSessionIdentifier())
+            # « …|\Device\…\chrome.exe%b{…} » → chrome.exe
+            name = key.rsplit("|", 1)[-1].split("%b", 1)[0].replace("/", "\\").rsplit("\\", 1)[-1]
+            out.append({"key": key, "name": name or f"pid {pid}", "pid": pid,
+                        "volume": control.QueryInterface(ISimpleAudioVolume)})
+        except comtypes.COMError:
+            continue                    # application fermée entre-temps
+    return out
 
 
 class CaptureStream:
