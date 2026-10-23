@@ -66,13 +66,13 @@ const ctx = {
   isFocused: (id) => !!layout?.isFocused(id),
 
   /** kind "unread" : pastille verte, visible aussi barre latérale repliée ;
-   *  "rec" : point rouge (enregistrement en cours). */
-  setBadge(id, value, kind = "") {
+   *  "rec" : point rouge (enregistrement en cours) ; tip : infobulle du point. */
+  setBadge(id, value, kind = "", tip = "") {
     const entry = views.get(id);
     if (!entry?.nav) return;
     const slot = entry.nav.querySelector(".nav-extra");
     slot.replaceChildren();
-    if (value === "dot") slot.append(h("span", { class: `nav-dot ${kind}`.trim() }));
+    if (value === "dot") slot.append(h("span", { class: `nav-dot ${kind}`.trim(), dataset: tip ? { tip } : {} }));
     else if (typeof value === "number" && value > 0) {
       slot.append(h("span", { class: `nav-badge ${kind}`.trim(), text: value > 999 ? "999+" : String(value) }));
     }

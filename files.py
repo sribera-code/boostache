@@ -33,6 +33,7 @@ from ctypes import wintypes
 from datetime import datetime
 
 import docreader
+import llm
 from chat import _model_image, _ollama, keep_alive, num_ctx
 from engine import logger
 from rag import (ANSWER_RESERVE, CHARS_PER_TOKEN, MAP_INSTRUCTION, MAP_PARTS_MAX, MIN_BUDGET, STOPWORDS,
@@ -1048,8 +1049,8 @@ class FilesService:
     def _generate(self, model: str, messages: list[dict]) -> str:
         text, stream = "", None
         try:
-            stream = _ollama.chat(model=model, messages=messages, stream=True, think=False,
-                                  options={"temperature": 0.2, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Fichiers : résumé", model=model, messages=messages, stream=True, think=False,
+                              options={"temperature": 0.2, "num_ctx": num_ctx()}, keep_alive=keep_alive())
             for chunk in stream:
                 if self._stopped():
                     break
@@ -1066,8 +1067,8 @@ class FilesService:
         self._phase(entry, "thinking", f"Réponse avec {entry['model']}…")
         stream, buf, last, done_reason = None, "", time.monotonic(), None
         try:
-            stream = _ollama.chat(model=entry["model"], messages=messages, stream=True, think=False,
-                                  options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Fichiers", model=entry["model"], messages=messages, stream=True, think=False,
+                              options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
             for chunk in stream:
                 if self._stopped():
                     break

@@ -120,6 +120,7 @@ export function createOllamaView(ctx, state) {
     running: [],
     uses: {},
     pulls: new Map((init.pulls || []).map((p) => [p.name, p])),
+    activity: init.activity || { running: [], waiting: [] },   // appels de Boostache en cours et en attente (llm.py)
     checking: false,          // vérification des mises à jour
     library: null,            // modèles d'ollama.com (ordre de popularité)
     libraryError: "",
@@ -144,12 +145,14 @@ export function createOllamaView(ctx, state) {
   const status = h("div", { class: "om-status" });
   const statusActions = h("div", { class: "om-status-actions" });
   const facts = h("div", { class: "om-facts" });
+  const activityLine = h("div", { class: "om-activity", hidden: true });
   const dirCode = h("code");
   const diskText = h("div", { class: "hint-text" });
   const autoSwitch = h("button", { class: "switch", type: "button", role: "switch",
     "aria-label": "Lancer Ollama avec Boostache", onClick: toggleAutostart });
   const serverCard = card("cpu", "Serveur", null,
     h("div", { class: "row" }, status, statusActions),
+    activityLine,
     facts,
     h("div", { class: "om-block" },
       h("div", { class: "label", text: "Dossier des modèles" }),
@@ -567,8 +570,51 @@ export function createOllamaView(ctx, state) {
         iconButton("x", p.done ? "Retirer" : "Annuler le téléchargement",
           () => (p.done ? dismiss(p.name) : cancel(p.name)), { size: 14, cls: "sm" }));
     }));
-    const running = list.filter((p) => !p.done).length;
-    ctx.setBadge("ollama", running ? "dot" : 0);
+    renderBadge();
+  }
+
+  // ─────────────────────────────────────────────
+  //  Activité : appels de Boostache à Ollama (file d'attente commune, llm.py)
+  // ─────────────────────────────────────────────
+  /** « Documents : index », ou « Documents : index ×2 » : libellés regroupés. */
+  function labels(jobs) {
+    const counts = new Map();
+    for (const j of jobs) counts.set(j.label, (counts.get(j.label) || 0) + 1);
+    return [...counts].map(([label, n]) => (n > 1 ? `${label} ×${n}` : label)).join(", ");
+  }
+
+  function activityText() {
+    const { running, waiting } = S.activity;
+    if (!running.length) return waiting.length ? `En attente : ${labels(waiting)}` : "";
+    return `Ollama occupé : ${labels(running)}${waiting.length ? ` · ${waiting.length} en attente` : ""}`;
+  }
+
+  /** Point dans la barre latérale : téléchargement en cours, ou Ollama occupé par Boostache. */
+  function renderBadge() {
+    const pulling = [...S.pulls.values()].filter((p) => !p.done).length;
+    const busy = S.activity.running.length > 0;
+    if (pulling) ctx.setBadge("ollama", "dot", "", pulling > 1 ? `${pulling} téléchargements en cours` : "Téléchargement en cours");
+    else ctx.setBadge("ollama", busy ? "dot" : 0, "busy", activityText());
+  }
+
+  let activityTimer = null;
+  function renderActivity() {
+    const { running, waiting } = S.activity;
+    activityLine.hidden = !running.length && !waiting.length;
+    const since = (t) => {
+      const s = Math.max(0, Math.round(Date.now() / 1000 - t));
+      return s < 60 ? `${s} s` : `${Math.floor(s / 60)} min ${String(s % 60).padStart(2, "0")}`;
+    };
+    activityLine.replaceChildren(
+      ...running.map((j) => h("div", { class: "om-job run" }, ico("loader-circle", 13),
+        h("span", { text: j.label }), h("span", { class: "muted", text: since(j.since) }))),
+      waiting.length ? h("div", { class: "om-job wait" }, ico("clock", 13),
+        h("span", { text: `En attente : ${labels(waiting)}` }),
+        h("span", { class: "muted", text: "passe après ce que vous demandez" })) : null);
+    // Durées à jour tant que la section est affichée
+    const tick = active && visible && running.length > 0;
+    if (tick && !activityTimer) activityTimer = setInterval(renderActivity, 1000);
+    if (!tick && activityTimer) { clearInterval(activityTimer); activityTimer = null; }
   }
 
   on("ollama:pull", (p) => {
@@ -1002,11 +1048,17 @@ export function createOllamaView(ctx, state) {
     syncPoll();
   });
   on("chat:models", () => { if (active) refreshSoon(); });
-  on("window:hidden", () => { visible = false; syncPoll(); });
-  on("window:shown", () => { visible = true; syncPoll(); if (active) refreshSoon(); });
+  on("ollama:activity", (a) => {
+    S.activity = { running: a?.running || [], waiting: a?.waiting || [] };
+    renderBadge();
+    renderActivity();
+  });
+  on("window:hidden", () => { visible = false; syncPoll(); renderActivity(); });
+  on("window:shown", () => { visible = true; syncPoll(); renderActivity(); if (active) refreshSoon(); });
 
   renderHead();
   renderPulls();
+  renderActivity();
   renderOptions();
 
   return {
@@ -1016,10 +1068,12 @@ export function createOllamaView(ctx, state) {
       refresh();
       if (!S.library && !S.libraryLoading) loadLibrary();
       syncPoll();
+      renderActivity();
     },
     onHide() {
       active = false;
       syncPoll();
+      renderActivity();
     },
   };
 }

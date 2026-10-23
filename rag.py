@@ -35,6 +35,7 @@ from collections import Counter, deque
 from datetime import datetime
 
 import docreader
+import llm
 from chat import _ollama, keep_alive, num_ctx
 from engine import logger
 from storage import DATA_DIR, read_json, settings, write_json
@@ -1134,13 +1135,14 @@ class RagService:
         title = _name(path)
         rows = self._ix.all("SELECT id, text FROM chunks WHERE file_id = ? AND vec IS NULL ORDER BY idx", (fid,))
         for i in range(0, len(rows), EMBED_BATCH):
-            # Une réponse est en cours : la carte graphique lui est laissée
-            while self._asking is not None and not self._quit.is_set():
-                time.sleep(0.3)
             if self._quit.is_set() or self.paused or model != self.embed_model():
                 return
             batch = rows[i:i + EMBED_BATCH]
-            vectors = self._embed(model, [doc_format.format(title=title, text=text) for _, text in batch])
+            # En arrière-plan : après les réponses en cours, ici et dans les autres sections (llm.py)
+            vectors = self._embed(model, [doc_format.format(title=title, text=text) for _, text in batch],
+                                  llm.BACKGROUND)
+            if self._quit.is_set():
+                return
             if vectors is None:
                 if self._chat and self._chat.available:
                     self._embed_failures[fid] += 1
@@ -1150,10 +1152,15 @@ class RagService:
             self._vec_version += 1
         self._set_file(fid, status=INDEXED)
 
-    def _embed(self, model: str, inputs: list[str]):
-        """Vecteurs normalisés (numpy), ou None si Ollama échoue (nouvel essai plus tard)."""
+    def _embed(self, model: str, inputs: list[str], priority: int = llm.INTERACTIVE):
+        """Vecteurs normalisés (numpy), ou None si Ollama échoue (nouvel essai plus tard)
+        ou que Boostache se ferme pendant l'attente de son tour."""
         try:
-            resp = self._client.embed(model=model, input=inputs, keep_alive=EMBED_KEEP)
+            label = "Documents : index" if priority == llm.BACKGROUND else "Documents : recherche"
+            resp = llm.embed(label, priority, client=self._client, stop=self._quit,
+                             model=model, input=inputs, keep_alive=EMBED_KEEP)
+            if resp is None:
+                return None
             vectors = np.asarray(resp.embeddings, dtype=np.float32)
             if vectors.ndim != 2 or len(vectors) != len(inputs):
                 raise ValueError("réponse inattendue d'Ollama")
@@ -1825,8 +1832,8 @@ class RagService:
         """Réponse complète (étape intermédiaire), interrompue par stop()."""
         text, stream = "", None
         try:
-            stream = _ollama.chat(model=model, messages=messages, stream=True, think=False,
-                                  options={"temperature": 0.2, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Documents", model=model, messages=messages, stream=True, think=False,
+                              options={"temperature": 0.2, "num_ctx": num_ctx()}, keep_alive=keep_alive())
             for chunk in stream:
                 if self._stop.is_set():
                     break
@@ -1843,8 +1850,8 @@ class RagService:
         self._phase_of(item, "thinking", f"Réponse avec {item['model']}…")
         stream, buf, last, done_reason = None, "", time.monotonic(), None
         try:
-            stream = _ollama.chat(model=item["model"], messages=messages, stream=True, think=False,
-                                  options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Documents", model=item["model"], messages=messages, stream=True, think=False,
+                              options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
             for chunk in stream:
                 if self._stop.is_set():
                     break

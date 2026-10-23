@@ -17,6 +17,7 @@ from webview.dom import DOMEventHandler
 import custom_tasks
 import diagnostics
 import ducking
+import llm
 from api import Api
 from assistant import AssistantService
 from bridge import Bridge
@@ -132,6 +133,8 @@ class BoostacheApp:
         self._size_timer: threading.Timer | None = None
 
         self.bridge = Bridge()
+        # Appels à Ollama en cours et en attente (section Ollama, barre latérale)
+        llm.gate.on_change = lambda snap: self.bridge.emit("ollama:activity", snap)
         logger.subscribe(self._on_log)
         tts.subscribe(lambda state: self.bridge.emit("tts", state))
         self._configure_tts()

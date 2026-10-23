@@ -31,6 +31,7 @@ import time
 import uuid
 from datetime import datetime
 
+import llm
 import ocr
 from clipboard_listener import set_clipboard_content, set_clipboard_image
 from engine import logger
@@ -793,8 +794,8 @@ class ChatService:
             last_flush = time.monotonic()
 
         try:
-            stream = _ollama.chat(model=model, messages=payload, stream=True, options={"num_ctx": ctx},
-                                  keep_alive=keep_alive())
+            stream = llm.chat("Conversation", model=model, messages=payload, stream=True,
+                              options={"num_ctx": ctx}, keep_alive=keep_alive())
             for chunk in stream:
                 if stop_evt.is_set():
                     stopped = True
@@ -945,10 +946,10 @@ class ChatService:
             if self.sees_images(model):
                 message["images"] = [_model_image(aid["path"])]
             try:
-                resp = _ollama.chat(model=model, format=HELP_SCHEMA, think=False,
-                                    options={"temperature": 0.4, "num_ctx": num_ctx()},
-                                    keep_alive=keep_alive(),
-                                    messages=[{"role": "system", "content": HELP_SYSTEM}, message])
+                resp = llm.chat("Aide contextuelle", model=model, format=HELP_SCHEMA, think=False,
+                                options={"temperature": 0.4, "num_ctx": num_ctx()},
+                                keep_alive=keep_alive(),
+                                messages=[{"role": "system", "content": HELP_SYSTEM}, message])
                 if resp.done_reason == "length":
                     raise RuntimeError("Réponse du modèle coupée : son contexte est trop petit.")
                 data = json.loads(resp.message.content or "{}")

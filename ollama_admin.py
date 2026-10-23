@@ -37,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
 
+import llm
 from chat import DEFAULT_CTX, RUNNER_MISSING, _ollama, _unreachable, internal_model
 from engine import logger
 from storage import settings
@@ -413,7 +414,8 @@ class OllamaAdmin:
     def boot_state(self) -> dict:
         """État connu sans attendre le serveur (démarrage de l'interface)."""
         return {"available": True, "installed": find_exe() is not None, "online": self._chat.online,
-                "starting": self._starting, "pulls": self._ui_pulls(), "default_ctx": DEFAULT_CTX}
+                "starting": self._starting, "pulls": self._ui_pulls(), "default_ctx": DEFAULT_CTX,
+                "activity": llm.gate.snapshot()}
 
     def banner(self) -> dict:
         """Bandeau en haut de l'interface : « stopped » (Ollama ne répond pas),

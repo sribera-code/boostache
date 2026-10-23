@@ -17,7 +17,8 @@ import time
 import unicodedata
 from datetime import datetime, timedelta, timezone
 
-from chat import _ollama, keep_alive, num_ctx
+import llm
+from chat import keep_alive, num_ctx
 from engine import logger
 from storage import settings
 from webpane import IMPROVE_SCHEMA, STYLE_RULES, SUGGEST_SCHEMA, WebPane, clean, same_text
@@ -372,6 +373,7 @@ IMPROVE_SYSTEM = (
     'Réponds uniquement en JSON : {"text": "…"}.'
 )
 DIGEST_ME = "Vous (l'utilisateur)"
+DIGEST_LABEL = "Gmail : résumé des e-mails"   # file d'attente d'Ollama (llm.BATCH)
 DIGEST_SYSTEM = (
     "Tu résumes pour l'utilisateur un fil d'e-mails de sa boîte de réception ; les messages qu'il a "
     "lui-même envoyés sont marqués « Vous (l'utilisateur) ». Désigne-le par « vous ». summary : une ou "
@@ -815,8 +817,8 @@ class GmailPane(WebPane):
                              + f"\n\n# Question de l'utilisateur\n\n{question}"})
             qa["state"] = "thinking"
             self._emit_qa()
-            stream = _ollama.chat(model=model, messages=messages, stream=True, think=False,
-                                  options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Gmail : question", model=model, messages=messages, stream=True, think=False,
+                              options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
             last, reason = time.monotonic(), None
             for chunk in stream:
                 if self._qa_stop.is_set():
@@ -932,7 +934,8 @@ class GmailPane(WebPane):
                 prompt = self._overview_prompt(d["items"], d["view"], scope, d["listed"])
                 if hint:
                     prompt += f"\n\nConsigne de l'utilisateur : {hint}"
-                d["overview"] = clean(self._ask(model, OVERVIEW_SYSTEM, prompt, OVERVIEW_SCHEMA, 0.3).get("overview"))
+                d["overview"] = clean(self._ask(model, OVERVIEW_SYSTEM, prompt, OVERVIEW_SCHEMA, 0.3,
+                                                llm.BATCH, DIGEST_LABEL).get("overview"))
             d["state"] = "done"
         except Exception as e:
             logger.log(f"Gmail : résumé des e-mails ({model}) en échec : {e}")
@@ -1099,7 +1102,8 @@ class GmailPane(WebPane):
         prompt = _transcript(subject, messages, DIGEST_ME)
         # La date du jour : l'échéance est-elle proche ? (importance)
         today = datetime.now().strftime("%d/%m/%Y")
-        data = cls._ask(model, DIGEST_SYSTEM, f"Aujourd'hui : {today}\n\n{prompt}", DIGEST_SCHEMA, 0.3)
+        data = cls._ask(model, DIGEST_SYSTEM, f"Aujourd'hui : {today}\n\n{prompt}", DIGEST_SCHEMA, 0.3,
+                        llm.BATCH, DIGEST_LABEL)
         summary, action = clean(data.get("summary")), clean(data.get("action"))
         importance = data.get("importance") if data.get("importance") in IMPORTANCE else "normal"
         if not summary:
@@ -1112,7 +1116,7 @@ class GmailPane(WebPane):
                 importance = "normal"
         if hint:
             data = cls._ask(model, ADAPT_SYSTEM, f"{prompt}\n\nsummary : {summary}\naction : {action}"
-                            f"\n\nConsigne de l'utilisateur : {hint}", ADAPT_SCHEMA, 0.3)
+                            f"\n\nConsigne de l'utilisateur : {hint}", ADAPT_SCHEMA, 0.3, llm.BATCH, DIGEST_LABEL)
             # Les faits restent : pas d'action inventée, ni d'action perdue
             summary = clean(data.get("summary")) or summary
             action = (clean(data.get("action")) or action) if action else ""

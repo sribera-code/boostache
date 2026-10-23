@@ -22,7 +22,8 @@ import threading
 import time
 from urllib.parse import urlparse
 
-from chat import _ollama, keep_alive, num_ctx
+import llm
+from chat import keep_alive, num_ctx
 from engine import logger
 from storage import DATA_DIR
 from winutil import open_url
@@ -238,13 +239,15 @@ class WebPane:
             return res
         return {"ok": True, "text": text, "draft": draft, "model": model}
 
-    @staticmethod
-    def _ask(model: str, system: str, prompt: str, schema: dict, temperature: float = 0.7) -> dict:
-        resp = _ollama.chat(model=model, format=schema, think=False,
-                            options={"temperature": temperature, "num_ctx": num_ctx()},
-                            keep_alive=keep_alive(),
-                            messages=[{"role": "system", "content": system},
-                                      {"role": "user", "content": prompt}])
+    @classmethod
+    def _ask(cls, model: str, system: str, prompt: str, schema: dict, temperature: float = 0.7,
+             priority: int = llm.INTERACTIVE, label: str = "") -> dict:
+        resp = llm.chat(label or f"{cls.name} : assistant de réponse", priority,
+                        model=model, format=schema, think=False,
+                        options={"temperature": temperature, "num_ctx": num_ctx()},
+                        keep_alive=keep_alive(),
+                        messages=[{"role": "system", "content": system},
+                                  {"role": "user", "content": prompt}])
         data = json.loads(resp.message.content or "{}")
         return data if isinstance(data, dict) else {}
 

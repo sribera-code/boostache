@@ -34,6 +34,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
+import llm
 from chat import _ollama, keep_alive, num_ctx
 from engine import logger
 from storage import DATA_DIR, read_json, settings, write_json
@@ -589,8 +590,9 @@ class CalcService:
         # Texte d'un aller-retour précédent (« Je calcule… ») : la suite commence un paragraphe
         sep = "\n\n" if turn["answer"].strip() else ""
         try:
-            stream = _ollama.chat(model=turn["model"], messages=messages, tools=tools, stream=True, think=False,
-                                  options={"temperature": 0.2, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Calculatrice", model=turn["model"], messages=messages, tools=tools, stream=True,
+                              think=False, options={"temperature": 0.2, "num_ctx": num_ctx()},
+                              keep_alive=keep_alive())
             for chunk in stream:
                 if stop.is_set():
                     break

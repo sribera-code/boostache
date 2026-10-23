@@ -36,6 +36,7 @@ import uuid
 from datetime import datetime
 
 import ducking
+import llm
 from chat import _ollama, keep_alive, num_ctx
 from engine import logger, tts
 from gmail import IMPORTANCE, NO_ACTION_RE
@@ -434,10 +435,12 @@ class AssistantService:
             text = self._app.panes[it["source"]].announce_text(it)
             if self._ollama is None:
                 self._ollama = _ollama.Client(timeout=SUMMARY_TIMEOUT)
-            resp = self._ollama.chat(model=model, format=ANNOUNCE_SCHEMA, think=False,
-                                     options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive(),
-                                     messages=[{"role": "system", "content": ANNOUNCE_SYSTEM},
-                                               {"role": "user", "content": f"Pour juger de l'urgence : {_today(hour=False)}\n\n{text}"}])
+            # Après les demandes en cours de l'utilisateur (llm.ANNOUNCE_WAIT s au plus)
+            resp = llm.chat(f"Annonce : message {name}", llm.ANNOUNCE, client=self._ollama,
+                            model=model, format=ANNOUNCE_SCHEMA, think=False,
+                            options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive(),
+                            messages=[{"role": "system", "content": ANNOUNCE_SYSTEM},
+                                      {"role": "user", "content": f"Pour juger de l'urgence : {_today(hour=False)}\n\n{text}"}])
             data = json.loads(resp.message.content or "{}")
             data = data if isinstance(data, dict) else {}
         except Exception as e:
@@ -564,8 +567,9 @@ class AssistantService:
             messages.append({"role": "user", "content": f"{context}\n\n# Question de l'utilisateur\n\n{item['question']}"})
             item.update(state="thinking", phase=f"Réponse avec {item['model']}…")
             self._emit_qa(item)
-            stream = _ollama.chat(model=item["model"], messages=messages, stream=True, think=False,
-                                  options={"temperature": 0.3, "num_ctx": num_ctx()}, keep_alive=keep_alive())
+            stream = llm.chat("Assistant : question", model=item["model"], messages=messages, stream=True,
+                              think=False, options={"temperature": 0.3, "num_ctx": num_ctx()},
+                              keep_alive=keep_alive())
             buf, last, done_reason = "", time.monotonic(), None
             for chunk in stream:
                 if self._stop.is_set():

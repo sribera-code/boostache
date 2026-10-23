@@ -205,6 +205,7 @@ button { cursor: pointer; }
 }
 .nav-dot.rec { background: var(--red); }
 .nav-dot.live { background: var(--green); }
+.nav-dot.busy { background: var(--link); }      /* Ollama occupé par Boostache */
 .nav-sep { height: 1px; margin: 8px 6px; background: var(--line); }
 .sidebar-spacer { flex: 1; }
 
@@ -2627,6 +2628,14 @@ table.grid tr:hover .row-actions { opacity: 1; }
 .om-status.off .om-dot { background: var(--red); box-shadow: 0 0 0 3px rgba(238, 125, 125, .15); }
 .om-status-actions { display: flex; flex-shrink: 0; gap: 8px; }
 .om-facts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: 12.5px; }
+/* Appels de Boostache en cours et en attente (file d'attente commune, llm.py) */
+.om-activity { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; font-size: 12.5px; }
+.om-activity[hidden] { display: none; }
+.om-job { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.om-job > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.om-job .icon { flex-shrink: 0; color: var(--fg-2); }
+.om-job.run .icon { color: var(--link); animation: spin 1s linear infinite; }
+.om-job .muted { flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .om-fact { display: inline-flex; gap: 6px; min-width: 0; }
 .om-fact span:last-child { color: var(--fg-2); overflow-wrap: anywhere; }
 .icon-btn.busy .icon, .btn.busy .icon { animation: spin 1s linear infinite; }
