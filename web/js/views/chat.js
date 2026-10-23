@@ -3,6 +3,7 @@ import { h, throttle, plural, parseDate, formatHour, formatShort, formatDay, for
 import { ico, iconButton, openLightbox, openMenu, openMenuBelow, TabStrip, toast, kbdCombo } from "../ui.js";
 import { renderMarkdown, renderMarkdownForCopy, splitThinking } from "../markdown.js";
 import { createComposer, createSuggestions, conversationSpeech } from "../composer.js";
+import { flashNode, markFound } from "../palette.js";
 
 const wordCount = (s) => (s.trim().match(/\S+/g) || []).length;
 
@@ -280,7 +281,7 @@ export function createChatView(ctx, state) {
     const edit = () => editMessage(t, root, m, index);
     const editBtn = iconButton("pencil", "Modifier la question", edit, { size: 15, cls: "sm" });
     const forkBtn = iconButton("git-branch", "Fork dans un nouvel onglet", fork, { size: 15, cls: "sm" });
-    const root = h("div", { class: "msg msg-user" },
+    const root = h("div", { class: "msg msg-user", dataset: { msg: String(index) } },
       files.length ? h("div", { class: "msg-files" }, files) : null,
       m.text ? h("div", { class: "bubble", text: m.text }) : null,
       h("div", { class: "msg-foot" },
@@ -392,7 +393,7 @@ export function createChatView(ctx, state) {
   /** Réponse n° index de la conversation ; live : en cours de génération (lisible
    *  dès son début, la lecture suit le texte qui arrive). */
   function botMessage(t, m, live = false, index = t.data.messages.length) {
-    const root = h("div", { class: "msg msg-bot" });
+    const root = h("div", { class: "msg msg-bot", dataset: { msg: String(index) } });
     const thinkLabel = h("span", { class: "label" });
     const thinkBody = h("div", { class: "thinking-body" });
     const summary = h("summary", {}, h("span", { class: "chev" }, ico("chevron-right", 13)), ico("brain", 14), thinkLabel);
@@ -928,6 +929,19 @@ export function createChatView(ctx, state) {
       api.chat_check();     // Ollama retesté s'il n'a pas répondu récemment
     },
     focus() { input.focus(); },
+    /** Recherche (Ctrl+K) : l'onglet, et le message trouvé ; action "new" : nouvelle conversation. */
+    reveal(target, words) {
+      if (target?.action === "new") { newTab(S.active); return; }
+      const t = S.tabs.get(target?.tab);
+      if (!t) return;
+      select(t.id);
+      const node = target.message != null ? t.pane.querySelector(`[data-msg="${target.message}"]`) : null;
+      if (!node) { markFound(t.pane, words); return; }
+      t.stick = false;
+      toBottom.hidden = false;
+      flashNode(node);
+      markFound(node, words);
+    },
     onDrop(paths) {
       const t = activeTab();
       if (!t) return;

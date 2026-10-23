@@ -1444,10 +1444,11 @@ class RagService:
         return self._vectors
 
     def _retrieve(self, query: str, scope: dict | None, budget: int, per_file: int | None,
-                  limit: int = MAX_SOURCES, ratio: float = VEC_RATIO) -> list[dict]:
+                  limit: int = MAX_SOURCES, ratio: float = VEC_RATIO, semantic: bool = True) -> list[dict]:
         """Passages les plus proches de la question : classements par les mots (FTS5) et
         par les vecteurs fusionnés (RRF), dans la limite de budget caractères. Un passage
-        que seuls les vecteurs trouvent doit approcher le meilleur (ratio) : sinon, hors sujet."""
+        que seuls les vecteurs trouvent doit approcher le meilleur (ratio) : sinon, hors sujet.
+        semantic=False : par les mots seulement (pas d'appel à Ollama)."""
         scores: Counter = Counter()
         lexical: set[int] = set()
         cond, args = self._scope_files(scope)
@@ -1465,7 +1466,7 @@ class RagService:
                 scores[cid] += 1 / (RRF_K + rank + 1)
                 lexical.add(cid)
         chat, model = self._chat, self.embed_model()
-        if np is not None and self._client and chat and chat.available and model in chat.embed_models:
+        if semantic and np is not None and self._client and chat and chat.available and model in chat.embed_models:
             _, ids, files, matrix = self._matrix()
             if ids is not None and self._ix.meta("embed_model") == model:
                 prefix, _ = _embed_prefixes(model)
@@ -1509,8 +1510,9 @@ class RagService:
                 break
         return picked
 
-    def search(self, query: str, scope_path: str | None = None) -> dict:
-        """Recherche sans modèle de réponse : fichiers dont le nom correspond, puis passages."""
+    def search(self, query: str, scope_path: str | None = None, semantic: bool = True) -> dict:
+        """Recherche sans modèle de réponse : fichiers dont le nom correspond, puis passages
+        (semantic=False : trouvés par les mots seulement, recherche globale de Boostache)."""
         query = " ".join(str(query or "").split())[:300]
         if not query or self._ix is None:
             return {"ok": True, "query": query, "files": [], "passages": []}
@@ -1530,7 +1532,7 @@ class RagService:
                 if all(w in base for w in words):
                     files.append({"path": path, "name": _name(path), "kind": _file_kind(path), "status": status})
             files.sort(key=lambda f: _natural(f["name"]))
-        passages = self._retrieve(query, scope, budget=10 ** 9, per_file=3, limit=30, ratio=0.6)
+        passages = self._retrieve(query, scope, budget=10 ** 9, per_file=3, limit=30, ratio=0.6, semantic=semantic)
         roots = self._roots()
         for p in passages:
             root = next((r for r, k in roots if _inside(_key(p["path"]), k)), "")

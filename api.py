@@ -15,6 +15,7 @@ import custom_tasks
 import assistant
 import diagnostics
 import locks
+import reminders
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 import speech
 from engine import LEVELS, logger, tts, strip_markdown
@@ -738,6 +739,12 @@ class Api:
         return self._app.calc.model()
 
     # ─────────────────────────────────────────
+    #  Recherche dans toutes les sections (Ctrl+K)
+    # ─────────────────────────────────────────
+    def search_all(self, query):
+        return self._app.search.search(str(query or ""))
+
+    # ─────────────────────────────────────────
     #  Presse-papiers
     # ─────────────────────────────────────────
     def clip_get(self, item_id):
@@ -779,6 +786,24 @@ class Api:
 
     def logs_open_folder(self):
         return diagnostics.open_folder()
+
+    # ─────────────────────────────────────────
+    #  Rappels
+    # ─────────────────────────────────────────
+    def reminders_list(self):
+        return self._app.reminders.snapshot()
+
+    def reminder_suggestions(self, text=""):
+        return reminders.suggestions(str(text or ""))
+
+    def reminder_add(self, text, at, details="", source=None):
+        return self._app.reminders.add(str(text or ""), at, str(details or ""), source)
+
+    def reminder_delete(self, reminder_id):
+        return self._app.reminders.delete(str(reminder_id or ""))
+
+    def reminder_snooze(self, reminder_id, at):
+        return self._app.reminders.snooze(str(reminder_id or ""), at)
 
     # ─────────────────────────────────────────
     #  Tâches & raccourcis

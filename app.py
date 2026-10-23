@@ -32,6 +32,8 @@ from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from rag import RagService
 from recorder import FORMATS as AUDIO_FORMATS, RecorderService
+from reminders import ReminderService
+from search import SearchService
 import speech
 from transcriber import LANGUAGES, MODELS
 from storage import DATA_DIR, settings, clipboard_history
@@ -161,6 +163,11 @@ class BoostacheApp:
         self.files = FilesService(self.bridge, self.chat)
         # Section Calculatrice : console Python (processus à part), assistant (Ollama)
         self.calc = CalcService(self.bridge, self.chat)
+        # Recherche dans toutes les sections (Ctrl+K)
+        self.search = SearchService(self)
+        # Rappels (message arrivé, section Tâches) : voix et notification Windows
+        self.reminders = ReminderService(self.bridge)
+        self.reminders.notifier = self._notify
         # Section Ollama : serveur, modèles, téléchargements
         self.ollama = (OllamaAdmin(self.bridge, self.chat, self.assistant, is_visible=self.is_visible,
                                    notify=self._notify, rag=self.rag) if self.chat else None)
@@ -218,6 +225,8 @@ class BoostacheApp:
         return max(MIN_SIZE[0], w), max(MIN_SIZE[1], h)
 
     def _after_start(self):
+        # Après le tray (notification d'un rappel en retard dès le lancement)
+        self.reminders.start()
         if self.show_on_start:
             self.window.events.loaded.wait(20)
             self.show()
@@ -584,6 +593,7 @@ class BoostacheApp:
                     pass
             self.terminals.shutdown()
             self.assistant.shutdown()
+            self.reminders.shutdown()
             self.rag.shutdown()
             self.calc.shutdown()
             self.bridge.stop()
@@ -625,6 +635,7 @@ class BoostacheApp:
             "clipboard": self.clipboard_items(),
             "logs":      logger.recent(),
             "tasks":     custom_tasks.rows(),
+            "reminders": self.reminders.snapshot(),
             "hotkeys":   custom_tasks.hotkey_rows(),
             "tts":       tts.state(),
             "visible":   self._visible,

@@ -3,6 +3,7 @@
 // et la recherche ; à droite, le fichier ou le dossier choisi (résumé, points clés…) et les
 // questions, auxquelles Ollama répond au fil de l'eau en citant ses sources [1], [2]…
 import { h, plural, formatShort, parseDate } from "../dom.js";
+import { markFound } from "../palette.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
 import { createComposer, createSuggestions, conversationSpeech } from "../composer.js";
@@ -1422,8 +1423,19 @@ export function createRagView(ctx, state) {
   const saved = loadText(SELECTED_KEY);
   if (saved) setTimeout(() => reveal(saved, { focus: false }), 0);
 
+  /** Recherche (Ctrl+K) : le passage trouvé (comme une source), ou le fichier dans l'arborescence. */
+  function revealFound(target, words, query) {
+    if (target?.passage) {
+      openPassage({ question: query, kind: "ask" }, target.passage);
+      markFound(document.querySelector(".modal .rag-passage"), words);
+    } else if (target?.path) {
+      reveal(target.path);
+    }
+  }
+
   return {
     el,
+    reveal: revealFound,
     onShow() {
       if (dirty.size) flushRefresh();
       renderStatus();

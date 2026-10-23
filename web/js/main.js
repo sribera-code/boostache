@@ -5,6 +5,7 @@ import { ico, iconButton, toast, closeMenus, openMenu, openMenuBelow, setSpeakin
 import { togglePinPanel } from "./pin.js";
 import { createLayout } from "./layout.js";
 import { createOllamaBanner } from "./banner.js";
+import { createPalette } from "./palette.js";
 import { createChatView } from "./views/chat.js";
 import { createConsolesView } from "./views/consoles.js";
 import { createNotesView } from "./views/notes.js";
@@ -51,6 +52,7 @@ let bootState = null;             // état initial (ui_ready), pour une section 
 let chatEntry = null;             // section Conversations, gardée quand Ollama ne répond plus
 let lateChat = null;              // Ollama apparu ou disparu pendant le démarrage
 let pendingDrop = null;
+let palette = null;                // recherche dans tout Boostache (Ctrl+K)
 
 // ─────────────────────────────────────────────
 //  Contexte partagé avec les vues
@@ -198,6 +200,12 @@ function buildSidebar() {
   sidebar.append(h("div", { class: "brand" },
     h("div", { class: "brand-mark" }, ico("zap", 15, 2)),
     h("span", { class: "brand-name", text: "Boostache" }), splitButtons[0]));
+  sidebar.append(h("div", {
+    class: "nav-item nav-search", role: "button", tabindex: "0",
+    dataset: { tip: "Rechercher partout : conversations, notes, messages, transcriptions, documents…", kbd: "Ctrl+K" },
+    onClick: () => palette?.open(),
+    onKeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); palette?.open(); } },
+  }, ico("search", 17), h("span", { class: "nav-label", text: "Rechercher" })));
 
   for (const item of NAV) {
     if (item === "-") { sidebar.append(h("div", { class: "nav-sep" })); continue; }
@@ -299,6 +307,40 @@ function setOllama(chat) {
 
 /** Ctrl+1…9, Ctrl+, , Ctrl+Maj+S (« split ») et F6 (clavier de l'interface ou relayé
  *  depuis un site intégré). */
+// ─────────────────────────────────────────────
+//  Recherche dans tout Boostache (Ctrl+K, palette.js)
+// ─────────────────────────────────────────────
+const ACTIONS = [
+  { label: "Nouvelle conversation", icon: "message-square", keywords: "chat discussion question ollama", section: "chat",
+    run: () => reveal("chat", { action: "new" }) },
+  { label: "Nouvelle note", icon: "notebook-pen", keywords: "ecrire texte", section: "notes",
+    run: () => reveal("notes", { action: "new" }) },
+  { label: "Capture d'écran", icon: "scan", keywords: "impr ecran zone image", section: "captures",
+    run: () => api.capture_snip() },
+  { label: "Nouveau rappel", icon: "alarm-clock", keywords: "rappeler alarme plus tard tache", section: "tasks",
+    run: () => reveal("tasks", { action: "reminder" }) },
+];
+
+/** Affiche une section, puis ce que sa vue sait montrer (résultat de recherche, action). */
+function reveal(section, target, words = [], query = "") {
+  if (!views.has(section)) return;
+  layout.navigate(section);
+  if (target) setTimeout(() => views.get(section)?.view.reveal?.(target, words, query), 0);
+}
+
+function setupPalette() {
+  palette = createPalette(ctx, {
+    sections: () => [...NAV, SETTINGS].filter((i) => i !== "-" && views.has(i.id))
+      .map((i) => ({ id: i.id, label: i.label, icon: i.icon, shortcut: views.get(i.id).shortcut })),
+    actions: () => ACTIONS.filter((a) => views.has(a.section)),
+    open: reveal,
+  });
+  ctx.search = (query = "") => palette.open(query);
+  ctx.reveal = reveal;
+  // Rappel donné (reminders.py) : aussi dit à voix haute et en notification Windows
+  on("reminders:fired", ({ reminder, title }) => toast(`${title} : ${reminder.text}`, "info", 12000));
+}
+
 function shortcut(key) {
   if (key === ",") { layout.navigate("settings"); return true; }
   if (key === "split") { layout.toggle(); return true; }
@@ -506,6 +548,10 @@ function setupGlobalHandlers() {
     } else if (ev.ctrlKey && ev.key === ",") {
       ev.preventDefault();
       shortcut(",");
+    } else if (ev.ctrlKey && !ev.altKey && !ev.shiftKey && ev.key.toLowerCase() === "k") {
+      ev.preventDefault();
+      ev.stopPropagation();
+      palette?.toggle();
     } else if (ev.ctrlKey && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === "s") {
       ev.preventDefault();
       ev.stopPropagation();
@@ -561,6 +607,7 @@ async function boot() {
   setupTts();
   setupGlobalHandlers();
   createOllamaBanner($("#ollama-banner"));
+  setupPalette();
   // Changement reçu avant la fin du démarrage : rejoué pour toutes les vues
   if (lateChat) emit("chat:available", lateChat);
 

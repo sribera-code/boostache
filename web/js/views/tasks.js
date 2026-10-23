@@ -1,11 +1,23 @@
 // Vue Tâches : tâches planifiées (tasks.py + tâches créées ici).
 import { h } from "../dom.js";
 import { ico, iconButton, openMenu, openModal, toast } from "../ui.js";
+import { flashNode, markFound } from "../palette.js";
+import { reminderDialog, reminderMenu } from "../reminders.js";
 
 export function createTasksView(ctx, state) {
-  const { api } = ctx;
+  const { api, on } = ctx;
   let rows = state.tasks || [];
+  let reminders = state.reminders || [];
   let timer = null;
+
+  // ── Rappels (reminders.py) ──────────────────
+  const remList = h("div", { class: "rem-list" });
+  const remCard = h("div", { class: "rem-card" },
+    h("div", { class: "rem-head" }, ico("alarm-clock", 15), h("span", { class: "rem-title", text: "Rappels" }),
+      h("span", { class: "muted rem-count" }), h("div", { class: "head-spacer" }),
+      h("button", { class: "btn sm", type: "button", onClick: () => reminderDialog(ctx) },
+        ico("plus", 14), "Nouveau rappel")),
+    remList);
 
   const tbody = h("tbody");
   const table = h("table", { class: "grid" },
@@ -20,6 +32,7 @@ export function createTasksView(ctx, state) {
       h("div", { class: "head-spacer" }),
       h("button", { class: "btn primary sm", type: "button", onClick: () => editor() },
         ico("plus", 15), "Nouvelle tâche")),
+    remCard,
     wrap,
     h("div", { class: "foot-note" }, ico("info", 13),
       h("span", {}, "Les tâches de ", h("code", { text: "tasks.py" }),
@@ -39,7 +52,7 @@ export function createTasksView(ctx, state) {
       return;
     }
     tbody.replaceChildren(...rows.map((r) => {
-      const tr = h("tr", {},
+      const tr = h("tr", { dataset: { idx: String(r.idx) } },
         h("td", {}, r.label, r.custom ? h("span", { class: "pill", text: "perso" }) : null),
         h("td", { class: "num", text: r.period }),
         h("td", { class: "num", text: r.next_run }),
@@ -66,6 +79,41 @@ export function createTasksView(ctx, state) {
     const res = await api.tasks_list();
     if (res) { rows = res; render(); }
   }
+
+  function renderReminders() {
+    const pending = reminders.filter((r) => !r.done);
+    remCard.querySelector(".rem-count").textContent = pending.length ? `· ${pending.length} à venir` : "";
+    if (!reminders.length) {
+      remList.replaceChildren(h("div", { class: "rem-empty", text: "Aucun rappel. « Me le rappeler » sur un message "
+        + "arrivé (Assistant), ou Nouveau rappel : dit à voix haute et affiché en notification le moment venu." }));
+      return;
+    }
+    remList.replaceChildren(...reminders.map((r) => {
+      const later = iconButton(r.done ? "rotate-ccw" : "clock", r.done ? "Remettre à plus tard" : "Changer le moment",
+        (ev) => reminderMenu(ctx, ev.currentTarget, { id: r.id, text: r.text, hint: `${r.text} ${r.details || ""}` }),
+        { size: 15, cls: "sm" });
+      const row = h("div", { class: `rem-item${r.done ? " done" : ""}`, dataset: { id: r.id, ...(r.details ? { tip: r.details } : {}) } },
+        h("span", { class: "rem-icon" }, ico(r.done ? "check" : "alarm-clock", 14)),
+        h("div", { class: "rem-main" },
+          h("div", { class: "rem-text", text: r.text }),
+          h("div", { class: "rem-when", text: r.done ? `Donné · prévu ${r.when}` : r.when })),
+        h("div", { class: "row-actions" }, later,
+          iconButton("trash-2", "Supprimer", () => api.reminder_delete(r.id), { size: 15, cls: "sm" })));
+      row.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        openMenu([
+          { label: r.done ? "Remettre à plus tard…" : "Changer le moment…", icon: "clock",
+            onSelect: () => reminderDialog(ctx, { id: r.id, text: r.text, hint: `${r.text} ${r.details || ""}` }) },
+          { label: "Copier", icon: "copy", onSelect: () => ctx.copy([r.text, r.details].filter(Boolean).join("\n")) },
+          "-",
+          { label: "Supprimer", icon: "trash-2", danger: true, onSelect: () => api.reminder_delete(r.id) },
+        ], ev.clientX, ev.clientY);
+      });
+      return row;
+    }));
+  }
+
+  on("reminders", ({ items }) => { reminders = items || []; renderReminders(); });
 
   function run(r) {
     api.task_run(r.idx);
@@ -144,10 +192,18 @@ export function createTasksView(ctx, state) {
   }
 
   render();
+  renderReminders();
 
   return {
     el,
     onShow() { refresh(); clearInterval(timer); timer = setInterval(refresh, 5000); },
     onHide() { clearInterval(timer); timer = null; },
+    /** Recherche (Ctrl+K) : la tâche trouvée ; action "reminder" : nouveau rappel. */
+    reveal(target, words) {
+      if (target?.action === "reminder") { reminderDialog(ctx); return; }
+      const tr = tbody.querySelector(`tr[data-idx="${target?.idx}"]`);
+      flashNode(tr);
+      markFound(tr, words);
+    },
   };
 }

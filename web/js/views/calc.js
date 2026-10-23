@@ -3,6 +3,7 @@
 // En bas, l'assistant (Ollama) en conversation : il fait les calculs demandés en français,
 // modifie les calculs précédents, explique un résultat ou une erreur.
 import { h, plural, parseDate, formatShort } from "../dom.js";
+import { markFound } from "../palette.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
 import { createComposer, createSuggestions, conversationSpeech } from "../composer.js";
@@ -832,5 +833,10 @@ export function createCalcView(ctx, state) {
       scrollConvo();
     },
     focus() { input.focus(); },
+    /** Recherche (Ctrl+K) : le calcul trouvé, centré et éclairé. */
+    reveal(target, words) {
+      showEntry(target?.n);
+      markFound(log.querySelector(`.calc-entry[data-n="${target?.n}"]`), words);
+    },
   };
 }

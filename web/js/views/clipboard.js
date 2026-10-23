@@ -183,6 +183,16 @@ export function createClipboardView(ctx, state) {
 
   return {
     el,
+    /** Recherche (Ctrl+K) : l'élément trouvé, choisi et ouvert. */
+    reveal(target) {
+      if (!items.some((it) => it.id === target?.id)) return;
+      search.value = "";
+      query = "";
+      render();
+      setSelected(target.id);
+      list.focus();
+      openItem(target.id);
+    },
     // Recherche en cours : le champ garde le clavier
     focus() { if (!(isTyping() && el.contains(document.activeElement))) list.focus(); },
   };

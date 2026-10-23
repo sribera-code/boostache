@@ -3,6 +3,8 @@
 // En haut, les annonces et les sources ; puis les messages arrivés ; puis les questions.
 import { h, plural } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
+import { flashNode, markFound } from "../palette.js";
+import { reminderMenu } from "../reminders.js";
 import { renderMarkdown } from "../markdown.js";
 import { createComposer, conversationSpeech } from "../composer.js";
 import { importanceIcon } from "./maillist.js";
@@ -53,6 +55,7 @@ export function createAssistantView(ctx, state) {
     unread: 0,                 // messages arrivés hors de la vue
     feedOpen: false,
     windowVisible: !!state.visible,
+    reminders: state.reminders || [],   // rappels (reminders.py) : ceux d'un message arrivé sont signalés
   };
   const answers = new Map();   // id → { item, el, body, … } (questions affichées)
 
@@ -254,27 +257,44 @@ export function createAssistantView(ctx, state) {
     const speak = iconButton("volume-2", "Lire", () => ctx.toggleSpeak(feedText(item), source), { size: 15, cls: "sm" });
     speak.dataset.speakSource = source;
     speak.dataset.tipIdle = "Lire";
+    const remind = iconButton("alarm-clock", "Me le rappeler", (ev) => remindMenu(item, ev.currentTarget), { size: 15, cls: "sm" });
+    const planned = S.reminders.find((r) => !r.done && r.source?.id === item.id);
     const row = h("article", { class: "asst-msg", tabindex: "0",
-      dataset: { tip: `Ouvrir ${src.label}` },
+      dataset: { tip: `Ouvrir ${src.label}`, id: item.id },
       onClick: (ev) => { if (!ev.target.closest("button")) ctx.navigate(item.source); },
       onKeydown: (ev) => { if (ev.key === "Enter") ctx.navigate(item.source); } },
       h("span", { class: `asst-msg-icon ${item.source}` }, ico(src.icon, 14)),
       h("div", { class: "asst-msg-text" },
         h("div", { class: "asst-msg-head" }, importanceIcon(item.summary ? item.importance : ""),
           h("span", { class: "asst-msg-from", text: item.title }), count,
+          planned ? h("span", { class: "asst-reminder", dataset: { tip: `Rappel : ${planned.text}` } },
+            ico("alarm-clock", 12), planned.when) : null,
           h("span", { class: "asst-msg-time", text: hhmm(item.at) })),
         h("div", { class: "asst-msg-body", text: item.text || "…" }),
         summaryEl(item)),
-      h("div", { class: "asst-msg-actions" }, speak));
+      h("div", { class: "asst-msg-actions" }, remind, speak));
     row.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
       openMenu([
         { label: `Ouvrir ${src.label}`, icon: src.icon, onSelect: () => ctx.navigate(item.source) },
         { label: "Lire", icon: "volume-2", onSelect: () => ctx.speak(feedText(item), source) },
         { label: "Copier", icon: "copy", onSelect: () => ctx.copy(feedText(item), "Copié") },
+        { label: "Me le rappeler…", icon: "alarm-clock", onSelect: () => remindMenu(item, remind) },
       ], ev.clientX, ev.clientY);
     });
     return row;
+  }
+
+  /** « Me le rappeler » : l'action attendue (sinon le message), l'échéance cherchée dans le résumé. */
+  function remindMenu(item, anchor) {
+    const what = item.source === "gmail" ? "E-mail" : "Message WhatsApp";
+    const about = item.summary || item.text || "";
+    reminderMenu(ctx, anchor, {
+      text: item.action || `${item.title} : ${item.text || ""}`.trim(),
+      details: `${what} de ${item.title}${about ? ` : ${about}` : ""}`,
+      hint: [item.action, item.summary, item.text, item.snippet].filter(Boolean).join(" "),
+      source: { kind: "assistant", id: item.id, app: item.source },
+    });
   }
 
   function renderFeed() {
@@ -429,6 +449,8 @@ export function createAssistantView(ctx, state) {
   // ── Évènements Python ───────────────────────
   on("assistant:state", (data) => { S.st = { ...S.st, ...data }; renderStatus(); });
 
+  on("reminders", ({ items }) => { S.reminders = items || []; renderFeed(); });
+
   on("assistant:feed", ({ items, added }) => {
     S.feed = items || [];
     if (added && !(ctx.isActive("assistant") && S.windowVisible)) S.unread += added;
@@ -489,6 +511,15 @@ export function createAssistantView(ctx, state) {
     el,
     onShow() { clearUnread(); },
     onWindowShown() { if (ctx.isActive("assistant")) clearUnread(); },
+    /** Recherche (Ctrl+K) : le message arrivé trouvé (liste dépliée s'il le faut). */
+    reveal(target, words) {
+      const i = S.feed.findIndex((it) => it.id === target?.id);
+      if (i < 0) return;
+      if (i >= FEED_SHOWN && !S.feedOpen) { S.feedOpen = true; renderFeed(); }
+      const row = feedList.querySelector(`[data-id="${CSS.escape(target.id)}"]`);
+      flashNode(row);
+      markFound(row, words);
+    },
     focus() { if (!input.disabled) input.focus(); },
   };
 }

@@ -1,6 +1,7 @@
 // Vue Notes : éditeur de texte multi-onglets, sauvegarde automatique.
 import { h, debounce, plural } from "../dom.js";
 import { ico, iconButton, openMenu, TabStrip, toast } from "../ui.js";
+import { fold } from "../palette.js";
 
 export function createNotesView(ctx, state) {
   const { api } = ctx;
@@ -243,8 +244,30 @@ export function createNotesView(ctx, state) {
   }
   select(S.order[0]);
 
+  /** Recherche (Ctrl+K) : la note, texte trouvé sélectionné ; action "new" : nouvelle note. */
+  function reveal(target, words) {
+    if (target?.action === "new") { newTab(S.active); return; }
+    const t = S.tabs.get(target?.slot);
+    if (!t) return;
+    select(t.slot);
+    const text = t.editor.value;
+    let pos = Math.min(Math.max(0, Number(target.pos) || 0), text.length);
+    // Texte modifié depuis la recherche : le premier mot cherché, là où il est maintenant
+    const folded = fold(text);
+    const word = words.find((w) => folded.startsWith(w, pos)) || words[0] || "";
+    if (word && !folded.startsWith(word, pos)) pos = Math.max(0, folded.indexOf(word));
+    t.editor.focus();
+    // Le curseur posé d'abord seul : la zone de texte défile jusqu'à lui
+    t.editor.setSelectionRange(pos, pos);
+    t.editor.blur();
+    t.editor.focus();
+    t.editor.setSelectionRange(pos, pos + (folded.startsWith(word, pos) ? word.length : 0));
+    updateStats();
+  }
+
   return {
     el,
+    reveal,
     onShow() { updateStats(); },
     onHide() { for (const t of S.tabs.values()) t.save.flush(); },
     focus() { activeTab()?.editor.focus(); },
