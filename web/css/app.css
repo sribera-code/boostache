@@ -255,7 +255,31 @@ button { cursor: pointer; }
 .app.collapsed .brand { justify-content: center; padding: 0; }
 .app.collapsed .sidebar-foot { flex-direction: column; height: auto; gap: 10px; padding: 6px 0; }
 
-.main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.workspace { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.main { position: relative; display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+
+/* ── Bandeau d'Ollama (arrêté, en cours de lancement, absent, mal installé) ── */
+.ollama-banner {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 6px 10px 6px 16px;
+  border-bottom: 1px solid rgba(230, 182, 96, .22);
+  background: rgba(230, 182, 96, .08);
+  font-size: 13px;
+  animation: fade .14s ease-out;
+}
+.ollama-banner[hidden] { display: none; }
+.ollama-banner .ob-icon { color: var(--amber); }
+.ollama-banner .ob-text { flex: 1; min-width: 0; color: var(--fg); }
+.ollama-banner .ob-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
+.ollama-banner[data-kind="broken"] { border-bottom-color: rgba(238, 125, 125, .25); background: rgba(238, 125, 125, .08); }
+.ollama-banner[data-kind="broken"] .ob-icon { color: var(--red); }
+.ollama-banner[data-kind="starting"] { border-bottom-color: var(--line); background: var(--bg-1); }
+.ollama-banner[data-kind="starting"] .ob-icon { color: var(--fg-2); }
+.ollama-banner[data-kind="starting"] .ob-icon .icon { animation: spin 1s linear infinite; }
 .view { position: relative; display: none; flex: 1; flex-direction: column; min-width: 0; min-height: 0; container: view / inline-size; }
 .view.active { display: flex; animation: fade .14s ease-out; }
 

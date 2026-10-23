@@ -4,6 +4,7 @@ import { $, h, isTyping } from "./dom.js";
 import { ico, iconButton, toast, closeMenus, openMenu, openMenuBelow, setSpeakingButton } from "./ui.js";
 import { togglePinPanel } from "./pin.js";
 import { createLayout } from "./layout.js";
+import { createOllamaBanner } from "./banner.js";
 import { createChatView } from "./views/chat.js";
 import { createConsolesView } from "./views/consoles.js";
 import { createNotesView } from "./views/notes.js";
@@ -555,6 +556,7 @@ async function boot() {
   buildSidebar();
   setupTts();
   setupGlobalHandlers();
+  createOllamaBanner($("#ollama-banner"));
   // Changement reçu avant la fin du démarrage : rejoué pour toutes les vues
   if (lateChat) emit("chat:available", lateChat);
 

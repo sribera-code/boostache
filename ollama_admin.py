@@ -37,12 +37,13 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import quote
 
-from chat import DEFAULT_CTX, _ollama, _unreachable, internal_model
+from chat import DEFAULT_CTX, RUNNER_MISSING, _ollama, _unreachable, internal_model
 from engine import logger
 from storage import settings
 
 SITE          = "https://ollama.com"
 DOWNLOAD_PAGE = "https://ollama.com/download/windows"
+INSTALLER     = "https://ollama.com/download/OllamaSetup.exe"
 REGISTRY      = "registry.ollama.ai"
 CALL_TIMEOUT  = 20             # appels au serveur local : show, delete, ps… (s)
 WEB_TIMEOUT   = 15             # ollama.com et registre (s)
@@ -101,6 +102,20 @@ def _server_log() -> str:
             return f.read().decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+def runner_missing(seen: bool = False) -> bool:
+    """Installation incomplète : le serveur répond mais ne peut charger aucun modèle,
+    son moteur (lib/ollama/llama-server.exe) manque — c'est ce que laisse une mise à
+    jour d'Ollama annulée en cours de route. Constaté par un appel en échec (seen) ou
+    par le journal du dernier démarrage du serveur."""
+    exe = find_exe()
+    if exe is None or (exe.parent / "lib" / "ollama" / "llama-server.exe").is_file():
+        return False
+    if seen:
+        return True
+    text = _server_log()
+    return RUNNER_MISSING in text[max(0, text.rfind('msg="server config"')):]
 
 
 def _gib(text: str) -> int:
@@ -381,6 +396,7 @@ class OllamaAdmin:
         self._updates: dict[str, bool | None] = {}   # modèle → mise à jour disponible
         self._pulls: dict[str, dict] = {}        # modèle → téléchargement
         self._starting = False
+        self._waiting = False                    # lancement automatique : Ollama laissé démarrer seul
         self._web = None                         # httpx.Client vers ollama.com et le registre
         self._library = None                     # (time.monotonic(), modèles d'ollama.com)
         self._tags: dict[str, tuple] = {}        # modèle → (time.monotonic(), (variantes, en ligne seulement))
@@ -398,6 +414,21 @@ class OllamaAdmin:
         """État connu sans attendre le serveur (démarrage de l'interface)."""
         return {"available": True, "installed": find_exe() is not None, "online": self._chat.online,
                 "starting": self._starting, "pulls": self._ui_pulls(), "default_ctx": DEFAULT_CTX}
+
+    def banner(self) -> dict:
+        """Bandeau en haut de l'interface : « stopped » (Ollama ne répond pas),
+        « starting », « missing » (pas installé), « broken » (installation
+        incomplète), ou "" (rien à signaler, ou pas encore testé)."""
+        online = self._chat.online
+        if self._starting or (self._waiting and not online):
+            kind = "starting"
+        elif online is None:
+            kind = ""
+        elif not online:
+            kind = "stopped" if find_exe() is not None else "missing"
+        else:
+            kind = "broken" if runner_missing(self._chat.runner_missing) else ""
+        return {"kind": kind}
 
     def state(self) -> dict:
         """Tout ce que montre la section (bloquant : appels au serveur local)."""
@@ -559,13 +590,18 @@ class OllamaAdmin:
         pas après AUTOSTART_GRACE secondes (à l'ouverture de session, l'application
         Ollama démarre peut-être en même temps que Boostache)."""
         deadline = time.monotonic() + AUTOSTART_GRACE
-        while not self._chat.probe():
-            if time.monotonic() >= deadline:
-                if find_exe() is not None:
-                    logger.log("Ollama ne répond pas au démarrage de Boostache : lancement.")
-                    self.start()
-                return
-            time.sleep(3)
+        self._waiting = find_exe() is not None
+        try:
+            while not self._chat.probe():
+                if time.monotonic() >= deadline:
+                    if self._waiting:
+                        logger.log("Ollama ne répond pas au démarrage de Boostache : lancement.")
+                        self.start()
+                    return
+                time.sleep(3)
+        finally:
+            self._waiting = False
+            self._bridge.emit("ollama:banner", {})
 
     def _changed(self):
         """Quelque chose a changé hors d'un appel de l'interface : elle relit l'état."""

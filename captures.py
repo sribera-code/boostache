@@ -53,13 +53,10 @@ def _clipboard_image():
 
 class Snipper:
     """Lance l'outil Capture de Windows et attend l'image sélectionnée, qui
-    arrive dans le presse-papiers.
+    arrive dans le presse-papiers. La fenêtre de Boostache reste affichée
+    pendant la sélection (elle peut faire partie de la capture)."""
 
-    hooks : objet fournissant is_visible(), hide(), show() — la fenêtre est
-    masquée pendant la sélection pour ne pas cacher l'écran."""
-
-    def __init__(self, hooks):
-        self._hooks = hooks
+    def __init__(self):
         self._lock = threading.Lock()
         self._active = False
         self._deadline = 0.0
@@ -86,10 +83,6 @@ class Snipper:
             pass
 
     def _run(self):
-        was_visible = self._hooks.is_visible()
-        if was_visible:
-            self._hooks.hide()
-            time.sleep(0.3)
         image, error = None, None
         try:
             seq = clipboard_sequence()
@@ -118,9 +111,6 @@ class Snipper:
             on_done(image, error)
         except Exception as e:
             logger.log(f"Capture d'écran : {e}")
-        finally:
-            if was_visible:
-                self._hooks.show()
 
 
 # ─────────────────────────────────────────────

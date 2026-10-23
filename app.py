@@ -129,7 +129,7 @@ class BoostacheApp:
         self._configure_tts()
         threading.Thread(target=speech.warm_up, args=(tts.engine,), daemon=True, name="tts-warm-up").start()
 
-        self.snipper = Snipper(hooks=self)
+        self.snipper = Snipper()
         # Le service surveille lui-même le serveur Ollama (fonctions affichées tant qu'il répond)
         self.chat = ChatService(self.bridge, self.snipper) if OLLAMA_OK else None
         if not OLLAMA_OK:

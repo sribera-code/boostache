@@ -24,6 +24,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 - Pré-prompt système configurable
 - Persistance automatique des conversations et restauration des onglets au redémarrage
 - Présence d'Ollama surveillée : lancé après Boostache, arrêté puis relancé, il est détecté tout seul (essais de plus en plus espacés tant qu'il ne répond pas ; en ligne, test à l'affichage de la fenêtre, toutes les 30 s tant qu'elle est affichée et quand un appel échoue). Tant qu'il ne répond pas, tout ce qui a besoin de lui est masqué : onglet Conversations, aide contextuelle (Ctrl+Impr. écran rendu à Windows), « Joindre à la conversation » dans Captures, assistant de réponse de WhatsApp et Gmail, pré-prompt dans les paramètres
+- **Bandeau** en haut de la fenêtre, quelle que soit la section : Ollama pas lancé (bouton **Lancer Ollama**, puis « Démarrage d'Ollama… »), pas installé (**Installer Ollama**), ou installation incomplète — le serveur répond mais son moteur `llama-server.exe` manque, ce que laisse une mise à jour d'Ollama annulée en cours de route (**Télécharger l'installateur** : le relancer répare Ollama sans toucher aux modèles). Fermé, il ne revient que si l'état d'Ollama change
 
 ### Aide contextuelle (Ctrl+Impr. écran)
 - **Ctrl+Impr. écran**, n'importe où dans Windows : capture de la fenêtre active (même en partie cachée) et ouverture d'une conversation **Aide** dans Boostache
@@ -60,6 +61,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
 
 ### Captures
 - **Impr. écran**, n'importe où dans Windows : sélection d'une zone de l'écran (outil Capture de Windows), ouverte dans un nouvel onglet — un onglet par image
+- La fenêtre de Boostache reste affichée pendant la sélection (elle peut faire partie de la capture)
 - Éditeur façon Paint : crayon, surligneur, gomme (fait réapparaître la capture d'origine), ligne, flèche, rectangle, ellipse (Maj : angles de 45°, carré, cercle), texte, remplissage, pipette, pixellisation d'une zone
 - **Sélection** d'un cadre, déplaçable et redimensionnable directement sur l'image (poignées, flèches du clavier) : copier (Ctrl+C), **rogner** l'image (Ctrl+Maj+X), enregistrer, pixelliser ou effacer la zone (Suppr) ; Ctrl+A sélectionne tout
 - Palette de couleurs + couleur libre, quatre épaisseurs, formes et texte pleins
@@ -273,7 +275,7 @@ boostache/
 ├── web/
 │   ├── index.html
 │   ├── css/app.css       # Thème et mise en page
-│   ├── js/               # main.js (coquille), layout.js (écran partagé), ui.js (composants), composer.js (zone de saisie des sections avec un modèle), pin.js (panneau premier plan), views/ (une vue par section)
+│   ├── js/               # main.js (coquille), layout.js (écran partagé), banner.js (bandeau d'Ollama), ui.js (composants), composer.js (zone de saisie des sections avec un modèle), pin.js (panneau premier plan), views/ (une vue par section)
 │   └── vendor/           # Bibliothèques embarquées (voir vendor/licenses)
 └── requirements.txt
 ```

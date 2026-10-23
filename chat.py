@@ -107,6 +107,8 @@ RECHECK_AFTER = 15                        # en ligne : pas de nouveau test avant
 VISIBLE_EVERY = 30                        # fenêtre affichée : au moins un test toutes les 30 s
 NO_MODELS     = "Aucun modèle installé : télécharges-en un dans la section Ollama."
 UNREACHABLE   = "Ollama ne répond pas : il sera détecté dès son lancement."
+# Erreur d'Ollama 0.40 et plus quand son moteur manque (mise à jour interrompue…)
+RUNNER_MISSING = "llama-server binary not found"
 
 
 def internal_model(name: str) -> bool:
@@ -240,6 +242,9 @@ def _ollama_error(e: Exception) -> str:
     error = str(e)
     if _unreachable(e):
         return "Ollama injoignable. Vérifie que le serveur est lancé."
+    if RUNNER_MISSING in error:
+        return ("L'installation d'Ollama est incomplète (une mise à jour s'est mal terminée) : "
+                "aucun modèle ne peut se charger. Réinstalle Ollama (bandeau en haut de la fenêtre).")
     if "exceed_context_size" in error or "exceeds the available context" in error:
         return ("Trop long pour le contexte du modèle : ouvre une nouvelle conversation "
                 "ou retire des pièces jointes.")
@@ -411,6 +416,7 @@ class ChatService:
         self.embed_models: list[str] = []    # modèles d'embeddings (section Documents)
         self.models_error = ""
         self.online: bool | None = None      # None : pas encore testé
+        self.runner_missing = False          # un appel a échoué faute du moteur d'Ollama (RUNNER_MISSING)
         self.on_available = None
         self.model_listeners: list = []      # appelés (sans argument) quand la liste des modèles change
         self.visible = False                 # fenêtre affichée (set_visible)
@@ -535,6 +541,7 @@ class ChatService:
                 self.online, self.models, self.models_error = online, models, error
                 self.embed_models = embed
         if online and not was_online:
+            self.runner_missing = False      # relancé (réinstallé ?) : à constater de nouveau
             logger.log(f"Ollama détecté : {len(models)} modèle{'s' if len(models) > 1 else ''}.")
         elif not online and was_online is not False:
             logger.log("Ollama injoignable : nouveaux essais en arrière-plan." if error == UNREACHABLE
@@ -563,6 +570,10 @@ class ChatService:
         """Message d'un appel à Ollama en échec ; serveur injoignable : nouveau test."""
         if _unreachable(e):
             self.check(force=True)
+        elif RUNNER_MISSING in str(e) and not self.runner_missing:
+            self.runner_missing = True
+            logger.log("Ollama : son moteur (llama-server) est introuvable, installation incomplète.")
+            self._bridge.emit("ollama:banner", {})
         return _ollama_error(e)
 
     def model_changed(self, model: str):

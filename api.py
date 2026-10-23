@@ -16,7 +16,7 @@ import diagnostics
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
 import speech
 from engine import LEVELS, logger, tts, strip_markdown
-from ollama_admin import DOWNLOAD_PAGE, USES as MODEL_USES, models_dir
+from ollama_admin import DOWNLOAD_PAGE, INSTALLER, USES as MODEL_USES, models_dir
 from storage import DATA_DIR, clipboard_history, settings
 from winutil import (list_windows, open_url, reveal_in_explorer, set_opacity, set_topmost,
                      window_thumbnail)
@@ -410,6 +410,13 @@ class Api:
 
     def ollama_install_page(self):
         return open_url(DOWNLOAD_PAGE)
+
+    def ollama_banner(self):
+        return self._app.ollama.banner() if self._app.ollama else {"kind": ""}
+
+    def ollama_installer(self):
+        """Télécharge l'installateur d'Ollama (navigateur) : le relancer répare une installation incomplète."""
+        return open_url(INSTALLER)
 
     def ollama_open_models_dir(self):
         folder = models_dir()
