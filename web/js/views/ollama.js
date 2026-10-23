@@ -29,6 +29,7 @@ const USES = [
   ["rag", "Documents", "rag_model", "Questions et résumés sur vos dossiers"],
   ["files", "Fichiers", "files_model", "Résumé et questions sur un fichier ou un dossier déposé"],
   ["calc", "Calculatrice", "calc_model", "Assistant qui calcule et modifie vos calculs ; il lui faut un modèle à outils"],
+  ["recorder", "Enregistreur", "recorder_model", "Compte rendu d'un enregistrement transcrit : décisions, actions, points abordés"],
 ];
 const EMBED_USE = "Documents (embeddings)";     // modèle d'embeddings de la section Documents (uses.rag_embed)
 

@@ -1,8 +1,10 @@
 // Vue Enregistreur : enregistre le son qui sort du PC (et le micro en option)
 // ou le micro seul, en fichier audio ou en texte transcrit en direct ; liste,
 // lecture et transcription en texte des enregistrements du dossier choisi.
-import { h, plural, isTyping } from "../dom.js";
+import { h, plural, isTyping, formatShort, parseDate } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
+import { markFound } from "../palette.js";
+import { renderMarkdown } from "../markdown.js";
 
 const FORMATS = [["mp3", "MP3"], ["m4a", "M4A"], ["wav", "WAV"]];
 const TRANSCRIBE_STATES = {
@@ -364,6 +366,7 @@ export function createRecorderView(ctx, state) {
   }
 
   const fileOf = (name) => S.files.find((f) => f.name === name);
+  let openMinutes = null;          // fenêtre du texte ouverte : { name, update } (compte rendu)
 
   function durationOf(f) {
     return f.duration ?? durations.get(f.url) ?? null;
@@ -466,6 +469,7 @@ export function createRecorderView(ctx, state) {
         ? [{ label: "Annuler la transcription", icon: "x", onSelect: () => api.rec_transcribe_cancel(f.name) }]
         : f.transcript
           ? [{ label: "Voir le texte", icon: "file-text", hint: "T", onSelect: () => showTranscript(f.name) },
+            { label: "Compte rendu", icon: "clipboard-check", onSelect: () => showTranscript(f.name, { minutes: true }) },
             ctx.destinationMenuItem("notes", { label: "Texte dans une note", newLabel: "Texte dans une nouvelle note",
               icon: "notebook-pen" }, (slot) => sendTranscript(f.name, "notes", slot)),
             ctx.store.ollama ? ctx.destinationMenuItem("chat", { label: "Texte dans une conversation",
@@ -509,6 +513,7 @@ export function createRecorderView(ctx, state) {
       setSelected(f.name);
       openMenu([
         { label: "Voir le texte", icon: "file-text", hint: "Entrée", onSelect: () => showTranscript(f.name) },
+        { label: "Compte rendu", icon: "clipboard-check", onSelect: () => showTranscript(f.name, { minutes: true }) },
         ctx.destinationMenuItem("notes", { label: "Texte dans une note", newLabel: "Texte dans une nouvelle note",
           icon: "notebook-pen" }, (slot) => sendTranscript(f.name, "notes", slot)),
         ctx.store.ollama ? ctx.destinationMenuItem("chat", { label: "Texte dans une conversation",
@@ -680,10 +685,18 @@ export function createRecorderView(ctx, state) {
     else toChat(res.path, id);
   }
 
-  async function showTranscript(name) {
+  async function showTranscript(name, { minutes = false } = {}) {
     const f = fileOf(name);
     const res = await api.rec_transcript(name);
     if (!f || !res) { toast("Pas encore de texte pour cet enregistrement.", "info"); return; }
+    // Compte rendu (minutes.py) : second onglet, proposé tant qu'Ollama répond (ou s'il est déjà fait)
+    let current = (await api.rec_minutes(name)) || { state: "none" };
+    const canMinutes = ctx.store.ollama || current.state === "done";
+    const minutesPane = h("div", { class: "rec-minutes", hidden: true });
+    const textTab = h("button", { type: "button", text: "Texte", onClick: () => show("text") });
+    const minutesTab = h("button", { type: "button", onClick: () => show("minutes") },
+      ico("clipboard-check", 14), "Compte rendu");
+    const tabs = canMinutes ? h("div", { class: "segmented rec-tabs" }, textTab, minutesTab) : null;
     const viewer = h("pre", { class: "viewer rec-transcript", tabindex: "0", text: res.text });
     const source = `transcript:${name}`;
     viewer.addEventListener("contextmenu", (ev) => {
@@ -701,9 +714,12 @@ export function createRecorderView(ctx, state) {
     const modal = openModal({
       title: f.title,
       subtitle: `${f.text ? "Texte en direct" : "Transcription"} · ${plural(words, "mot", "mots")}`,
-      body: viewer,
+      body: h("div", { class: "rec-doc" }, tabs, viewer, minutesPane),
       width: 720,
-      onClose: () => { if (ctx.speaking(source)) api.tts_stop(); },
+      onClose: () => {
+        if (ctx.speaking(source)) api.tts_stop();
+        if (openMinutes?.name === name) openMinutes = null;
+      },
       actions: [
         { label: "Ouvrir dans le Bloc-notes", icon: "external-link", kind: "ghost", left: true, iconOnly: true,
           onClick: () => { api.rec_open_transcript(name); return false; } },
@@ -723,6 +739,73 @@ export function createRecorderView(ctx, state) {
           onClick: async () => { await ctx.copy(res.text, "Texte copié"); } },
       ],
     });
+    const foot = modal.el.querySelector(".modal-foot");
+
+    function show(which) {
+      const m = which === "minutes";
+      textTab.classList.toggle("active", !m);
+      minutesTab.classList.toggle("active", m);
+      viewer.hidden = m;
+      minutesPane.hidden = !m;
+      if (foot) foot.hidden = m;       // boutons du texte
+      if (m) renderMinutes();
+    }
+
+    function renderMinutes() {
+      const st = current;
+      const busy = st.state === "reading" || st.state === "writing";
+      const nodes = [];
+      if (!busy && !st.text) {
+        nodes.push(h("div", { class: "rec-minutes-intro" },
+          h("p", { text: "Ollama lit la transcription et en tire l'essentiel : en bref, décisions, actions "
+            + "(qui, quoi, pour quand), points abordés et questions en suspens." }),
+          h("button", { class: "btn primary sm", type: "button", disabled: !ctx.store.ollama, onClick: startMinutes },
+            ico("sparkles", 14), "Faire le compte rendu")));
+      }
+      if (busy) {
+        nodes.push(h("div", { class: "rec-minutes-phase" }, ico("loader-circle", 14),
+          h("span", { text: st.phase || "Lecture de la transcription…" }), h("div", { class: "head-spacer" }),
+          h("button", { class: "btn ghost sm", type: "button", onClick: () => api.rec_minutes_stop() },
+            ico("square", 13), "Arrêter")));
+      }
+      if (st.state === "error") nodes.push(h("div", { class: "error-text", text: st.error || "Échec du compte rendu." }));
+      if (st.text) {
+        const md = h("div", { class: "md rec-minutes-text" });
+        md.innerHTML = renderMarkdown(st.text, { highlight: false });
+        nodes.push(md);
+      }
+      if (!busy && st.text) {
+        const info = st.state === "done"
+          ? [st.model ? `Avec ${st.model}` : "", st.at ? formatShort(parseDate(st.at)) : ""].filter(Boolean).join(" · ")
+          : "Arrêté avant la fin";
+        nodes.push(h("div", { class: "rec-minutes-foot" }, h("span", { class: "muted", text: info }),
+          h("div", { class: "head-spacer" }),
+          ctx.store.ollama ? h("button", { class: "btn ghost sm", type: "button", onClick: startMinutes },
+            ico("refresh-cw", 14), "Refaire") : null,
+          h("button", { class: "btn ghost sm", type: "button",
+            onClick: (ev) => ctx.pickDestination("notes", ev.currentTarget, (slot) => toNote(st.text, slot)) },
+            ico("notebook-pen", 14), "Dans une note"),
+          h("button", { class: "btn sm", type: "button", onClick: () => ctx.copy(st.text, "Compte rendu copié") },
+            ico("copy", 14), "Copier")));
+      }
+      minutesPane.replaceChildren(...nodes);
+    }
+
+    async function startMinutes() {
+      const started = await api.rec_minutes_start(name);
+      if (!started?.ok) { toast(started?.error || "Compte rendu impossible.", "error"); return; }
+      current = { state: "reading", phase: "Lecture de la transcription…", text: "", model: started.model };
+      renderMinutes();
+    }
+
+    openMinutes = {
+      name,
+      update(st) {
+        current = { ...current, ...st, text: st.text ?? current.text };
+        if (!minutesPane.hidden) renderMinutes();
+      },
+    };
+    show(minutes && canMinutes ? "minutes" : "text");
   }
 
   // ── Lecteur ─────────────────────────────────
@@ -810,6 +893,8 @@ export function createRecorderView(ctx, state) {
     else updateMeta(f);
   });
   on("rec:live", (view) => { S.liveView = view; renderLive(); });
+  // Compte rendu en cours : suivi par la fenêtre du texte ouverte (showTranscript)
+  on("minutes:state", (st) => { if (openMinutes?.name === st.name) openMinutes.update(st); });
   on("rec:transcribed", ({ name, title }) => {
     toast(`Texte prêt : « ${title} »`);
     if (ctx.isActive("recorder") && S.selected === name) showTranscript(name);
@@ -830,5 +915,17 @@ export function createRecorderView(ctx, state) {
       loadFiles();
     },
     focus() { if (S.available && !(isTyping() && el.contains(document.activeElement))) list.focus(); },
+    /** Recherche (Ctrl+K) : le texte de l'enregistrement, mots trouvés surlignés. */
+    async reveal(target, words) {
+      if (!S.available || !target?.name) return;
+      if (!fileOf(target.name)) await loadFiles();
+      await showTranscript(target.name);
+      const viewer = document.querySelector(".modal .rec-transcript");
+      const first = markFound(viewer, words);
+      if (viewer && first) {
+        const at = first.getBoundingClientRect().top - viewer.getBoundingClientRect().top;
+        viewer.scrollTop += at - viewer.clientHeight / 3;
+      }
+    },
   };
 }

@@ -28,6 +28,7 @@ from clipboard_listener import ClipboardListener
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from files import FilesService
 from gmail import GmailPane
+from minutes import MinutesService
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from rag import RagService
@@ -152,6 +153,8 @@ class BoostacheApp:
         self.notes = NotesService()
         self.captures = CapturesService(self.bridge, self.snipper, show_window=self.show)
         self.recorder = RecorderService(self.bridge, is_visible=self.is_visible)
+        # Compte rendu d'un enregistrement transcrit (Ollama)
+        self.minutes = MinutesService(self.bridge, self.chat, self.recorder)
         self.notifier = None     # notification Windows (titre, texte) : posée par le tray (main.py)
         # Sites intégrés, par clé (whatsapp, gmail)
         self.panes = {p.key: p for p in (WhatsAppPane(self), GmailPane(self))}
@@ -617,7 +620,7 @@ class BoostacheApp:
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
                 "mail_list", "mail_list_width", "gmail_auto_summary", "files_model", "files_auto_summary",
-                "calc_model")},
+                "calc_model", "recorder_model")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -751,7 +754,7 @@ class BoostacheApp:
         elif key == "rag_model":
             settings.set(key, str(value or ""))
             self.rag.refresh()
-        elif key in ("files_model", "calc_model"):
+        elif key in ("files_model", "calc_model", "recorder_model"):
             settings.set(key, str(value or ""))
         elif key == "rag_tree_width":
             # Largeur de l'arborescence de la section Documents (px)

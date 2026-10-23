@@ -36,6 +36,7 @@ from urllib.parse import quote
 
 from clipboard_listener import set_clipboard_files
 from engine import logger
+from minutes import minutes_path
 from storage import DATA_DIR, settings
 from transcriber import LANGUAGES, MISSING as STT_MISSING, MODELS, Transcriber
 from winutil import recycle, reveal_in_explorer
@@ -723,13 +724,16 @@ class RecorderService:
             path.rename(target)
         except OSError as e:
             return {"error": f"Renommage impossible ({e.strerror or e})"}
-        # La transcription suit son enregistrement
-        text, new_text = path.with_suffix(".txt"), target.with_suffix(".txt")
-        if text.is_file() and (not new_text.exists() or new_text.name.lower() == text.name.lower()):
-            try:
-                text.rename(new_text)
-            except OSError:
-                pass
+        # La transcription et le compte rendu suivent leur enregistrement
+        for old, new in ((path.with_suffix(".txt"), target.with_suffix(".txt")),
+                         (minutes_path(path), minutes_path(target))):
+            if path.suffix.lower() == ".txt" and old.suffix == ".txt":
+                continue                # texte seul : c'est lui qui vient d'être renommé
+            if old.is_file() and (not new.exists() or new.name.lower() == old.name.lower()):
+                try:
+                    old.rename(new)
+                except OSError:
+                    pass
         self.emit_files()
         return {"ok": True, "name": target.name}
 
@@ -740,9 +744,9 @@ class RecorderService:
         ok = recycle(str(path))
         if ok:
             logger.log(f"Enregistreur : {name} envoyé à la corbeille.")
-            text = path.with_suffix(".txt")
-            if text.is_file():
-                recycle(str(text))
+            for other in (path.with_suffix(".txt"), minutes_path(path)):
+                if other != path and other.is_file():
+                    recycle(str(other))
         self.emit_files()
         return ok
 

@@ -307,6 +307,15 @@ class Api:
     def rec_open_transcript(self, name):
         return self._app.recorder.open_transcript(name)
 
+    def rec_minutes(self, name):
+        return self._app.minutes.get(str(name or ""))
+
+    def rec_minutes_start(self, name):
+        return self._app.minutes.start(str(name or ""))
+
+    def rec_minutes_stop(self):
+        self._app.minutes.stop()
+
     def rec_pick_folder(self):
         path = self.pick_folder(str(self._app.recorder.folder()))
         return self._app.recorder.set_folder(path) if path else None

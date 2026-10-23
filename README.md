@@ -1,6 +1,6 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte, une fiche complète de n'importe quel fichier ou dossier (avec les applications qui empêchent de le supprimer, un résumé et des questions à Ollama), une calculatrice Python, WhatsApp Web et Gmail avec un assistant de réponse, un assistant qui répond aux questions sur vos e-mails et messages et annonce à voix haute les nouveaux, un planificateur de tâches, un gestionnaire de raccourcis clavier globaux et une section pour gérer Ollama (modèles, téléchargements, options) — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte et compte rendu, une fiche complète de n'importe quel fichier ou dossier (avec les applications qui empêchent de le supprimer, un résumé et des questions à Ollama), une calculatrice Python, WhatsApp Web et Gmail avec un assistant de réponse, un assistant qui répond aux questions sur vos e-mails et messages et annonce à voix haute les nouveaux, un planificateur de tâches, un gestionnaire de raccourcis clavier globaux et une section pour gérer Ollama (modèles, téléchargements, options), une recherche dans toutes les sections (Ctrl+K) et des rappels dits à voix haute — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
 
 L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview] ; toute la logique reste en Python.
 
@@ -103,6 +103,7 @@ L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview
   - Fenêtre du texte : copier, ouvrir dans le Bloc-notes, lire à voix haute, ajouter à une note, joindre à une conversation (pour le résumer avec Ollama, par exemple), transcrire à nouveau ; aussi depuis le clic droit sur l'enregistrement
   - Réglages (bouton **Texte** au-dessus de la liste) : modèle **Rapide** (150 Mo), **Équilibré** (480 Mo, conseillé — environ 4 fois plus rapide que la durée de l'audio sur un processeur de bureau) ou **Précis** (1,6 Go, plus lent) ; langue parlée (détection automatique par défaut) ; transcription automatique de chaque nouvel enregistrement
   - Le modèle est téléchargé à la première transcription (connexion Internet requise une fois), dans le cache Hugging Face de l'utilisateur
+- **Compte rendu** (onglet de la fenêtre du texte, ou clic droit sur l'enregistrement) : Ollama tire de la transcription l'essentiel — **en bref**, **décisions**, **actions** (qui, quoi, pour quand), **points abordés** et **questions en suspens** ; une longue transcription est lue partie par partie. Copier, ajouter à une note, refaire ; rangé à côté de l'enregistrement (`nom.compte-rendu.md`, renommé et supprimé avec lui). Modèle choisi dans la section Ollama (sinon celui des documents, de l'assistant, puis des conversations)
 
 ### Assistant
 Un assistant pour Gmail et WhatsApp (les sites intégrés ci-dessus) :
@@ -283,6 +284,10 @@ boostache/
 ├── api.py                # Méthodes Python appelées par l'interface
 ├── bridge.py             # Événements Python → interface (file + regroupement)
 ├── chat.py               # Conversations Ollama (streaming, réflexion, pièces jointes, aide contextuelle)
+├── llm.py                # Appels à Ollama des sections : file d'attente commune (priorités), nouvel essai si le moteur s'arrête
+├── search.py             # Recherche dans toutes les sections (Ctrl+K)
+├── reminders.py          # Rappels : échéances lues en français, voix et notification à l'heure dite
+├── minutes.py            # Enregistreur : compte rendu d'une transcription (Ollama, schéma JSON)
 ├── ocr.py                # Texte d'une image (OCR de Windows, via PowerShell)
 ├── assistant.py          # Assistant : questions sur Gmail et WhatsApp (Ollama), annonce vocale des nouveaux messages
 ├── rag.py                # Documents : index des dossiers (SQLite, FTS5, vecteurs Ollama), surveillance, questions, résumés
@@ -314,8 +319,9 @@ boostache/
 ├── web/
 │   ├── index.html
 │   ├── css/app.css       # Thème et mise en page
-│   ├── js/               # main.js (coquille), layout.js (écran partagé), banner.js (bandeau d'Ollama), ui.js (composants), composer.js (zone de saisie des sections avec un modèle), pin.js (panneau premier plan), views/ (une vue par section)
+│   ├── js/               # main.js (coquille), layout.js (écran partagé), banner.js (bandeau d'Ollama), palette.js (recherche Ctrl+K), reminders.js (menu et fenêtre des rappels), ui.js (composants), composer.js (zone de saisie des sections avec un modèle), pin.js (panneau premier plan), views/ (une vue par section)
 │   └── vendor/           # Bibliothèques embarquées (voir vendor/licenses)
+├── tests/                # Tests sans interface ni Ollama (python -m tests)
 └── requirements.txt
 ```
 

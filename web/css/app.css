@@ -1858,6 +1858,18 @@ mark { border-radius: 3px; background: rgba(255, 214, 102, .28); color: inherit;
 .rec-stt-bar { position: relative; flex: 0 1 140px; height: 3px; overflow: hidden; border-radius: 2px; background: var(--bg-5); }
 .rec-stt-bar span { position: absolute; inset: 0; background: var(--fg-2); transform-origin: left; transition: transform .25s; }
 .rec-transcript { max-height: 60vh; font: 13.5px/1.7 var(--font-ui); }
+/* Compte rendu (minutes.py) : second onglet de la fenêtre du texte */
+.rec-doc { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
+.rec-tabs { align-self: flex-start; }
+.rec-tabs button { display: inline-flex; align-items: center; gap: 6px; }
+.rec-minutes { max-height: 60vh; overflow-y: auto; scrollbar-width: thin; }
+.rec-minutes[hidden], .rec-transcript[hidden] { display: none; }
+.rec-minutes-intro { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; padding: 8px 0 12px; color: var(--fg-2); }
+.rec-minutes-intro p { margin: 0; line-height: 1.6; }
+.rec-minutes-phase { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; color: var(--fg-2); font-size: 12.5px; }
+.rec-minutes-phase .icon { animation: spin 1s linear infinite; }
+.rec-minutes-text { font-size: 13.5px; }
+.rec-minutes-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 14px 0 4px; font-size: 12px; }
 
 /* ── Assistant (Gmail et WhatsApp) ──────────────────────────────────────── */
 .asst-body { display: flex; flex: 1; flex-direction: column; min-height: 0; padding: 18px 20px 20px; overflow-y: auto; }
