@@ -184,6 +184,12 @@ class CalcService:
                 proc.wait(timeout=5)
             except Exception:
                 pass
+        for pipe in (proc.stdin, proc.stdout, proc.stderr) if proc else ():
+            try:
+                if pipe:
+                    pipe.close()
+            except OSError:
+                pass
 
     def warm_up(self):
         """Démarre l'interpréteur à l'avance (la section est affichée)."""

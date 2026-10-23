@@ -238,6 +238,15 @@ L'application se range dans le system tray. Double-clic sur l'icône ou `Ctrl+Sh
 
 Pour démarrer automatiquement avec Windows, créer un raccourci vers `pythonw.exe main.py` (voir `Boostache.lnk`) dans `shell:startup`.
 
+### Tests
+
+```bash
+python -m tests           # tous les tests (une quinzaine de secondes)
+python -m tests -q        # sans le détail
+```
+
+Ils tournent sans interface et sans Ollama (le modèle est remplacé par une doublure, la voix et les notifications aussi), avec des données dans un dossier temporaire : jamais celles de l'utilisateur. Couverts : file d'attente d'Ollama et nouvel essai, recherche, rappels (dates en français), compte rendu, calculatrice (interpréteur, recalcul), processus qui retiennent un dossier (seuls des processus lancés par le test sont terminés).
+
 ---
 
 ## Personnalisation
