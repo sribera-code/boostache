@@ -151,34 +151,43 @@ def _read_bytes(path: str) -> bytes:
         return f.read()
 
 
-def _decode(data: bytes) -> str:
-    """Octets → texte : BOM, sinon UTF-8, sinon Windows-1252 (les anciens fichiers
-    texte de Windows en français), sinon l'encodage le plus probable
-    (charset_normalizer s'il est installé, peu fiable sur un texte court)."""
+def decode(data: bytes) -> tuple[str, str]:
+    """Octets → (texte, encodage) : BOM, sinon UTF-8, sinon Windows-1252 (les anciens
+    fichiers texte de Windows en français), sinon l'encodage le plus probable
+    (charset_normalizer s'il est installé, peu fiable sur un texte court).
+    L'encodage permet de réécrire le texte à l'identique ("utf-8-sig" : avec BOM)."""
     if data.startswith(codecs.BOM_UTF8):
-        return data[3:].decode("utf-8", "replace")
+        return data[3:].decode("utf-8", "replace"), "utf-8-sig"
     if data.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)):
-        return data.decode("utf-16", "replace")
+        return data.decode("utf-16", "replace"), "utf-16"
     for encoding in ("utf-8", "cp1252"):
         try:
-            return data.decode(encoding)
+            return data.decode(encoding), encoding
         except UnicodeDecodeError:
             pass
     try:
         from charset_normalizer import from_bytes
         best = from_bytes(data[:200_000]).best()
         if best is not None and best.encoding:
-            return data.decode(best.encoding, "replace")
+            return data.decode(best.encoding, "replace"), best.encoding
     except Exception:
         pass
-    return data.decode("latin-1")
+    return data.decode("latin-1"), "latin-1"
+
+
+def _decode(data: bytes) -> str:
+    return decode(data)[0]
+
+
+def binary(data: bytes) -> bool:
+    """Fichier binaire (octets nuls au début, hors UTF-16) : pas de texte à lire."""
+    head = data[:BINARY_PROBE]
+    return not head.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)) and b"\x00" in head
 
 
 def _text_file(path: str) -> str:
     data = _read_bytes(path)
-    head = data[:BINARY_PROBE]
-    utf16 = head.startswith((codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE))
-    if not utf16 and b"\x00" in head:
+    if binary(data):
         raise NoText("Fichier binaire : pas de texte à lire")
     return _decode(data)
 

@@ -15,6 +15,7 @@ import { createRecorderView } from "./views/recorder.js";
 import { createAssistantView } from "./views/assistant.js";
 import { createRagView } from "./views/rag.js";
 import { createFilesView } from "./views/files.js";
+import { createCompareView } from "./views/compare.js";
 import { createCalcView } from "./views/calc.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
@@ -35,6 +36,7 @@ const NAV = [
   { id: "assistant", label: "Assistant",      icon: "sparkles",        create: createAssistantView },
   { id: "rag",       label: "Documents",      icon: "library",         create: createRagView },
   { id: "files",     label: "Fichiers",       icon: "folder-search",   create: createFilesView },
+  { id: "compare",   label: "Comparer",       icon: "git-compare",     create: createCompareView },
   { id: "calc",      label: "Calculatrice",   icon: "calculator",      create: createCalcView },
   "-",
   { id: "logs",      label: "Journal",        icon: "scroll-text",     create: createLogsView },
@@ -315,10 +317,14 @@ const ACTIONS = [
     run: () => reveal("chat", { action: "new" }) },
   { label: "Nouvelle note", icon: "notebook-pen", keywords: "ecrire texte", section: "notes",
     run: () => reveal("notes", { action: "new" }) },
+  { label: "Ouvrir un fichier dans une note", icon: "folder-open", keywords: "texte txt markdown editer enregistrer",
+    section: "notes", run: () => reveal("notes", { action: "open" }) },
   { label: "Capture d'écran", icon: "scan", keywords: "impr ecran zone image", section: "captures",
     run: () => api.capture_snip() },
   { label: "Nouveau rappel", icon: "alarm-clock", keywords: "rappeler alarme plus tard tache", section: "tasks",
     run: () => reveal("tasks", { action: "reminder" }) },
+  { label: "Comparer deux fichiers", icon: "git-compare", keywords: "diff differences fusionner fusion merge versions texte",
+    section: "compare", run: () => reveal("compare", { action: "open" }) },
 ];
 
 /** Affiche une section, puis ce que sa vue sait montrer (résultat de recherche, action). */
@@ -538,7 +544,7 @@ function setupGlobalHandlers() {
     if (!drop || Date.now() - drop.at > 10000 || !paths?.length) return;
     const view = views.get(drop.view)?.view;
     if (view?.onDrop) view.onDrop(paths, drop.zone);
-    else toast("Déposez des fichiers dans Conversations, Consoles, Captures, Documents ou Fichiers.", "info");
+    else toast("Déposez des fichiers dans Conversations, Consoles, Notes, Captures, Documents, Fichiers ou Comparer.", "info");
   });
 
   // Raccourcis de l'interface

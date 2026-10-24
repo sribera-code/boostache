@@ -453,6 +453,7 @@ export class TabStrip {
     }, { passive: true });
   }
 
+  /** tabs : [{ id, title, label, busy, dim, icon, warn, tip }] */
   render(tabs, activeId) {
     this.tabs = tabs;
     this.activeId = activeId;
@@ -471,10 +472,11 @@ export class TabStrip {
       role: "tab",
       tabindex: t.id === this.activeId ? "0" : "-1",
       "aria-selected": String(t.id === this.activeId),
-      dataset: { id: String(t.id), tip: label.length > 22 ? label : undefined },
+      dataset: { id: String(t.id), tip: t.tip || (label.length > 22 ? label : undefined) },
     });
     if (t.busy) el.append(h("span", { class: "tab-dot" }));
     else if (t.dim) el.append(h("span", { class: "tab-dot dim" }));
+    else if (t.icon) el.append(h("span", { class: `tab-icon${t.warn ? " warn" : ""}` }, ico(t.icon, 13)));
     el.append(h("span", { class: `tab-label${t.title ? "" : " placeholder"}`, text: label }));
     const close = h("span", { class: "tab-close", role: "button", "aria-label": "Fermer",
       dataset: { tip: "Fermer" } }, ico("x", 13));

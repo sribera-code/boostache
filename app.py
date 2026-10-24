@@ -25,6 +25,7 @@ from calc import CalcService
 from captures import CapturesService, Snipper
 from chat import CTX_SIZES, KEEP_ALIVE, ChatService, OLLAMA_OK
 from clipboard_listener import ClipboardListener
+from compare import CompareService
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from files import FilesService
 from gmail import GmailPane
@@ -56,7 +57,7 @@ NO_OLLAMA_LIB = "librairie 'ollama' absente (pip install ollama)"
 SESSION_END_WAIT = 4.0         # s laissées à la fermeture quand Windows s'arrête (il en accorde 5)
 # Lecture auto des zones de saisie (réponses lues au fil de l'eau), une par section
 SPEAK_SETTINGS = ("chat_speak", "assistant_speak", "rag_speak", "gmail_speak", "whatsapp_speak", "files_speak",
-                  "calc_speak")
+                  "calc_speak", "compare_speak")
 
 
 def _force_dark_titlebar():
@@ -166,6 +167,8 @@ class BoostacheApp:
         self.files = FilesService(self.bridge, self.chat)
         # Section Calculatrice : console Python (processus à part), assistant (Ollama)
         self.calc = CalcService(self.bridge, self.chat)
+        # Section Comparer : différences et fusion de deux textes, explication et choix par l'IA (Ollama)
+        self.compare = CompareService(self.bridge, self.chat)
         # Recherche dans toutes les sections (Ctrl+K)
         self.search = SearchService(self)
         # Rappels (message arrivé, section Tâches) : voix et notification Windows
@@ -599,6 +602,7 @@ class BoostacheApp:
             self.reminders.shutdown()
             self.rag.shutdown()
             self.calc.shutdown()
+            self.compare.shutdown()
             self.bridge.stop()
 
     # ─────────────────────────────────────────
@@ -620,7 +624,7 @@ class BoostacheApp:
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
                 "mail_list", "mail_list_width", "gmail_auto_summary", "files_model", "files_auto_summary",
-                "calc_model", "recorder_model")},
+                "calc_model", "recorder_model", "compare_model", "compare_auto_explain")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -632,6 +636,7 @@ class BoostacheApp:
             "rag":       self.rag.snapshot(),
             "files":     self.files.snapshot(),
             "calc":      self.calc.state(),
+            "compare":   self.compare.snapshot(),
             "ollama":    self.ollama.boot_state() if self.ollama else
                          {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
@@ -754,7 +759,7 @@ class BoostacheApp:
         elif key == "rag_model":
             settings.set(key, str(value or ""))
             self.rag.refresh()
-        elif key in ("files_model", "calc_model", "recorder_model"):
+        elif key in ("files_model", "calc_model", "recorder_model", "compare_model"):
             settings.set(key, str(value or ""))
         elif key == "rag_tree_width":
             # Largeur de l'arborescence de la section Documents (px)
@@ -765,7 +770,7 @@ class BoostacheApp:
             settings.set(key, value)
         elif key in ("system_prompt", "sidebar_collapsed", "assist_model"):
             settings.set(key, value)
-        elif key in ("mail_list", "gmail_auto_summary", "files_auto_summary"):
+        elif key in ("mail_list", "gmail_auto_summary", "files_auto_summary", "compare_auto_explain"):
             settings.set(key, bool(value))
         elif key == "mail_list_width":
             # Largeur de la liste des e-mails à côté de Gmail (px)

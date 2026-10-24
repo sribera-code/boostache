@@ -66,7 +66,8 @@ MANIFEST_TYPES = "application/vnd.ollama.manifest.list.v2+json, " + MANIFEST_SIN
 
 # Fonctions de Boostache qui utilisent un modèle → réglage où il est choisi
 USES = {"chat": "last_model", "help": "help_model", "assist": "assist_model", "assistant": "assistant_model",
-        "rag": "rag_model", "files": "files_model", "calc": "calc_model", "recorder": "recorder_model"}
+        "rag": "rag_model", "files": "files_model", "calc": "calc_model", "recorder": "recorder_model",
+        "compare": "compare_model"}
 
 # Étapes d'un « pull » (statut envoyé par Ollama → texte affiché)
 _PHASES = (
@@ -547,6 +548,8 @@ class OllamaAdmin:
                                     out.get("assistant", ""), last)
                 # Calculatrice : comme CalcService.model()
                 out["calc"] = pick(settings.get("calc_model", ""), out["files"])
+                # Comparer : comme CompareService.model()
+                out["compare"] = pick(settings.get("compare_model", ""), out["files"])
                 # Enregistreur (comptes rendus) : comme MinutesService.model()
                 out["recorder"] = pick(settings.get("recorder_model", ""), out["rag"], out.get("assistant", ""), last)
         except Exception:
@@ -656,6 +659,7 @@ class OllamaAdmin:
                             ("assistant", ("assist", "chat")), ("rag", ("assistant", "assist", "chat")),
                             ("files", ("rag", "assistant", "assist", "chat")),
                             ("calc", ("files", "rag", "assistant", "assist", "chat")),
+                            ("compare", ("files", "rag", "assistant", "assist", "chat")),
                             ("recorder", ("rag", "assistant", "assist", "chat")), ("help", ())):
             key = USES[use]
             if chosen[use] != name:

@@ -17,6 +17,8 @@ import diagnostics
 import locks
 import reminders
 from clipboard_listener import get_clipboard_text, set_clipboard_content, set_clipboard_text
+from compare import UserError as CompareError
+from notes import UserError as NoteError
 import speech
 from engine import LEVELS, logger, tts, strip_markdown
 from ollama_admin import DOWNLOAD_PAGE, INSTALLER, USES as MODEL_USES, models_dir
@@ -24,15 +26,28 @@ from storage import DATA_DIR, clipboard_history, settings
 from winutil import (exe_icon, list_windows, open_url, recycle, reveal_in_explorer, set_opacity,
                      set_topmost, window_thumbnail)
 
+# Filtres des fenêtres de fichiers : pywebview n'accepte dans le libellé que lettres, chiffres
+# et espaces (ni virgule, ni « & », ni apostrophe), sinon la fenêtre ne s'ouvre pas
 ATTACH_TYPES = (
-    "Texte & code (*.txt;*.md;*.py;*.js;*.ts;*.json;*.yaml;*.yml;*.csv;*.xml;*.html;*.css;"
+    "Texte et code (*.txt;*.md;*.py;*.js;*.ts;*.json;*.yaml;*.yml;*.csv;*.xml;*.html;*.css;"
     "*.c;*.cpp;*.h;*.cs;*.java;*.rs;*.go;*.ps1;*.bat;*.sql;*.log;*.ini;*.toml)",
     "Images (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",
     "Tous les fichiers (*.*)",
 )
 IMAGE_TYPES = ("Images (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",)
+COMPARE_TYPES = (
+    "Textes et documents (*.txt;*.md;*.csv;*.json;*.xml;*.html;*.yaml;*.yml;*.ini;*.toml;*.log;*.py;*.js;*.ts;"
+    "*.css;*.c;*.cpp;*.h;*.cs;*.java;*.ps1;*.bat;*.sql;*.srt;*.pdf;*.docx;*.odt;*.rtf;*.pptx;*.xlsx)",
+    "Tous les fichiers (*.*)",
+)
 SAVE_IMAGE_TYPES = ("Image PNG (*.png)", "Image JPEG (*.jpg;*.jpeg)", "Image WebP (*.webp)",
                     "Bitmap (*.bmp)")
+NOTE_SAVE_TYPES = ("Texte (*.txt)", "Markdown (*.md)", "Tous les fichiers (*.*)")
+NOTE_OPEN_TYPES = (
+    "Textes (*.txt;*.md;*.markdown;*.log;*.csv;*.json;*.xml;*.html;*.ini;*.yaml;*.yml;*.toml;*.srt)",
+    "Documents copiés dans une note (*.pdf;*.docx;*.odt;*.rtf;*.pptx;*.xlsx;*.eml;*.epub)",
+    "Tous les fichiers (*.*)",
+)
 
 
 class Api:
@@ -537,8 +552,53 @@ class Api:
     def note_rename(self, slot, label):
         return self._app.notes.rename(int(slot), label or "")
 
-    def note_save(self, slot, content):
-        return self._app.notes.save(int(slot), content or "")
+    def note_save(self, slot, content, to_file=False):
+        return self._app.notes.save(int(slot), content or "", bool(to_file))
+
+    def _notes(self, fn):
+        try:
+            return fn(self._app.notes)
+        except NoteError as e:
+            return {"error": str(e)}
+
+    def note_save_as(self, slot, content):
+        """Fenêtre Enregistrer, puis la note est liée au fichier choisi (None : annulé)."""
+        notes = self._app.notes
+        notes.save(int(slot), content or "")
+        folder, name = notes.save_suggestion(int(slot))
+        result = self._app.window.create_file_dialog(webview.FileDialog.SAVE, directory=folder,
+                                                     save_filename=name, file_types=NOTE_SAVE_TYPES)
+        if not result:
+            return None
+        path = result if isinstance(result, str) else result[0]
+        return self._notes(lambda n: n.save_as(int(slot), path))
+
+    def note_open_dialog(self, reuse=None, after=None):
+        folder = settings.get("notes_dir") or ""
+        paths = self._app.window.create_file_dialog(
+            webview.FileDialog.OPEN, allow_multiple=True, file_types=NOTE_OPEN_TYPES,
+            directory=folder if os.path.isdir(folder) else "")
+        return self.note_open_paths(list(paths), reuse, after) if paths else None
+
+    def note_open_paths(self, paths, reuse=None, after=None):
+        return self._app.notes.open_paths([str(p) for p in paths or []],
+                                          None if reuse is None else int(reuse),
+                                          None if after is None else int(after))
+
+    def note_check(self, dirty=None):
+        return self._app.notes.check(dirty or [])
+
+    def note_file_reload(self, slot):
+        return self._notes(lambda n: n.reload(int(slot)))
+
+    def note_file_write(self, slot):
+        return self._notes(lambda n: n.write(int(slot)))
+
+    def note_file_auto(self, slot, auto):
+        return self._app.notes.set_auto(int(slot), bool(auto))
+
+    def note_unlink(self, slot):
+        return self._app.notes.unlink(int(slot))
 
     # ─────────────────────────────────────────
     #  Sites intégrés (WhatsApp, Gmail) : pane = clé du site
@@ -746,6 +806,106 @@ class Api:
 
     def calc_model(self):
         return self._app.calc.model()
+
+    # ─────────────────────────────────────────
+    #  Comparer (deux textes : différences, fusion, IA)
+    #  side : "left" | "right" ; les erreurs reviennent en {error}
+    # ─────────────────────────────────────────
+    def _compare(self, fn):
+        try:
+            return fn(self._app.compare)
+        except CompareError as e:
+            return {"error": str(e)}
+
+    def compare_state(self, check=False):
+        return self._compare(lambda c: c.state(bool(check)))
+
+    def compare_load(self, side, path):
+        return self._compare(lambda c: c.load(str(side or ""), str(path or "")))
+
+    def compare_pick(self, side):
+        sides = self._app.compare.sides
+        near = next((s["path"] for s in (sides.get(side), *sides.values()) if s and s.get("path")), "")
+        folder = os.path.dirname(near)
+        paths = self._app.window.create_file_dialog(
+            webview.FileDialog.OPEN, directory=folder if os.path.isdir(folder) else "", file_types=COMPARE_TYPES)
+        return self.compare_load(side, paths[0]) if paths else None
+
+    def compare_text(self, side, text, name=""):
+        return self._compare(lambda c: c.set_text(str(side or ""), str(text or ""), str(name or "")))
+
+    def compare_paste(self, side):
+        text = get_clipboard_text()
+        if not text.strip():
+            return {"error": "Le presse-papiers ne contient pas de texte."}
+        return self.compare_text(side, text, "Texte collé")
+
+    def compare_clear(self, side):
+        return self._compare(lambda c: c.clear(str(side or "")))
+
+    def compare_swap(self):
+        return self._compare(lambda c: c.swap())
+
+    def compare_reload(self):
+        return self._compare(lambda c: c.reload())
+
+    def compare_options(self, options):
+        return self._compare(lambda c: c.set_options(options if isinstance(options, dict) else {}))
+
+    def compare_hint(self, hint):
+        self._app.compare.set_hint(str(hint or ""))
+
+    def compare_choose(self, index, choice, text=""):
+        return self._compare(lambda c: c.choose(int(index), str(choice) if choice else None, str(text or "")))
+
+    def compare_choose_all(self, choice, only_open=False):
+        return self._compare(lambda c: c.choose_all(str(choice) if choice else None, bool(only_open)))
+
+    def compare_result(self, default="left"):
+        return self._compare(lambda c: c.result(str(default or "left")))
+
+    def compare_save(self, target, text, utf8=False):
+        """target : "left" | "right" (fichier remplacé, l'ancien à la corbeille) ou "as" (fenêtre Enregistrer)."""
+        path = ""
+        if target == "as":
+            folder, name = self._app.compare.save_suggestion()
+            result = self._app.window.create_file_dialog(webview.FileDialog.SAVE, directory=folder,
+                                                         save_filename=name)
+            if not result:
+                return None
+            path = result if isinstance(result, str) else result[0]
+        return self._compare(lambda c: c.save(str(target or ""), str(text or ""), path, bool(utf8),
+                                              owner=self._app._hwnd))
+
+    def compare_open(self, side):
+        """Ouvre le fichier d'un côté avec son application."""
+        s = self._app.compare.sides.get(str(side or "")) or {}
+        if s.get("path") and os.path.isfile(s["path"]):
+            os.startfile(s["path"])
+            return True
+        return False
+
+    def compare_explain(self):
+        return self._app.compare.explain()
+
+    def compare_ask(self, question):
+        return self._app.compare.ask(question)
+
+    def compare_stop(self):
+        self._app.compare.stop()
+
+    def compare_delete(self, entry_id):
+        self._app.compare.delete(str(entry_id or ""))
+
+    def compare_resolve(self, indices=None):
+        """L'IA choisit la fusion des différences données (aucune : celles sans choix)."""
+        return self._app.compare.resolve([int(i) for i in indices] if indices is not None else None)
+
+    def compare_resolve_stop(self):
+        self._app.compare.resolve_stop()
+
+    def compare_model(self):
+        return self._app.compare.model()
 
     # ─────────────────────────────────────────
     #  Recherche dans toutes les sections (Ctrl+K)

@@ -114,6 +114,8 @@ _DEFAULTS = {
     "help_capture":         True,          # Ctrl+Impr. écran → aide sur la fenêtre active
     "help_model":           "",            # modèle de l'aide contextuelle (de préférence lisant les images)
     "capture_save_dir":     "",            # dernier dossier de « Enregistrer sous »
+    "notes_dir":            "",            # Notes : dernier dossier d'un fichier enregistré ou ouvert
+    "notes_file_autosave":  True,          # Notes liées à un fichier : réécrit à chaque modification (sinon Ctrl+S)
     "audio_dir":            "",            # enregistrements ("" : Musique\Boostache)
     "audio_format":         "mp3",         # "mp3" | "m4a" | "wav"
     "audio_device":         "",            # sortie enregistrée ("" : sortie par défaut)
@@ -156,6 +158,9 @@ _DEFAULTS = {
     "files_speak":          False,         # Lecture auto des réponses de la section Fichiers
     "calc_speak":           False,         # … de l'assistant de la Calculatrice
     "files_recent":         [],            # section Fichiers : éléments de la barre du haut
+    "compare_model":        "",            # section Comparer : modèle de l'IA ("" : celui des fichiers…)
+    "compare_auto_explain": True,          # section Comparer : différences expliquées dès que deux textes sont là
+    "compare_speak":        False,         # Lecture auto des réponses de la section Comparer
 }
 
 

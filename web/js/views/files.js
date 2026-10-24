@@ -346,6 +346,9 @@ export function createFilesView(ctx, state) {
         ico(info.dir ? "folder-open" : "external-link", 14), info.dir ? "Ouvrir" : `Ouvrir${info.opens_with ? ` avec ${info.opens_with}` : ""}`),
       info.dir ? null : h("button", { class: "btn sm", type: "button", onClick: () => api.reveal_path(info.path) }, ico("folder", 14), "Explorateur"),
       iconButton("copy", "Copier le chemin", () => ctx.copy(info.path, "Chemin copié"), { size: 15, cls: "sm" }),
+      info.dir || !info.preview && info.summary !== "text" ? null
+        : iconButton("git-compare", "Comparer avec un autre texte (section Comparer)",
+          () => ctx.reveal("compare", { action: "add", path: info.path }), { size: 15, cls: "sm" }),
       iconButton("refresh-cw", "Actualiser", () => refresh(it), { size: 15, cls: "sm", kbd: "F5" }),
       info.root ? null : iconButton("trash-2", "Mettre à la corbeille…", () => confirmTrash(it), { size: 15, cls: "sm danger" }));
     return h("div", { class: "fx-card fx-hero" },
