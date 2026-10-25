@@ -1,6 +1,6 @@
 """
 winutil.py – Petits utilitaires Win32 (premier plan et transparence, barre de
-titre sombre, explorateur, corbeille, liens externes, icônes et miniatures des fenêtres,
+titre et menus sombres, explorateur, corbeille, liens externes, icônes et miniatures des fenêtres,
 interception de la touche Impr. écran, inactivité de l'utilisateur, dernière fenêtre active).
 """
 
@@ -118,6 +118,26 @@ def dark_title_bar(hwnd: int, caption_rgb: tuple[int, int, int] | None = None):
             color = ctypes.c_int(r | (g << 8) | (b << 16))
             dwmapi.DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR,
                                          ctypes.byref(color), ctypes.sizeof(color))
+    except Exception:
+        pass
+
+
+def set_app_id(app_id: str):
+    """Identité propre du processus dans la barre des tâches : sans elle, la
+    fenêtre est rangée sous pythonw.exe et prend l'icône de Python."""
+    try:
+        shell32.SetCurrentProcessExplicitAppUserModelID(ctypes.c_wchar_p(app_id))
+    except Exception:
+        pass
+
+
+def dark_menus():
+    """Menus Win32 du processus en sombre (menu du tray) : fonctions non
+    documentées d'uxtheme, appelées par leur numéro (Windows 10 1903+)."""
+    try:
+        uxtheme = ctypes.WinDLL("uxtheme")
+        uxtheme[135](2)       # SetPreferredAppMode(ForceDark)
+        uxtheme[136]()        # FlushMenuThemes
     except Exception:
         pass
 

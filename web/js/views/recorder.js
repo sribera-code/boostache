@@ -125,7 +125,7 @@ export function createRecorderView(ctx, state) {
 
   const deck = h("div", { class: "rec-deck" },
     h("div", { class: "rec-main" }, recBtn, h("div", { class: "rec-status" }, timeEl, stateEl), pauseBtn),
-    meters, livePanel, options);
+    meters, options, livePanel);
 
   // ── Liste ───────────────────────────────────
   const count = h("span", { class: "view-sub" });
@@ -181,9 +181,11 @@ export function createRecorderView(ctx, state) {
     if (S.session) api.rec_pause(!S.session.paused);
   }
 
+  // Choix gardés dès la sélection : le menu du tray lance le même enregistrement
   function setSource(source) {
     if (S.session) return;
     S.source = source;
+    ctx.saveSetting("audio_source", source);
     renderDeck();
   }
 
@@ -225,8 +227,10 @@ export function createRecorderView(ctx, state) {
       ];
     };
     openMenuBelow([
-      ...(S.source !== "mic" ? section("Sortie enregistrée", S.outputs, S.device, "Sortie par défaut", (id) => { S.device = id; }) : []),
-      ...(S.source !== "output" ? section("Micro", S.mics, S.micDevice, "Micro par défaut", (id) => { S.micDevice = id; }) : []),
+      ...(S.source !== "mic" ? section("Sortie enregistrée", S.outputs, S.device, "Sortie par défaut",
+        (id) => { S.device = id; ctx.saveSetting("audio_device", id); }) : []),
+      ...(S.source !== "output" ? section("Micro", S.mics, S.micDevice, "Micro par défaut",
+        (id) => { S.micDevice = id; ctx.saveSetting("audio_mic_device", id); }) : []),
     ], anchor);
   }
 
@@ -287,7 +291,12 @@ export function createRecorderView(ctx, state) {
       [true, "Texte en direct", "Pas de fichier audio : le son est transcrit pendant l'enregistrement, le texte est enregistré"]]
       .map(([value, label, tip]) => h("button", {
         type: "button", class: live === value ? "active" : "", text: label, disabled: locked && live !== value,
-        dataset: { tip }, onClick: () => { if (!locked) { S.live = value; renderDeck(); } } })));
+        dataset: { tip }, onClick: () => {
+          if (locked) return;
+          S.live = value;
+          ctx.saveSetting("audio_live", value);
+          renderDeck();
+        } })));
     formatSeg.hidden = live;
     formatSeg.replaceChildren(...FORMATS.map(([id, label]) => h("button", {
       type: "button", class: S.format === id ? "active" : "", text: label, dataset: { tip: FORMAT_TIPS[id] },

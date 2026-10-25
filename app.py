@@ -33,12 +33,13 @@ from minutes import MinutesService
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from rag import RagService
-from recorder import FORMATS as AUDIO_FORMATS, RecorderService
+from recorder import FORMATS as AUDIO_FORMATS, SOURCES as AUDIO_SOURCES, RecorderService
 from reminders import ReminderService
 from search import SearchService
 import speech
 from transcriber import LANGUAGES, MODELS
 from storage import DATA_DIR, settings, clipboard_history
+from taskbar import Overlay
 from terminals import TerminalService
 from whatsapp import WhatsAppPane
 from winutil import (MIN_OPACITY, ForegroundTracker, PrintScreenHook, active_window, bring_to_front,
@@ -129,6 +130,8 @@ class BoostacheApp:
         self._hwnd = 0
         self._visible = False
         self._was_minimized = False
+        self._overlay = Overlay()
+        self._badge = (None, "")     # pastille du bouton de la barre des tâches (image, description)
         self._quitting = False
         self._ending: threading.Thread | None = None    # arrêt de Windows : récupération de l'état de la page
         self._shutdown_lock = threading.Lock()
@@ -338,7 +341,7 @@ class BoostacheApp:
         rec = self.recorder
         if rec.stop():
             return
-        live = bool(settings.get("audio_live")) and rec.transcriber.available
+        live = rec.next_live()
         res = rec.start(rec.source(), settings.get("audio_device") or "",
                         settings.get("audio_mic_device") or "", live)
         session = res.get("session")
@@ -477,12 +480,20 @@ class BoostacheApp:
                 restore_window(self._hwnd)
                 self._was_minimized = False
             self._visible = True
+            self._overlay.set(self._hwnd, *self._badge)     # perdue avec le bouton quand la fenêtre est masquée
             bring_to_front(self._hwnd)
             self.bridge.emit("window:shown")
         except Exception as e:
             logger.log(f"Affichage de la fenêtre impossible : {e}")
         if self.chat:
             self.chat.set_visible(self._visible)
+
+    def set_badge(self, image, description: str = ""):
+        """Pastille d'activité sur le bouton de la barre des tâches (celle du tray :
+        main.py) ; None : aucune. Fenêtre masquée : posée au prochain affichage."""
+        self._badge = (image, description)
+        if self._visible:
+            self._overlay.set(self._hwnd, image, description)
 
     def hide(self):
         if not self.window:
@@ -719,6 +730,15 @@ class BoostacheApp:
             if value not in AUDIO_FORMATS:
                 return settings.get(key)
             settings.set(key, value)
+        # Choix de l'Enregistreur gardés dès la sélection : repris par le menu du tray
+        elif key == "audio_source":
+            if value not in AUDIO_SOURCES:
+                return settings.get(key)
+            settings.set(key, value)
+        elif key in ("audio_device", "audio_mic_device"):
+            settings.set(key, str(value or ""))
+        elif key == "audio_live":
+            settings.set(key, bool(value))
         elif key in ("transcribe_model", "transcribe_language"):
             if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
                 return settings.get(key)

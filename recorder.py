@@ -52,6 +52,7 @@ except ImportError as e:
 FORMATS = ("mp3", "m4a", "wav")
 AUDIO_EXTS = {".mp3", ".m4a", ".wav"}
 SOURCES = ("output", "both", "mic")       # son du PC, son du PC + micro, micro seul
+SOURCE_LABELS = {"output": "Son du PC", "both": "PC + micro", "mic": "Micro"}
 POLL = 0.01                     # secondes entre deux lectures des flux
 LEVEL_EVERY = 0.08              # niveaux envoyés à l'interface
 HEADER_EVERY = 2.0              # mise à jour de l'en-tête WAV
@@ -370,6 +371,7 @@ class RecorderService:
         self._served: Path | None = None
         self.playback_host = ""                 # hôte virtuel WebView2 du dossier (app.py)
         self.transcriber = Transcriber()
+        self.on_state = None                    # changement d'état (icône du tray, main.py)
 
     @property
     def available(self) -> bool:
@@ -432,6 +434,9 @@ class RecorderService:
 
     def emit_state(self):
         self._bridge.emit("rec:state", {"session": self._session_state()})
+        if self.on_state:
+            s = self._session
+            self.on_state(s is not None, bool(s and s.paused))
 
     def emit_files(self):
         self._bridge.emit("rec:files", {"files": self.files()})
@@ -456,6 +461,16 @@ class RecorderService:
                 mics = []
         mic = next((d["name"] for d in mics if d["default"]), "")
         return {"outputs": outputs, "mics": mics, "mic": mic}
+
+    def next_live(self) -> bool:
+        """Prochain enregistrement lancé hors de l'Enregistreur (tray) : texte en direct ?"""
+        return bool(settings.get("audio_live")) and self.transcriber.available
+
+    def describe(self) -> str:
+        """Source de l'enregistrement en cours, ou du prochain avec les derniers
+        réglages (menu du tray)."""
+        s = self._session
+        return SOURCE_LABELS[s.source if s else self.source()]
 
     # ── Enregistrement ─────────────────────────
     def start(self, source: str = "output", device_id: str = "", mic_id: str = "", live: bool = False) -> dict:

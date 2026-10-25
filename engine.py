@@ -48,6 +48,39 @@ def create_tray_icon(size: int = 64) -> Image.Image:
     return img
 
 
+BADGES = {"rec": (232, 64, 64), "paused": (240, 170, 60), "speak": (64, 140, 240)}
+BADGE_INK = (16, 16, 16, 255)
+
+
+def badge_image(kind: str, size: int = 32) -> Image.Image:
+    """Pastille d'activité (BADGES) : disque cerclé de noir pour ressortir sur une
+    barre des tâches claire, symbole pour la pause et la lecture à voix haute.
+    Dessinée sur une grille de 64, en 4× puis réduite (bords lissés)."""
+    big = size * 4
+    u = big / 64
+    img = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    d.ellipse([0, 0, big - 1, big - 1], fill=BADGE_INK)
+    d.ellipse([7 * u, 7 * u, 57 * u, 57 * u], fill=(*BADGES[kind], 255))
+    if kind == "paused":
+        for x in (21, 36):
+            d.rounded_rectangle([x * u, 20 * u, (x + 7) * u, 44 * u], radius=2 * u, fill=BADGE_INK)
+    elif kind == "speak":
+        white = (255, 255, 255, 255)
+        d.polygon([(15 * u, 26 * u), (22 * u, 26 * u), (33 * u, 16 * u), (33 * u, 48 * u),
+                   (22 * u, 38 * u), (15 * u, 38 * u)], fill=white)
+        d.arc([28 * u, 21 * u, 48 * u, 43 * u], -50, 50, fill=white, width=round(5 * u))
+    return img.resize((size, size), Image.LANCZOS)
+
+
+def badge_tray_icon(base: Image.Image, kind: str) -> Image.Image:
+    """Icône du tray avec la pastille en bas à droite (coin laissé libre par l'éclair)."""
+    img = base.copy()
+    badge = badge_image(kind, round(img.width * 0.56))
+    img.alpha_composite(badge, (img.width - badge.width, img.height - badge.height))
+    return img
+
+
 # ─────────────────────────────────────────────
 #  Logger thread-safe (journal de l'application)
 # ─────────────────────────────────────────────
