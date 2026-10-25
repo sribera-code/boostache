@@ -10,11 +10,18 @@ docreader, et le résultat s'enregistre en texte.
 
 Différences : difflib ligne à ligne (options : ignorer les espaces, la casse) ;
 dans un bloc modifié, les lignes semblables sont mises en regard et les mots
-changés repérés. Fusion : chaque différence (bloc) reçoit un choix — gauche,
+changés repérés. Pour du code, comparaison par symbole (codediff) : espaces et
+retours à la ligne ignorés, une différence est une suite de symboles — choisie
+d'office pour un fichier de code (option : par ligne, par symbole, automatique ;
+ignorer les commentaires). Fusion : chaque différence reçoit un choix — gauche,
 droite, les deux, ou un texte écrit à la main ou par l'IA ; le résultat est le
 texte commun plus ces choix. Sources, options et choix sont gardés dans
-DATA_DIR/compare.json ; un choix suit son bloc (signature) tant que les textes ne
-changent pas à cet endroit.
+DATA_DIR/compare.json ; un choix suit sa différence (signature) tant que les
+textes ne changent pas à cet endroit.
+
+Affichage (view) : une suite de segments — lignes identiques (same), lignes qui
+ne diffèrent que par la mise en page (layout, par symbole), différences (diff :
+lignes mises en regard, parties changées marquées, différences qu'elles portent).
 """
 
 import difflib
@@ -28,6 +35,7 @@ import time
 import uuid
 from datetime import datetime
 
+import codediff
 import docreader
 import llm
 from chat import _ollama, keep_alive, num_ctx
@@ -44,7 +52,8 @@ MAX_BYTES      = 60_000_000   # fichier lu au plus
 MAX_CHARS      = 5_000_000    # texte d'un côté (caractères)
 MAX_LINES      = 200_000
 KEEP_TEXT      = 2_000_000    # texte collé gardé d'une session à l'autre (caractères)
-AUTOJUNK_LINES = 20_000       # au-delà, difflib écarte les lignes très fréquentes (plus rapide)
+SYMBOL_CHARS   = 3_000_000    # au-delà (les deux textes), comparaison par ligne même pour du code
+UNITS          = ("auto", "line", "symbol")
 ALIGN_MAX      = 2_500        # bloc modifié : paires de lignes comparées au plus pour les mettre en regard
 ALIGN_CUTOFF   = 0.5          # ressemblance de deux lignes mises en regard
 ALIGN_CHARS    = 500          # début de ligne comparé pour cette ressemblance
@@ -105,7 +114,20 @@ RESOLVE_SCHEMA = {
     },
     "required": ["raison", "choix", "texte"],
 }
+RESOLVE_SYMBOL = (
+    "Décide comment fusionner cette différence entre deux versions d'un code : un passage de gauche "
+    "remplacé par un passage de droite. Champs de la réponse :\n"
+    "- raison : une phrase courte, en français, qui justifie le choix ;\n"
+    "- choix : « gauche » (garder le passage de gauche), « droite » (garder celui de droite), {both}« fusion » "
+    "(chaque version apporte quelque chose : écrire un passage qui réunit les deux) ;\n"
+    "- texte : seulement pour « fusion », le passage fusionné qui remplacera celui de gauche — ce passage "
+    "seul, pas les lignes entières —, sans commentaire ; sinon \"\".\n"
+    "Sans consigne contraire : ne perds pas de contenu (un passage présent d'un seul côté est le plus souvent "
+    "un ajout à garder) ; garde un code qui compile : noms, types et valeurs cohérents avec le reste."
+)
+RESOLVE_BOTH = "« les_deux » (garder les deux lignes, gauche puis droite : deux ajouts différents au même endroit), "
 _RESOLVED = {"gauche": "left", "droite": "right", "les_deux": "left_right", "fusion": "text"}
+_PRIVATE = {"rows", "lmarks", "rmarks", "m0", "m1", "rv", "pre", "post", "twin", "same_key"}   # pas envoyé à l'interface
 _TOKEN = re.compile(r"\w+|\s+|[^\w\s]")
 _FENCE = re.compile(r"^\s*(```|~~~)[^\n]*\n(.*?)\n?\s*\1\s*$", re.S)
 
@@ -223,6 +245,15 @@ def describe(side: dict) -> dict:
 # ─────────────────────────────────────────────
 #  Différences
 # ─────────────────────────────────────────────
+def clean_options(raw) -> dict:
+    """Options de la comparaison : espaces, majuscules ; unit : auto | line | symbol ; comments :
+    ignorer les commentaires (par symbole)."""
+    raw = raw if isinstance(raw, dict) else {}
+    unit = raw.get("unit")
+    return {"space": bool(raw.get("space")), "case": bool(raw.get("case")),
+            "unit": unit if unit in UNITS else "auto", "comments": bool(raw.get("comments"))}
+
+
 def _key(line: str, options: dict) -> str:
     if options.get("space"):
         line = " ".join(line.split())
@@ -238,21 +269,8 @@ def diff(a: list[str], b: list[str], options: dict | None = None) -> list[dict]:
     options = options or {}
     ka = [_key(line, options) for line in a]
     kb = [_key(line, options) for line in b]
-    # Début et fin communs écartés d'abord : rapide quand peu de lignes changent
-    n = min(len(ka), len(kb))
-    pre = 0
-    while pre < n and ka[pre] == kb[pre]:
-        pre += 1
-    suf = 0
-    while suf < n - pre and ka[-1 - suf] == kb[-1 - suf]:
-        suf += 1
-    sa, sb = ka[pre:len(ka) - suf], kb[pre:len(kb) - suf]
-    matcher = difflib.SequenceMatcher(None, sa, sb, autojunk=len(sb) > AUTOJUNK_LINES)
     blocks = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            continue
-        a0, a1, b0, b1 = i1 + pre, i2 + pre, j1 + pre, j2 + pre
+    for a0, a1, b0, b1 in codediff.line_regions(ka, kb):
         rows = []
         for i, j in _align(ka, kb, a0, a1, b0, b1):
             spans = _spans(a[i], b[j], options) if i is not None and j is not None else (None, None)
@@ -328,13 +346,86 @@ def _add_span(spans: list, start: int, end: int):
 
 
 def _utf16(text: str, spans: list) -> list:
-    """Positions en caractères → en unités UTF-16 (caractères hors du plan de base : 2)."""
+    """Positions en caractères → en unités UTF-16 (caractères hors du plan de base : 2) ;
+    [début, fin, …] : ce qui suit la fin est gardé."""
     if not spans or all(ord(c) < 0x10000 for c in text):
         return spans
     units = [0]
     for c in text:
         units.append(units[-1] + (2 if ord(c) >= 0x10000 else 1))
-    return [[units[s], units[e]] for s, e in spans]
+    return [[units[s], units[e], *rest] for s, e, *rest in spans]
+
+
+def line_view(a: list[str], blocks: list[dict]) -> list[dict]:
+    """Affichage par ligne : lignes identiques et blocs de différences, l'un après l'autre."""
+    view, ia, ib = [], 0, 0
+    for k, block in enumerate(blocks):
+        if block["a0"] > ia:
+            view.append({"t": "same", "a0": ia, "a1": block["a0"], "b0": ib})
+        view.append({"t": "diff", "rows": block["rows"], "blocks": [k]})
+        ia, ib = block["a1"], block["b1"]
+    if len(a) > ia:
+        view.append({"t": "same", "a0": ia, "a1": len(a), "b0": ib})
+    return view
+
+
+class _Squeezed:
+    """Lignes aux espaces réduits (mise en regard des lignes, par symbole), calculées à la demande."""
+
+    def __init__(self, lines: list[str]):
+        self.lines, self.cache = lines, {}
+
+    def __getitem__(self, i: int) -> str:
+        if i not in self.cache:
+            self.cache[i] = " ".join(self.lines[i].split())
+        return self.cache[i]
+
+
+def symbol_view(a: list[str], b: list[str], regions: list[dict], hunks: list[dict]) -> list[dict]:
+    """Affichage par symbole : lignes identiques entre les zones changées ; dans une zone, ses lignes
+    mises en regard, regroupées autour des différences (celles qui partagent une ligne vont ensemble),
+    les autres ne diffèrent que par la mise en page."""
+    view, ia, ib = [], 0, 0
+    ka, kb = _Squeezed(a), _Squeezed(b)
+    for region in regions:
+        if region["a0"] > ia:
+            view.append({"t": "same", "a0": ia, "a1": region["a0"], "b0": ib})
+        pairs = _align(ka, kb, region["a0"], region["a1"], region["b0"], region["b1"])
+        row_l = {i: r for r, (i, _) in enumerate(pairs) if i is not None}
+        row_r = {j: r for r, (_, j) in enumerate(pairs) if j is not None}
+        marks_l, marks_r, covers = {}, {}, []
+        for k in region["hunks"]:
+            hk = hunks[k]
+            for line, s, e in hk["lmarks"]:
+                marks_l.setdefault(line, []).append([s, e, k])
+            for line, s, e in hk["rmarks"]:
+                marks_r.setdefault(line, []).append([s, e, k])
+            rows = ([row_l[i] for i in range(hk["a0"], hk["a1"]) if i in row_l]
+                    + [row_r[j] for j in range(hk["b0"], hk["b1"]) if j in row_r])
+            if not rows:              # (rien d'affiché : la ligne voisine)
+                rows = [next((r for r, (i, _) in enumerate(pairs) if i is not None and i >= hk["a0"]), len(pairs) - 1)]
+            covers.append([min(rows), max(rows), [k]])
+        groups = []
+        for cover in sorted(covers):
+            if groups and cover[0] <= groups[-1][1]:
+                groups[-1][1] = max(groups[-1][1], cover[1])
+                groups[-1][2] += cover[2]
+            else:
+                groups.append(cover)
+        r = 0
+        for g0, g1, ks in groups:
+            if g0 > r:
+                view.append({"t": "layout", "rows": [list(p) for p in pairs[r:g0]]})
+            rows = [[i, j, _utf16(a[i], sorted(marks_l.get(i, []))) if i is not None else None,
+                     _utf16(b[j], sorted(marks_r.get(j, []))) if j is not None else None] for i, j in pairs[g0:g1 + 1]]
+            view.append({"t": "diff", "rows": rows, "blocks": sorted(ks)})
+            r = g1 + 1
+        if r < len(pairs):
+            view.append({"t": "layout", "rows": [list(p) for p in pairs[r:]]})
+        ia, ib = region["a1"], region["b1"]
+    if len(a) > ia:
+        view.append({"t": "same", "a0": ia, "a1": len(a), "b0": ib})
+    return view
 
 
 def signature(a: list[str], b: list[str], block: dict) -> str:
@@ -394,7 +485,15 @@ def stats(a: list[str], b: list[str], blocks: list[dict]) -> dict:
     same = len(a) - differ
     total = len(a) + len(b)
     return {"blocks": len(blocks), "added": added, "removed": removed, "changed": changed, "same": same,
-            "similarity": round(200 * same / total) if total else 100}
+            "similarity": round(200 * same / total) if total else 100, "unit": "line"}
+
+
+def symbol_stats(hunks: list[dict], same: int, total: int) -> dict:
+    """Par symbole : différences par genre (remplacement, seulement à gauche, à droite), symboles identiques."""
+    tags = [hk["tag"] for hk in hunks]
+    return {"blocks": len(hunks), "added": tags.count("insert"), "removed": tags.count("delete"),
+            "changed": tags.count("replace"), "same": same,
+            "similarity": round(200 * same / total) if total else 100, "unit": "symbol"}
 
 
 # ─────────────────────────────────────────────
@@ -413,6 +512,12 @@ def _range(start: int, end: int) -> str:
 
 
 def where(block: dict) -> str:
+    if block.get("unit") == "symbol":
+        if block["tag"] == "insert":
+            return f"seulement à droite ({_range(block['b0'], block['b1'])})"
+        if block["tag"] == "delete":
+            return f"seulement à gauche ({_range(block['a0'], block['a1'])})"
+        return f"{_range(block['a0'], block['a1'])} à gauche, {_range(block['b0'], block['b1'])} à droite"
     if block["a0"] == block["a1"]:
         return f"lignes seulement à droite ({_range(block['b0'], block['b1'])})"
     if block["b0"] == block["b1"]:
@@ -426,6 +531,21 @@ def _side_line(key: str, side: dict) -> str:
     when = side.get("modified") or side.get("at") or ""
     when = f", modifié le {when.replace('T', ' à ')[:19]}" if when else ""
     return f"{SIDE_NAMES[key].capitalize()} : {what}{when}, {len(split_lines(side['text']))} lignes."
+
+
+def kinds(block: dict) -> str:
+    """« (nom, nombre) » : genres des symboles d'une différence, par symbole."""
+    names = [codediff.KIND_NAMES[k] for k in block.get("kinds", []) if k in codediff.KIND_NAMES]
+    return f" ({', '.join(names)})" if names else ""
+
+
+def passage(text: str) -> str:
+    """Passage d'une différence par symbole, pour le modèle."""
+    if not text.strip():
+        return "(rien)" if not text else "(espaces seulement)"
+    if "\n" not in text and len(text) <= 200 and "`" not in text:
+        return f"`{text}`"
+    return "\n" + _fence(split_lines(text + "\n"))
 
 
 def clean_text(text: str) -> str:
@@ -446,12 +566,18 @@ class CompareService:
         self._chat = chat
         self._lock = threading.RLock()
         self.sides: dict[str, dict | None] = {"left": None, "right": None}
-        self.options = {"space": False, "case": False}
+        self.options = clean_options({})
         self.hint = ""                          # consigne de fusion pour l'IA
         self._choices: dict[str, dict] = {}     # signature → {choice, text, by, reason}
         self._ai: dict[str, dict] = {}          # signature → {state, error} (IA en cours ou en échec)
         self.blocks: list[dict] = []
         self.lines = {"left": [], "right": []}
+        self.unit = "line"                      # comparaison faite : line | symbol
+        self.language = ""                      # langage reconnu (codediff) ; "" : pas du code
+        self.unit_note = ""                     # pourquoi par ligne malgré l'option
+        self.view: list[dict] = []
+        self._stats: dict | None = None
+        self._same: dict[str, list[int]] = {}   # différences identiques (même passage des deux côtés)
         self._ready = False                     # sources relues et différences calculées
         self.thread: list[dict] = []            # explication et questions (en mémoire)
         self._job = None                        # (entrée, arrêt) de la réponse en cours
@@ -489,7 +615,11 @@ class CompareService:
             "sides": {k: describe(s) if s else None for k, s in self.sides.items()},
             "lines": self.lines,
             "blocks": [self._block(i) for i in range(len(self.blocks))],
-            "stats": stats(self.lines["left"], self.lines["right"], self.blocks) if self._both() else None,
+            "view": self.view,
+            "stats": self._stats,
+            "unit": self.unit,
+            "language": codediff.label(self.language) if self.language else "",
+            "unit_note": self.unit_note,
             "options": dict(self.options),
             "hint": self.hint,
             "thread": [dict(e) for e in self.thread],
@@ -504,8 +634,18 @@ class CompareService:
     def _block(self, index: int) -> dict:
         block = self.blocks[index]
         choice = self._choices.get(block["sig"]) or {}
-        return {**block, "index": index, "choice": choice.get("choice"), "text": choice.get("text", ""),
-                "by": choice.get("by", ""), "reason": choice.get("reason", ""), "ai": self._ai.get(block["sig"])}
+        out = {k: v for k, v in block.items() if k not in _PRIVATE}
+        if block.get("unit") == "symbol":
+            out["both"] = bool(block.get("both"))
+        return {**out, "index": index, "choice": choice.get("choice"), "text": choice.get("text", ""),
+                "by": choice.get("by", ""), "reason": choice.get("reason", ""), "ai": self._ai.get(block["sig"]),
+                "same": len(self._same.get(block["same_key"], ()))}
+
+    @staticmethod
+    def _can_both(block: dict, choice: str | None) -> bool:
+        """Par symbole, garder les deux passages remplacés : seulement s'ils sont seuls sur leurs lignes."""
+        return (choice not in ("left_right", "right_left") or block.get("unit") != "symbol"
+                or block["tag"] != "replace" or bool(block.get("both")))
 
     @staticmethod
     def _stale(side: dict) -> bool:
@@ -535,17 +675,60 @@ class CompareService:
     def _compute(self):
         self._ready = True
         self.lines = {k: split_lines(s["text"]) if s else [] for k, s in self.sides.items()}
+        self.view, self._stats, self._same = [], None, {}
+        self.unit, self.language, self.unit_note = "line", "", ""
         if not self._both():
             self.blocks = []
             return
         a, b = self.lines["left"], self.lines["right"]
-        self.blocks = diff(a, b, self.options)
-        for block in self.blocks:
-            block["sig"] = signature(a, b, block)
+        left, right = self.sides["left"]["text"], self.sides["right"]["text"]
+        self.unit, self.language, self.unit_note = self._unit()
+        if self.unit == "symbol":
+            res = codediff.diff(left, right, self.language, self.options)
+            self.blocks = res["hunks"]
+            self.view = symbol_view(a, b, res["regions"], self.blocks)
+            self._stats = symbol_stats(self.blocks, res["same"], res["total"])
+        else:
+            self.blocks = diff(a, b, self.options)
+            for block in self.blocks:
+                block["sig"] = signature(a, b, block)
+                block["twin"] = signature(b, a, {"a0": block["b0"], "a1": block["b1"], "b0": block["a0"],
+                                                 "b1": block["a1"]})
+                content = "\0".join((*a[block["a0"]:block["a1"]], "\1", *b[block["b0"]:block["b1"]]))
+                block["same_key"] = hashlib.sha1(content.encode("utf-8", "surrogatepass")).hexdigest()
+            self.view = line_view(a, self.blocks)
+            self._stats = stats(a, b, self.blocks)
+        self._stats["exact"] = left == right
+        # Même différence au même endroit (passage répété) : signatures numérotées, chacune son choix
+        seen = {}
+        for index, block in enumerate(self.blocks):
+            for key in ("sig", "twin"):
+                n = seen[key, block[key]] = seen.get((key, block[key]), 0) + 1
+                if n > 1:
+                    block[key] = f"{block[key]}-{n}"
+            self._same.setdefault(block["same_key"], []).append(index)
         # Choix des blocs qui n'existent plus oubliés
         live = {block["sig"] for block in self.blocks}
         self._choices = {s: c for s, c in self._choices.items() if s in live}
         self._ai = {s: c for s, c in self._ai.items() if s in live}
+
+    def _unit(self) -> tuple[str, str, str]:
+        """Comparaison à faire (line | symbol), langage reconnu, et pourquoi par ligne malgré
+        l'option. Automatique : par symbole pour un fichier de code, ou deux textes collés qui
+        ressemblent nettement à du code ; jamais pour le texte d'un document (PDF, Word…)."""
+        want = self.options["unit"]
+        sides = (self.sides["left"], self.sides["right"])
+        document = any(s.get("document") for s in sides)
+        lang = next((codediff.language(s["name"]) for s in sides if s["kind"] == "file" and codediff.language(s["name"])), "")
+        if not lang and not document and want != "line":
+            guesses = [codediff.guess(s["text"]) for s in sides]
+            if want == "symbol" or all(guesses):
+                lang = next((g for g in guesses if g and g != "code"), "") or next((g for g in guesses if g), "")
+        if want == "line" or (want == "auto" and (document or not lang)):
+            return "line", lang, ""
+        if sum(len(s["text"]) for s in sides) > SYMBOL_CHARS:
+            return "line", lang, "Textes trop longs pour la comparaison par symbole : comparés ligne à ligne."
+        return "symbol", lang or "code", ""
 
     def _changed(self):
         self._save_later()
@@ -589,13 +772,11 @@ class CompareService:
         with self._lock:
             self._ensure()
             self._stop_all()
-            a, b = self.lines["left"], self.lines["right"]
             moved = {}
             for block in self.blocks:
                 choice = self._choices.get(block["sig"])
                 if choice:
-                    twin = signature(b, a, {"a0": block["b0"], "a1": block["b1"], "b0": block["a0"], "b1": block["a1"]})
-                    moved[twin] = {**choice, "choice": mirror[choice["choice"]]}
+                    moved[block["twin"]] = {**choice, "choice": mirror[choice["choice"]]}
             self.sides["left"], self.sides["right"] = self.sides["right"], self.sides["left"]
             self._choices, self._ai = moved, {}
             self._clear_thread()          # l'explication parle de gauche et de droite
@@ -613,7 +794,7 @@ class CompareService:
         with self._lock:
             self._ensure()
             self._stop_all()
-            self.options = {"space": bool((options or {}).get("space")), "case": bool((options or {}).get("case"))}
+            self.options = clean_options(options)
             self._compute()
             self._changed()
             return self._state()
@@ -633,6 +814,9 @@ class CompareService:
             if choice is None:
                 self._choices.pop(sig, None)
             elif choice in CHOICES:
+                if not self._can_both(self.blocks[index], choice):
+                    raise UserError("Les deux passages ne peuvent pas être gardés ici : une autre différence "
+                                    "partage leur ligne. Écrivez plutôt la version fusionnée.")
                 self._choices[sig] = {"choice": choice, "text": str(text or "") if choice == "text" else "",
                                       "by": by, "reason": reason}
             else:
@@ -649,13 +833,34 @@ class CompareService:
             for block in self.blocks:
                 if only_open and block["sig"] in self._choices:
                     continue
-                self._ai.pop(block["sig"], None)
-                if choice is None:
-                    self._choices.pop(block["sig"], None)
-                else:
-                    self._choices[block["sig"]] = {"choice": choice, "text": "", "by": "user", "reason": ""}
+                self._set_choice(block, choice)
             self._changed()
             return self._state()
+
+    def choose_same(self, index: int, choice: str | None, text: str = "") -> dict:
+        """Même choix pour la différence et celles qui lui sont identiques (même passage des deux
+        côtés : un nom renommé partout, une valeur changée à plusieurs endroits)."""
+        with self._lock:
+            if not 0 <= index < len(self.blocks):
+                raise UserError("Cette différence n'existe plus : la comparaison a changé.")
+            if choice is not None and choice not in CHOICES:
+                raise UserError("Choix inconnu.")
+            for i in self._same.get(self.blocks[index]["same_key"], [index]):
+                self._set_choice(self.blocks[i], choice, text)
+            self._changed()
+            return self._state()
+
+    def _set_choice(self, block: dict, choice: str | None, text: str = ""):
+        """Choix de l'utilisateur pour plusieurs différences à la fois (« garder les deux » laissé de
+        côté là où il ne se peut pas)."""
+        if not self._can_both(block, choice):
+            return
+        self._ai.pop(block["sig"], None)
+        if choice is None:
+            self._choices.pop(block["sig"], None)
+        else:
+            self._choices[block["sig"]] = {"choice": choice, "text": str(text or "") if choice == "text" else "",
+                                           "by": "user", "reason": ""}
 
     def result(self, default: str = "left") -> dict:
         """Texte fusionné (fins de ligne « \\n ») et différences restées sans choix."""
@@ -663,9 +868,13 @@ class CompareService:
             self._ensure()
             if not self._both():
                 raise UserError("Il faut deux textes pour les fusionner.")
+            choices = [self._choices.get(blk["sig"]) for blk in self.blocks]
+            default = "right" if default == "right" else "left"
+            if self.unit == "symbol":
+                text, unresolved = codediff.merge(self.sides["left"]["text"], self.blocks, choices, default)
+                return {"text": text, "unresolved": unresolved, "lines": len(split_lines(text))}
             a, b = self.lines["left"], self.lines["right"]
-            lines, unresolved = merge(a, b, self.blocks, [self._choices.get(blk["sig"]) for blk in self.blocks],
-                                      "right" if default == "right" else "left")
+            lines, unresolved = merge(a, b, self.blocks, choices, default)
             final = (self.sides["left"] or {}).get("final_newline", True)
             text = "\n".join(lines) + ("\n" if lines and final else "")
             return {"text": text, "unresolved": unresolved, "lines": len(lines)}
@@ -734,8 +943,7 @@ class CompareService:
                                    "text": "", "mtime": None}
             elif src.get("kind") == "text" and isinstance(src.get("text"), str):
                 self.sides[key] = {**text_side(src["text"], src.get("name") or ""), "at": src.get("at") or ""}
-        options = data.get("options") or {}
-        self.options = {"space": bool(options.get("space")), "case": bool(options.get("case"))}
+        self.options = clean_options(data.get("options"))
         self.hint = str(data.get("hint") or "")
         choices = data.get("choices") or {}
         self._choices = {str(s): c for s, c in choices.items() if isinstance(c, dict) and c.get("choice") in CHOICES}
@@ -881,9 +1089,16 @@ class CompareService:
 
     def _head(self) -> str:
         left, right = self.sides["left"], self.sides["right"]
-        st = stats(self.lines["left"], self.lines["right"], self.blocks)
+        st = self._stats
         lines = [_side_line("left", left), _side_line("right", right)]
-        if not self.blocks:
+        if self.unit == "symbol":
+            lines.append(f"Comparaison symbole à symbole ({codediff.label(self.language)}) : les espaces et les retours "
+                         "à la ligne ne comptent pas" + (", ni les commentaires" if self.options["comments"] else "")
+                         + " ; une différence est un passage de gauche remplacé par un passage de droite.")
+            lines.append(f"{st['blocks']} différence(s) : {st['changed']} passage(s) remplacé(s), {st['removed']} "
+                         f"seulement à gauche, {st['added']} seulement à droite." if self.blocks
+                         else "Les deux textes ont les mêmes symboles.")
+        elif not self.blocks:
             lines.append("Les deux textes sont identiques.")
         else:
             lines.append(f"{st['blocks']} différence(s) : {st['changed']} ligne(s) modifiée(s), {st['removed']} "
@@ -898,10 +1113,16 @@ class CompareService:
         a, b = self.lines["left"], self.lines["right"]
         parts, used = [], 0
         for n, block in enumerate(self.blocks, 1):
-            before = a[max(0, block["a0"] - 2):block["a0"]]
-            text = (f"## Différence {n} — {where(block)}\n"
-                    + (f"Juste avant (identique des deux côtés) :\n{_fence(before)}\n" if before else "")
-                    + f"Gauche :\n{_fence(a[block['a0']:block['a1']])}\nDroite :\n{_fence(b[block['b0']:block['b1']])}")
+            if block.get("unit") == "symbol":
+                text = (f"## Différence {n} — {where(block)}{kinds(block)}\n"
+                        f"Gauche : {passage(block['left'])}\nDroite : {passage(block['right'])}\n"
+                        f"Lignes de gauche :\n{_fence(a[block['a0']:block['a1']])}\n"
+                        f"Lignes de droite :\n{_fence(b[block['b0']:block['b1']])}")
+            else:
+                before = a[max(0, block["a0"] - 2):block["a0"]]
+                text = (f"## Différence {n} — {where(block)}\n"
+                        + (f"Juste avant (identique des deux côtés) :\n{_fence(before)}\n" if before else "")
+                        + f"Gauche :\n{_fence(a[block['a0']:block['a1']])}\nDroite :\n{_fence(b[block['b0']:block['b1']])}")
             if used + len(text) > budget and parts:
                 break
             parts.append(text[:budget])
@@ -1035,13 +1256,14 @@ class CompareService:
                     job["current"] = index
                     self._ai[sig] = {"state": "running"}
                     messages = self._resolve_messages(index)
+                    schema = self._resolve_schema(index)
                 self._emit_block(index)
                 self._emit_resolve()
                 try:
                     if messages is None:
                         raise UserError("Différence trop longue pour le modèle.")
                     resp = llm.chat("Comparer : fusion", priority, model=job["model"], messages=messages,
-                                    format=RESOLVE_SCHEMA, think=False, stop=stop, keep_alive=keep_alive(),
+                                    format=schema, think=False, stop=stop, keep_alive=keep_alive(),
                                     options={"temperature": 0.1, "num_ctx": num_ctx()})
                     if resp is None or stop.is_set():
                         break
@@ -1083,9 +1305,18 @@ class CompareService:
             self._bridge.emit("compare:resolve", {"finished": True, "stopped": stop.is_set(), "failures": failures,
                                                   "count": job["done"]})
 
+    def _resolve_schema(self, index: int) -> dict:
+        """Réponse attendue de l'IA : sans « les_deux » là où les deux passages ne peuvent pas être gardés."""
+        if self._can_both(self.blocks[index], "left_right"):
+            return RESOLVE_SCHEMA
+        choix = {"type": "string", "enum": ["gauche", "droite", "fusion"]}
+        return {**RESOLVE_SCHEMA, "properties": {**RESOLVE_SCHEMA["properties"], "choix": choix}}
+
     def _resolve_messages(self, index: int) -> list[dict] | None:
         a, b = self.lines["left"], self.lines["right"]
         block = self.blocks[index]
+        if block.get("unit") == "symbol":
+            return self._resolve_symbol(index)
         left, right = a[block["a0"]:block["a1"]], b[block["b0"]:block["b1"]]
         size = sum(len(x) + 1 for x in left + right)
         if size > self._budget() // 2:
@@ -1105,18 +1336,50 @@ class CompareService:
         parts.append(f"# Demande\n\n{RESOLVE}")
         return [{"role": "system", "content": RESOLVE_SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
 
+    def _resolve_symbol(self, index: int) -> list[dict] | None:
+        """Par symbole : les lignes de la différence, ce qui les précède et les suit, et les deux passages."""
+        a, b = self.lines["left"], self.lines["right"]
+        block = self.blocks[index]
+        left, right = a[block["a0"]:block["a1"]], b[block["b0"]:block["b1"]]
+        size = sum(len(x) + 1 for x in left + right) + len(block["left"]) + len(block["right"])
+        if size > self._budget() // 2:
+            return None
+        before = a[max(0, block["a0"] - CONTEXT_LINES):block["a0"]]
+        after = a[block["a1"]:block["a1"] + CONTEXT_LINES]
+        both = RESOLVE_BOTH if self._can_both(block, "left_right") else ""
+        parts = [f"# Les deux versions\n\n{_side_line('left', self.sides['left'])}\n"
+                 f"{_side_line('right', self.sides['right'])}\nComparées symbole à symbole "
+                 f"({codediff.label(self.language)}) : les espaces et la mise en page ne comptent pas."]
+        if self.hint.strip():
+            parts.append(f"# Consigne de l'utilisateur pour la fusion (elle prime sur tout le reste)\n\n{self.hint.strip()}")
+        parts.append(f"# Différence {index + 1} sur {len(self.blocks)} — {where(block)}{kinds(block)}")
+        if before:
+            parts.append(f"## Juste avant, à gauche\n{_fence(before)}")
+        parts.append(f"## Lignes de gauche\n{_fence(left) if left else '(aucune : le passage n’existe qu’à droite)'}")
+        parts.append(f"## Lignes de droite\n{_fence(right) if right else '(aucune : le passage n’existe qu’à gauche)'}")
+        if after:
+            parts.append(f"## Juste après, à gauche\n{_fence(after)}")
+        parts.append(f"## Le passage qui diffère\nGauche : {passage(block['left'])}\nDroite : {passage(block['right'])}")
+        parts.append(f"# Demande\n\n{RESOLVE_SYMBOL.format(both=both)}")
+        return [{"role": "system", "content": RESOLVE_SYSTEM}, {"role": "user", "content": "\n\n".join(parts)}]
+
     def _outcome(self, index: int, data: dict) -> dict:
         """Réponse du modèle → choix du bloc ({choice, text, reason})."""
         if not isinstance(data, dict) or data.get("choix") not in _RESOLVED:
             raise UserError("Le modèle n'a pas choisi.")
         a, b = self.lines["left"], self.lines["right"]
         block = self.blocks[index]
-        left, right = a[block["a0"]:block["a1"]], b[block["b0"]:block["b1"]]
+        if block.get("unit") == "symbol":
+            left, right = split_lines(block["left"]), split_lines(block["right"])
+        else:
+            left, right = a[block["a0"]:block["a1"]], b[block["b0"]:block["b1"]]
         reason = " ".join(str(data.get("raison") or "").split())[:400]
         choice = _RESOLVED[data["choix"]]
         text = ""
         if choice == "left_right" and not (left and right):
             choice = "left" if left else "right"
+        if not self._can_both(block, choice):
+            raise UserError("Le modèle a choisi de garder les deux passages, impossible ici.")
         if choice == "text":
             text = clean_text(data.get("texte"))
             if not text.strip():

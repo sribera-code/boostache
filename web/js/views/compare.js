@@ -1,6 +1,7 @@
 // Vue Comparer : deux textes (fichiers ou textes collés) côte à côte, leurs différences
-// mot à mot et leur fusion, différence par différence (compare.py) — avec l'IA : explication
-// des différences, questions, choix de la fusion d'après une consigne.
+// mot à mot — ou symbole à symbole pour du code — et leur fusion, différence par différence
+// (compare.py) — avec l'IA : explication des différences, questions, choix de la fusion
+// d'après une consigne.
 import { h, plural, parseDate, formatShort, formatFullDate, isTyping } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 import { renderMarkdown } from "../markdown.js";
@@ -21,6 +22,8 @@ const CHOICE_TEXT = {
   left: "gauche gardée", right: "droite gardée", left_right: "les deux gardées, gauche puis droite",
   right_left: "les deux gardées, droite puis gauche", text: "version fusionnée",
 };
+const UNITS = { auto: "Automatique", line: "Par ligne", symbol: "Par symbole (code)" };
+const SNIPPET = 48;           // caractères d'un passage montré sous une ligne à plusieurs différences
 // Suggestions au-dessus du champ (gardées quand des questions ont été posées)
 const SUGGESTIONS = [
   { icon: "flag", label: "Changements importants", ask: "Quels changements modifient le sens ou les informations (dates, montants, noms, conditions) ?" },
@@ -58,8 +61,12 @@ export function createCompareView(ctx, state) {
     sides: state.compare?.sides || { left: null, right: null },
     lines: { left: [], right: [] },
     blocks: [],
+    view: [],                 // segments affichés : same | layout | diff (compare.py)
+    unit: "line",             // comparaison faite : line | symbol
+    language: "",             // langage reconnu (« C++ »…)
+    unitNote: "",
     stats: null,
-    options: { space: false, case: false },
+    options: { space: false, case: false, unit: "auto", comments: false },
     hint: "",
     thread: [],
     model: state.compare?.model || "",
@@ -73,7 +80,9 @@ export function createCompareView(ctx, state) {
     autoKey: "",              // comparaison déjà expliquée d'office
   };
   const answers = new Map();  // id → réponse affichée
-  const blockEls = new Map(); // différence → élément
+  const blockEls = new Map(); // différence → élément (son bloc, ou sa ligne sous un bloc à plusieurs différences)
+  const segEls = new Map();   // segment « diff » affiché → élément
+  const segOf = new Map();    // différence → index de son segment
   let aiOpen = null;          // panneau de l'IA (null : pas encore décidé)
   try {
     const saved = localStorage.getItem(AI_KEY);
@@ -91,6 +100,8 @@ export function createCompareView(ctx, state) {
   const prevBtn = iconButton("chevron-up", "Différence précédente", () => go(-1), { size: 15, cls: "sm", kbd: "Alt+↑" });
   const nextBtn = iconButton("chevron-down", "Différence suivante", () => go(1), { size: 15, cls: "sm", kbd: "Alt+↓" });
   const posEl = h("span", { class: "cmp-pos" });
+  const unitBtn = h("button", { class: "cmp-unit", type: "button",
+    onClick: (ev) => openMenuBelow(unitItems(), ev.currentTarget) });
   const mergeEl = h("span", { class: "cmp-merge-count" });
   const allBtn = h("button", { class: "btn sm", type: "button", "aria-label": "Choix pour toutes les différences",
     onClick: (ev) => openMenuBelow(allItems(), ev.currentTarget, "right") }, "Tout", ico("chevron-down", 13));
@@ -100,7 +111,7 @@ export function createCompareView(ctx, state) {
   const resultBtn = h("button", { class: "btn sm primary", type: "button", onClick: () => openResult() },
     ico("git-merge", 14), "Résultat…");
   const bar = h("div", { class: "cmp-bar", hidden: true },
-    h("div", { class: "cmp-nav" }, prevBtn, nextBtn, posEl), statsEl, h("div", { class: "head-spacer" }),
+    h("div", { class: "cmp-nav" }, prevBtn, nextBtn, posEl), unitBtn, statsEl, h("div", { class: "head-spacer" }),
     mergeEl, allBtn, resolvingEl, aiPickBtn, resultBtn);
 
   const message = h("div", { class: "empty cmp-message", hidden: true });
@@ -208,8 +219,11 @@ export function createCompareView(ctx, state) {
       S.rowLimit = ROW_LIMIT;
       S.current = -1;
     }
-    Object.assign(S, { loaded: true, sides: st.sides, lines: st.lines, blocks: st.blocks, stats: st.stats,
+    Object.assign(S, { loaded: true, sides: st.sides, lines: st.lines, blocks: st.blocks, view: st.view || [],
+      unit: st.unit || "line", language: st.language || "", unitNote: st.unit_note || "", stats: st.stats,
       options: st.options, hint: st.hint, thread: st.thread || [], resolving: st.resolving });
+    segOf.clear();
+    S.view.forEach((seg, s) => { if (seg.t === "diff") for (const k of seg.blocks) segOf.set(k, s); });
     if (st.model) S.model = st.model;
     if (S.current >= S.blocks.length) S.current = S.blocks.length - 1;
     if (document.activeElement !== hintInput) hintInput.value = S.hint || "";
@@ -220,7 +234,7 @@ export function createCompareView(ctx, state) {
 
   function comparisonKey(st) {
     const sig = (st.blocks || []).map((b) => b.sig).join(",");
-    return `${JSON.stringify(st.options)}|${st.lines?.left.length}|${st.lines?.right.length}|${sig}`;
+    return `${JSON.stringify(st.options)}|${st.unit}|${st.lines?.left.length}|${st.lines?.right.length}|${sig}`;
   }
 
   async function refresh(check = false) {
@@ -365,13 +379,18 @@ export function createCompareView(ctx, state) {
     bar.hidden = !both() || !n;
     if (bar.hidden) return;
     const st = S.stats;
+    const symbol = S.unit === "symbol";
     const counts = [[st.changed, "modifiée", "modifiées", "chg"], [st.removed, "seulement à gauche", "seulement à gauche", "del"],
       [st.added, "seulement à droite", "seulement à droite", "add"]].filter(([v]) => v > 0);
     statsEl.replaceChildren(
       h("b", { text: plural(n, "différence", "différences") }),
       ...counts.map(([v, one, many, cls]) => h("span", { class: `cmp-stat ${cls}`, text: `${v.toLocaleString("fr-FR")} ${v > 1 ? many : one}` })));
-    statsEl.dataset.tip = [...counts.map(([v, one, many]) => `${plural(v, "ligne", "lignes")} ${v > 1 ? many : one}`),
-      `${plural(st.same, "ligne identique", "lignes identiques")}`, `textes semblables à ${st.similarity} %`].join(" · ");
+    statsEl.dataset.tip = symbol
+      ? [...counts.map(([v, one, many]) => `${plural(v, "passage", "passages")} ${v > 1 ? many.replace("modifiées", "remplacés") : one.replace("modifiée", "remplacé")}`),
+        `${plural(st.same, "symbole identique", "symboles identiques")}`, `textes semblables à ${st.similarity} %`].join(" · ")
+      : [...counts.map(([v, one, many]) => `${plural(v, "ligne", "lignes")} ${v > 1 ? many : one}`),
+        `${plural(st.same, "ligne identique", "lignes identiques")}`, `textes semblables à ${st.similarity} %`].join(" · ");
+    renderUnit();
     posEl.textContent = S.current >= 0 ? `${S.current + 1} / ${n}` : "";
     prevBtn.disabled = S.current === 0;
     nextBtn.disabled = S.current === n - 1;
@@ -393,13 +412,26 @@ export function createCompareView(ctx, state) {
       : "Toutes les différences ont un choix";
   }
 
+  /** Mode de la comparaison, dans la barre : « C++ · par symbole », « par ligne ». */
+  function renderUnit() {
+    const symbol = S.unit === "symbol";
+    unitBtn.replaceChildren(ico(symbol ? "braces" : "list-filter", 13),
+      h("span", { text: symbol ? `${S.language} · par symbole` : "par ligne" }), ico("chevron-down", 12));
+    unitBtn.classList.toggle("on", symbol);
+    unitBtn.dataset.tip = S.unitNote || (symbol
+      ? `Comparé symbole à symbole : espaces et retours à la ligne ignorés${S.options.comments ? ", commentaires aussi" : ""}`
+      : `Comparé ligne à ligne${S.language ? ` (${S.language} : « Par symbole » ignore la mise en page)` : ""}`);
+  }
+
   function renderGrid() {
     blockEls.clear();
+    segEls.clear();
     const { left, right } = S.sides;
     if (!both()) {
       grid.replaceChildren();
       showMessage(!left && !right ? ["git-compare", "Comparez deux textes",
-        "Deux versions d'un fichier, d'un contrat, d'un code, ou deux textes collés : les différences mot à mot, puis la "
+        "Deux versions d'un fichier, d'un contrat, d'un code, ou deux textes collés : les différences mot à mot (symbole "
+        + "à symbole pour du code, sans tenir compte de la mise en page), puis la "
         + "fusion, différence par différence. L'IA explique ce qui a changé et propose quoi garder."]
         : (left?.error || right?.error) ? ["triangle-alert", "Un des deux fichiers est illisible", (left?.error || right?.error)]
           : ["git-compare", `Ajoutez le texte de ${left ? "droite" : "gauche"}`,
@@ -408,34 +440,38 @@ export function createCompareView(ctx, state) {
     }
     if (!S.blocks.length) {
       grid.replaceChildren();
-      const ignored = [S.options.space && "les espaces", S.options.case && "les majuscules"].filter(Boolean);
-      showMessage(["circle-check", "Les deux textes sont identiques",
-        ignored.length ? `(en ignorant ${ignored.join(" et ")})` : `${plural(S.lines.left.length, "ligne", "lignes")}, aucune différence.`]);
+      const ignored = [S.options.space && "les espaces", S.options.case && "les majuscules",
+        S.unit === "symbol" && S.options.comments && "les commentaires"].filter(Boolean);
+      const layout = S.unit === "symbol" && !S.stats?.exact;
+      showMessage(["circle-check", layout ? "Mêmes symboles des deux côtés" : "Les deux textes sont identiques",
+        layout ? `${S.language} : seuls les espaces ou la mise en page diffèrent${ignored.length ? ` (en ignorant ${ignored.join(" et ")})` : ""}.`
+          : ignored.length ? `(en ignorant ${ignored.join(" et ")})` : `${plural(S.lines.left.length, "ligne", "lignes")}, aucune différence.`]);
       return;
     }
     message.hidden = true;
-    const a = S.lines.left;
     const out = [];
     let rows = 0;
-    let ia = 0;
-    let ib = 0;
-    for (let k = 0; k <= S.blocks.length; k++) {
-      const blk = S.blocks[k];
-      rows += sameRows(out, ia, blk ? blk.a0 : a.length, ib, k === 0, !blk);
-      if (!blk) break;
+    let between = [];               // segments sans différence depuis le dernier bloc
+    let shown = 0;                  // blocs affichés
+    for (let s = 0; s <= S.view.length; s++) {
+      const seg = S.view[s];
+      if (seg && seg.t !== "diff") { between.push(seg); continue; }
+      rows += quietRows(out, between, `g${s}`, shown === 0, !seg);
+      between = [];
+      if (!seg) break;
       if (rows > S.rowLimit) {
         out.push(h("button", { class: "cmp-more", type: "button", onClick: () => { S.rowLimit += ROW_LIMIT; renderGrid(); } },
-          ico("arrow-down", 13), `Afficher la suite (${plural(S.blocks.length - k, "différence", "différences")})`));
+          ico("arrow-down", 13), `Afficher la suite (${plural(S.blocks.length - seg.blocks[0], "différence", "différences")})`));
         break;
       }
-      out.push(blockEl(k));
-      rows += blk.rows.length;
-      ia = blk.a1;
-      ib = blk.b1;
+      out.push(segEl(s));
+      rows += seg.rows.length;
+      shown++;
     }
-    const digits = String(Math.max(a.length, S.lines.right.length)).length;
+    const digits = String(Math.max(S.lines.left.length, S.lines.right.length)).length;
     grid.style.setProperty("--ln", `${digits + 2}ch`);
     grid.replaceChildren(...out);
+    markCurrent();
   }
 
   function showMessage([icon, title, text]) {
@@ -443,48 +479,72 @@ export function createCompareView(ctx, state) {
     message.replaceChildren(h("div", { class: "glyph" }, ico(icon, 22)), h("h3", { text: title }), h("p", { text }));
   }
 
-  /** Lignes identiques [a0, a1) à gauche (b0… à droite) : seules celles autour des
-   *  différences, le reste replié. → lignes affichées. */
-  function sameRows(out, a0, a1, b0, first, last) {
-    const n = a1 - a0;
+  const segLength = (seg) => (seg.t === "same" ? seg.a1 - seg.a0 : seg.rows.length);
+
+  /** Lignes sans différence entre deux blocs — identiques (same) ou qui ne diffèrent que par la
+   *  mise en page (layout) : seules celles autour des différences, le reste replié. → lignes affichées. */
+  function quietRows(out, segs, key, first, last) {
+    const n = segs.reduce((t, seg) => t + segLength(seg), 0);
     if (n <= 0) return 0;
-    const row = (i) => sameRow(i, b0 + (i - a0));
     const head = first ? 0 : CONTEXT;
     const tail = last ? 0 : CONTEXT;
     const hidden = n - head - tail;
     if (S.showSame || hidden < GAP_MIN) {
-      for (let i = a0; i < a1; i++) out.push(row(i));
+      emitRows(out, segs, 0, n);
       return n;
     }
-    const start = a0 + head;
-    const revealed = Math.min(hidden, S.expanded.get(start) || 0);
-    for (let i = a0; i < start + revealed; i++) out.push(row(i));
+    const revealed = Math.min(hidden, S.expanded.get(key) || 0);
+    emitRows(out, segs, 0, head + revealed);
     const rest = hidden - revealed;
     if (rest > 0) {
       out.push(h("button", { class: "cmp-gap", type: "button", dataset: { tip: rest > GAP_STEP ? `Afficher ${GAP_STEP} lignes de plus` : "Afficher ces lignes" },
-        onClick: () => { S.expanded.set(start, revealed + Math.min(rest, GAP_STEP)); renderGrid(); } },
+        onClick: () => { S.expanded.set(key, revealed + Math.min(rest, GAP_STEP)); renderGrid(); } },
       ico("unfold-vertical", 13), `${plural(rest, "ligne identique", "lignes identiques")}`));
     }
-    for (let i = a1 - tail; i < a1; i++) out.push(row(i));
+    emitRows(out, segs, n - tail, n);
     return head + revealed + tail + (rest > 0 ? 1 : 0);
   }
 
-  function sameRow(i, j) {
-    return h("div", { class: "cmp-row same" },
-      h("span", { class: "cmp-ln", text: String(i + 1) }), h("span", { class: "cmp-l cmp-text", text: S.lines.left[i] }),
-      h("span", { class: "cmp-gut" }),
-      h("span", { class: "cmp-ln", text: String(j + 1) }), h("span", { class: "cmp-r cmp-text", text: S.lines.right[j] }));
+  /** Lignes [from, to) d'une suite de segments sans différence. */
+  function emitRows(out, segs, from, to) {
+    let base = 0;
+    for (const seg of segs) {
+      const len = segLength(seg);
+      for (let r = Math.max(from - base, 0); r < Math.min(to - base, len); r++) {
+        out.push(seg.t === "same" ? sameRow(seg.a0 + r, seg.b0 + r) : sameRow(...seg.rows[r], true));
+      }
+      base += len;
+      if (base >= to) break;
+    }
   }
 
-  /** Texte d'une ligne, parties changées marquées ; null : pas de ligne de ce côté. */
+  /** Ligne sans différence ; layout : mêmes symboles, mise en page différente (un côté peut manquer). */
+  function sameRow(i, j, layout = false) {
+    const cell = (side, k, text) => (k == null ? h("span", { class: `${side} cmp-text filler` })
+      : h("span", { class: `${side} cmp-text`, text }));
+    return h("div", { class: `cmp-row same${layout ? " layout" : ""}` },
+      h("span", { class: "cmp-ln", text: i != null ? String(i + 1) : "" }), cell("cmp-l", i, S.lines.left[i]),
+      h("span", { class: "cmp-gut", dataset: layout ? { tip: "Mêmes symboles : seule la mise en page diffère" } : {} }),
+      h("span", { class: "cmp-ln", text: j != null ? String(j + 1) : "" }), cell("cmp-r", j, S.lines.right[j]));
+  }
+
+  /** Texte d'une ligne, parties changées marquées (une marque vide : là où un passage
+   *  s'insère) ; null : pas de ligne de ce côté. spans : [début, fin, différence ?]. */
   function textCell(side, text, spans, kind) {
     if (text == null) return h("span", { class: `${side} cmp-text filler` });
     const cell = h("span", { class: `${side} cmp-text ${kind}` });
     let pos = 0;
-    for (const [s, e] of spans || []) {
+    for (const [s, e, k] of spans || []) {
       if (s > pos) cell.append(text.slice(pos, s));
-      cell.append(h("mark", { text: text.slice(s, e) }));
-      pos = e;
+      const mark = h("mark", { class: e === s ? "caret" : "", text: text.slice(s, e) });
+      if (k != null) {
+        mark.dataset.k = String(k);
+        const blk = S.blocks[k];
+        const keep = kept(blk?.choice);
+        if (blk?.choice && !keep[side === "cmp-l" ? "left" : "right"]) mark.classList.add("off");
+      }
+      cell.append(mark);
+      pos = Math.max(pos, e);
     }
     if (pos < text.length) cell.append(text.slice(pos));
     return cell;
@@ -495,19 +555,39 @@ export function createCompareView(ctx, state) {
     right: ["right", "left_right", "right_left"].includes(choice),
   });
 
-  function blockEl(k) {
-    const blk = S.blocks[k];
+  /** Lignes d'un segment « diff ». Par symbole, une ligne sans passage marqué ne diffère que par
+   *  la mise en page : sans couleur. gut : boutons de la première ligne (ou rien). */
+  function rowsEl(seg, gut) {
     const { left: a, right: b } = S.lines;
+    const symbol = S.unit === "symbol";
+    return seg.rows.map(([i, j, ls, rs], r) => {
+      const plainL = symbol && !ls?.length;
+      const plainR = symbol && !rs?.length;
+      return h("div", { class: `cmp-row${plainL ? " plain-l" : ""}${plainR ? " plain-r" : ""}` },
+        h("span", { class: "cmp-ln", text: i != null ? String(i + 1) : "" }),
+        textCell("cmp-l", i != null ? a[i] : null, ls, plainL ? "plain" : "del"),
+        r === 0 && gut ? gut : h("span", { class: "cmp-gut" }),
+        h("span", { class: "cmp-ln", text: j != null ? String(j + 1) : "" }),
+        textCell("cmp-r", j != null ? b[j] : null, rs, plainR ? "plain" : "add"));
+    });
+  }
+
+  /** Segment « diff » : un bloc pour une différence ; pour plusieurs (elles partagent une ligne),
+   *  les lignes une fois, puis une ligne de choix par différence. */
+  function segEl(s) {
+    const seg = S.view[s];
+    const node = seg.blocks.length === 1 ? blockEl(seg.blocks[0], seg) : multiEl(seg);
+    segEls.set(s, node);
+    return node;
+  }
+
+  function blockEl(k, seg) {
+    const blk = S.blocks[k];
     const keep = kept(blk.choice);
     const cls = ["cmp-block", blk.choice ? `chosen ch-${blk.choice}` : "open", keep.left ? "keep-l" : "",
       keep.right ? "keep-r" : "", k === S.current ? "current" : "", blk.ai ? `ai-${blk.ai.state}` : ""];
-    const rows = blk.rows.map(([i, j, ls, rs], r) => h("div", { class: "cmp-row" },
-      h("span", { class: "cmp-ln", text: i != null ? String(i + 1) : "" }),
-      textCell("cmp-l", i != null ? a[i] : null, ls, "del"),
-      r === 0 ? gutter(blk) : h("span", { class: "cmp-gut" }),
-      h("span", { class: "cmp-ln", text: j != null ? String(j + 1) : "" }),
-      textCell("cmp-r", j != null ? b[j] : null, rs, "add")));
-    const blockNode = h("div", { class: cls.filter(Boolean).join(" "), dataset: { index: String(k) } }, ...rows, ...blockNotes(blk));
+    const blockNode = h("div", { class: cls.filter(Boolean).join(" "), dataset: { index: String(k) } },
+      ...rowsEl(seg, gutter(blk)), ...blockNotes(blk));
     blockNode.addEventListener("click", (ev) => { if (!ev.target.closest("button")) setCurrent(k, false); });
     blockNode.addEventListener("contextmenu", (ev) => {
       ev.preventDefault();
@@ -518,15 +598,68 @@ export function createCompareView(ctx, state) {
     return blockNode;
   }
 
+  function multiEl(seg) {
+    const ks = seg.blocks;
+    const count = h("span", { class: "cmp-gut" }, h("span", { class: "cmp-count", text: String(ks.length),
+      dataset: { tip: `${plural(ks.length, "différence", "différences")} sur ces lignes : un choix pour chacune, dessous` } }));
+    const node = h("div", { class: "cmp-block multi" }, ...rowsEl(seg, count),
+      h("div", { class: "cmp-hunks" }, ...ks.map(hunkEl)));
+    // Différence visée : celle de la marque ou de la ligne de choix cliquée, sinon la sélectionnée
+    const target = (ev) => {
+      const el = ev.target.closest("mark[data-k], .cmp-hunk");
+      const k = el ? Number(el.dataset.k ?? el.dataset.index) : NaN;
+      return Number.isInteger(k) ? k : ks.includes(S.current) ? S.current : ks[0];
+    };
+    node.addEventListener("click", (ev) => { if (!ev.target.closest("button")) setCurrent(target(ev), false); });
+    node.addEventListener("contextmenu", (ev) => {
+      ev.preventDefault();
+      const k = target(ev);
+      setCurrent(k, false);
+      openMenu(blockItems(k), ev.clientX, ev.clientY);
+    });
+    return node;
+  }
+
+  /** Une différence d'un bloc qui en a plusieurs : ses boutons, ses deux passages, ses notes. */
+  function hunkEl(k) {
+    const blk = S.blocks[k];
+    const keep = kept(blk.choice);
+    const cls = ["cmp-hunk", blk.choice ? `chosen ch-${blk.choice}` : "open", keep.left ? "keep-l" : "",
+      keep.right ? "keep-r" : "", k === S.current ? "current" : ""];
+    const node = h("div", { class: cls.filter(Boolean).join(" "), dataset: { index: String(k) } },
+      h("div", { class: "cmp-hunk-line" },
+        h("span", { class: "cmp-hunk-n", text: String(k + 1) }),
+        gutter(blk),
+        h("span", { class: `cmp-hunk-text del${blk.left.trim() ? "" : " nothing"}`, text: snippet(blk, "left") }),
+        ico("arrow-right", 12),
+        h("span", { class: `cmp-hunk-text add${blk.right.trim() ? "" : " nothing"}`, text: snippet(blk, "right") })),
+      ...blockNotes(blk));
+    node.addEventListener("mouseenter", () => grid.querySelectorAll(`mark[data-k="${k}"]`).forEach((m) => m.classList.add("hl")));
+    node.addEventListener("mouseleave", () => grid.querySelectorAll(`mark[data-k="${k}"]`).forEach((m) => m.classList.remove("hl")));
+    blockEls.set(k, node);
+    return node;
+  }
+
+  /** Passage d'une différence par symbole, court, sur une ligne. */
+  function snippet(blk, side) {
+    const text = blk[side];
+    if (blk.kinds?.length === 1 && blk.kinds[0] === "indent") return `indentation${text.trim() ? "" : ` (${text.replace(/\n/g, "").length})`}`;
+    const flat = text.replace(/\s+/g, " ").trim();
+    if (!flat) return text ? "(espaces)" : "(rien)";
+    return flat.length > SNIPPET ? `${flat.slice(0, SNIPPET - 1)}…` : flat;
+  }
+
   /** Boutons de la différence, entre les deux colonnes : garder la gauche, autres choix, garder la droite. */
   function gutter(blk) {
     const keep = kept(blk.choice);
-    const hasL = blk.a1 > blk.a0;
-    const hasR = blk.b1 > blk.b0;
+    const symbol = blk.unit === "symbol";
+    const hasL = symbol ? blk.tag !== "insert" : blk.a1 > blk.a0;
+    const hasR = symbol ? blk.tag !== "delete" : blk.b1 > blk.b0;
     const keepBtn = (side, on) => {
+      const without = symbol ? "sans ce passage" : "sans ces lignes";
       const tip = side === "left"
-        ? (hasL ? "Garder la gauche" : "Garder la gauche : sans ces lignes")
-        : (hasR ? "Garder la droite" : "Garder la droite : sans ces lignes");
+        ? (hasL ? "Garder la gauche" : `Garder la gauche : ${without}`)
+        : (hasR ? "Garder la droite" : `Garder la droite : ${without}`);
       return h("button", { class: `cmp-keep ${side}${on ? " on" : ""}`, type: "button", "aria-pressed": String(on),
         "aria-label": tip, dataset: { tip: on && blk.choice === side ? `${tip} (cliquer : annuler)` : tip, kbd: side === "left" ? "Alt+←" : "Alt+→" },
         onClick: () => choose(blk.index, blk.choice === side ? null : side) }, ico(side === "left" ? "arrow-left" : "arrow-right", 13));
@@ -548,15 +681,16 @@ export function createCompareView(ctx, state) {
     const out = [];
     if (blk.choice === "text") {
       const lines = (blk.text || "").split("\n");
+      const what = blk.unit === "symbol" ? "Passage" : "Version";
       out.push(h("div", { class: `cmp-merged${blk.by === "ia" ? " ia" : ""}` },
         h("div", { class: "cmp-merged-head" },
           ico(blk.by === "ia" ? "sparkles" : "pencil", 13),
-          h("b", { text: blk.by === "ia" ? "Version fusionnée par l'IA" : "Version écrite" }),
+          h("b", { text: blk.by === "ia" ? `${what} fusionné${what === "Version" ? "e" : ""} par l'IA` : `${what} écrit${what === "Version" ? "e" : ""}` }),
           blk.reason ? h("span", { class: "cmp-reason", text: blk.reason }) : null,
           h("div", { class: "head-spacer" }),
           h("button", { class: "btn ghost sm", type: "button", onClick: () => editMerged(blk.index) }, ico("pencil", 13), "Modifier"),
           h("button", { class: "btn ghost sm", type: "button", onClick: () => choose(blk.index, null) }, ico("undo-2", 13), "Annuler")),
-        h("pre", { class: "cmp-merged-text", text: blk.text ? lines.join("\n") : "(aucune ligne)" })));
+        h("pre", { class: "cmp-merged-text", text: blk.text ? lines.join("\n") : blk.unit === "symbol" ? "(rien)" : "(aucune ligne)" })));
     } else if (blk.by === "ia" && blk.reason) {
       out.push(h("div", { class: "cmp-note ia" }, ico("sparkles", 12),
         h("span", {}, h("b", { text: `${CHOICE_TEXT[blk.choice][0].toUpperCase()}${CHOICE_TEXT[blk.choice].slice(1)} : ` }), blk.reason)));
@@ -572,30 +706,63 @@ export function createCompareView(ctx, state) {
   function blockItems(k) {
     const blk = S.blocks[k];
     const c = blk.choice;
-    const hasBoth = blk.a1 > blk.a0 && blk.b1 > blk.b0;
+    const symbol = blk.unit === "symbol";
+    const hasBoth = symbol ? blk.both : blk.a1 > blk.a0 && blk.b1 > blk.b0;
+    const shared = symbol && !blk.both && blk.tag === "replace";     // (une autre différence sur la ligne)
     const sel = window.getSelection().toString();
     const { left: a, right: b } = S.lines;
+    const copyLeft = symbol ? blk.left : a.slice(blk.a0, blk.a1).join("\n");
+    const copyRight = symbol ? blk.right : b.slice(blk.b0, blk.b1).join("\n");
+    const same = blk.same > 1 ? sameItem(k) : null;
     return [
       sel ? { label: "Copier la sélection", icon: "copy", hint: "Ctrl+C", onSelect: () => ctx.copy(sel) } : null,
       sel ? "-" : null,
       { section: `Différence ${k + 1} — ${where(blk)}` },
       { label: "Garder la gauche", icon: "arrow-left", hint: "Alt+←", checked: c === "left", onSelect: () => choose(k, "left") },
       { label: "Garder la droite", icon: "arrow-right", hint: "Alt+→", checked: c === "right", onSelect: () => choose(k, "right") },
-      { label: "Garder les deux : gauche puis droite", checked: c === "left_right", disabled: !hasBoth, onSelect: () => choose(k, "left_right") },
-      { label: "Garder les deux : droite puis gauche", checked: c === "right_left", disabled: !hasBoth, onSelect: () => choose(k, "right_left") },
+      { label: symbol ? "Garder les deux lignes : gauche puis droite" : "Garder les deux : gauche puis droite",
+        checked: c === "left_right", disabled: !hasBoth, hint: shared ? "ligne partagée" : "", onSelect: () => choose(k, "left_right") },
+      { label: symbol ? "Garder les deux lignes : droite puis gauche" : "Garder les deux : droite puis gauche",
+        checked: c === "right_left", disabled: !hasBoth, onSelect: () => choose(k, "right_left") },
+      same ? "-" : null,
+      same,
       "-",
       store.ollama ? { label: blk.by === "ia" ? "Redemander à l'IA" : "Fusionner avec l'IA", icon: "sparkles",
         disabled: !!S.resolving, onSelect: () => resolve([k]) } : null,
-      { label: c === "text" ? "Modifier la version fusionnée…" : "Écrire la version fusionnée…", icon: "pencil", onSelect: () => editMerged(k) },
+      { label: symbol ? (c === "text" ? "Modifier le passage fusionné…" : "Écrire le passage fusionné…")
+        : c === "text" ? "Modifier la version fusionnée…" : "Écrire la version fusionnée…", icon: "pencil", onSelect: () => editMerged(k) },
       c ? { label: "Annuler le choix", icon: "undo-2", onSelect: () => choose(k, null) } : null,
       "-",
-      { label: "Copier la gauche", icon: "copy", disabled: blk.a1 === blk.a0, onSelect: () => ctx.copy(a.slice(blk.a0, blk.a1).join("\n")) },
-      { label: "Copier la droite", icon: "copy", disabled: blk.b1 === blk.b0, onSelect: () => ctx.copy(b.slice(blk.b0, blk.b1).join("\n")) },
+      { label: symbol ? "Copier le passage de gauche" : "Copier la gauche", icon: "copy", disabled: !copyLeft, onSelect: () => ctx.copy(copyLeft) },
+      { label: symbol ? "Copier le passage de droite" : "Copier la droite", icon: "copy", disabled: !copyRight, onSelect: () => ctx.copy(copyRight) },
     ].filter(Boolean);
+  }
+
+  /** Même choix pour les différences identiques (un nom renommé partout, une valeur changée à plusieurs endroits). */
+  function sameItem(k) {
+    const blk = S.blocks[k];
+    const what = blk.unit === "symbol" ? ` : ${snippet(blk, "left")} → ${snippet(blk, "right")}` : "";
+    const pick = (choice) => async () => apply(await api.compare_choose_same(k, choice, ""));
+    return {
+      label: `Les ${blk.same} différences identiques${what}`, icon: "list-checks",
+      submenu: [
+        { section: `${plural(blk.same, "différence", "différences")}, même choix` },
+        { label: "Garder la gauche", icon: "arrow-left", onSelect: pick("left") },
+        { label: "Garder la droite", icon: "arrow-right", onSelect: pick("right") },
+        blk.unit !== "symbol" || blk.both ? { label: "Garder les deux : gauche puis droite", onSelect: pick("left_right") } : null,
+        "-",
+        { label: "Annuler leurs choix", icon: "undo-2", onSelect: pick(null) },
+      ].filter(Boolean),
+    };
   }
 
   function where(blk) {
     const range = (s, e) => (e - s === 1 ? `ligne ${s + 1}` : `lignes ${s + 1} à ${e}`);
+    if (blk.unit === "symbol") {
+      if (blk.tag === "insert") return `seulement à droite, ${range(blk.b0, blk.b1)}`;
+      if (blk.tag === "delete") return `seulement à gauche, ${range(blk.a0, blk.a1)}`;
+      return range(blk.a0, blk.a1);
+    }
     if (blk.a0 === blk.a1) return `seulement à droite`;
     if (blk.b0 === blk.b1) return `seulement à gauche`;
     return range(blk.a0, blk.a1);
@@ -603,16 +770,23 @@ export function createCompareView(ctx, state) {
 
   function setCurrent(k, scrollTo = true) {
     if (k < 0 || k >= S.blocks.length) return;
-    blockEls.get(S.current)?.classList.remove("current");
     S.current = k;
     if (!blockEls.has(k)) {          // au-delà des lignes affichées
       S.rowLimit = Infinity;
       renderGrid();
     }
-    const node = blockEls.get(k);
-    node?.classList.add("current");
-    if (scrollTo) node?.scrollIntoView({ block: "center", behavior: "smooth" });
+    markCurrent();
+    if (scrollTo) blockEls.get(k)?.scrollIntoView({ block: "center", behavior: "smooth" });
     renderBar();
+  }
+
+  /** Différence sélectionnée : son bloc (ou sa ligne de choix) et ses marques. */
+  function markCurrent() {
+    grid.querySelectorAll(".cmp-block.current, .cmp-hunk.current, mark.cur").forEach((el) => el.classList.remove("current", "cur"));
+    blockEls.get(S.current)?.classList.add("current");
+    if (segOf.has(S.current) && S.view[segOf.get(S.current)].blocks.length > 1) {
+      grid.querySelectorAll(`mark[data-k="${S.current}"]`).forEach((m) => m.classList.add("cur"));
+    }
   }
 
   /** Différence suivante (1) ou précédente (-1) ; la première, depuis le haut de l'affichage. */
@@ -646,7 +820,12 @@ export function createCompareView(ctx, state) {
   function updateBlock(blk) {
     if (!S.blocks[blk.index] || S.blocks[blk.index].sig !== blk.sig) return;
     S.blocks[blk.index] = blk;
-    blockEls.get(blk.index)?.replaceWith(blockEl(blk.index));
+    const s = segOf.get(blk.index);
+    const node = segEls.get(s);
+    if (node) {
+      node.replaceWith(segEl(s));
+      markCurrent();
+    }
     renderBar();
     renderAi();
   }
@@ -671,11 +850,30 @@ export function createCompareView(ctx, state) {
     ];
   }
 
+  /** Par ligne, par symbole ou automatique ; commentaires ignorés (par symbole). */
+  function unitItems() {
+    const unit = S.options.unit || "auto";
+    const symbol = S.unit === "symbol";
+    const auto = both() ? ` (${symbol ? "par symbole" : "par ligne"})` : "";
+    return [
+      { section: "Comparer" },
+      { label: `${UNITS.auto}${unit === "auto" ? auto : ""}`, checked: unit === "auto", hint: "symboles pour le code",
+        onSelect: () => setOptions({ ...S.options, unit: "auto" }) },
+      { label: UNITS.line, checked: unit === "line", onSelect: () => setOptions({ ...S.options, unit: "line" }) },
+      { label: UNITS.symbol, checked: unit === "symbol", hint: "espaces ignorés", onSelect: () => setOptions({ ...S.options, unit: "symbol" }) },
+      { label: "Ignorer les commentaires", checked: !!S.options.comments, disabled: !symbol, hint: symbol ? "" : "par symbole",
+        onSelect: () => setOptions({ ...S.options, comments: !S.options.comments }) },
+    ];
+  }
+
   function optionItems() {
     const has = !!(S.sides.left || S.sides.right);
+    const symbol = S.unit === "symbol";
     return [
-      { section: "Comparaison" },
-      { label: "Ignorer les espaces", checked: S.options.space, onSelect: () => setOptions({ ...S.options, space: !S.options.space }) },
+      ...unitItems(),
+      "-",
+      { label: "Ignorer les espaces", checked: S.options.space, hint: symbol ? "dans les chaînes" : "",
+        onSelect: () => setOptions({ ...S.options, space: !S.options.space }) },
       { label: "Ignorer les majuscules", checked: S.options.case, onSelect: () => setOptions({ ...S.options, case: !S.options.case }) },
       { label: "Afficher les lignes identiques", checked: S.showSame, onSelect: () => { S.showSame = !S.showSame; renderGrid(); } },
       "-",
@@ -687,6 +885,7 @@ export function createCompareView(ctx, state) {
 
   /** Version fusionnée écrite à la main (les deux versions rappelées au-dessus). */
   function editMerged(k) {
+    if (S.blocks[k].unit === "symbol") { editPassage(k); return; }
     const blk = S.blocks[k];
     const left = S.lines.left.slice(blk.a0, blk.a1);
     const right = S.lines.right.slice(blk.b0, blk.b1);
@@ -704,6 +903,47 @@ export function createCompareView(ctx, state) {
       subtitle: "Ce texte remplace la différence dans le résultat.",
       width: 860,
       body: h("div", { class: "cmp-edit" }, h("div", { class: "cmp-refs" }, ref("Gauche", left), ref("Droite", right)), area),
+      actions: [
+        { label: "Annuler", kind: "ghost" },
+        { label: "Valider", icon: "check", kind: "primary", onClick: () => { choose(k, "text", area.value); } },
+      ],
+    });
+  }
+
+  /** Par symbole : le passage fusionné, qui remplace celui de gauche ; au-dessus, les lignes des deux
+   *  côtés, passage marqué. */
+  function editPassage(k) {
+    const blk = S.blocks[k];
+    const seg = S.view[segOf.get(k)];
+    const current = blk.choice === "text" ? blk.text
+      : blk.choice === "right" ? blk.right
+        : blk.choice === "left_right" ? `${blk.left}\n${blk.right}`
+          : blk.choice === "right_left" ? `${blk.right}\n${blk.left}` : blk.left;
+    const ref = (title, side) => {
+      const col = side === "left" ? 0 : 1;
+      const [l0, l1] = side === "left" ? [blk.a0, blk.a1] : [blk.b0, blk.b1];
+      const pre = h("pre", { class: `cmp-ref-text ${side === "left" ? "del" : "add"}` });
+      if (l1 <= l0) pre.textContent = "(aucune ligne : le passage n'existe que de l'autre côté)";
+      for (let i = l0; i < l1; i++) {
+        const text = S.lines[side][i];
+        const spans = (seg?.rows.find((row) => row[col] === i)?.[col + 2] || []).filter((sp) => sp[2] === k);
+        let pos = 0;
+        for (const [s, e] of spans) {
+          pre.append(text.slice(pos, s), h("mark", { class: e === s ? "caret" : "", text: text.slice(s, e) }));
+          pos = Math.max(pos, e);
+        }
+        pre.append(text.slice(pos), i < l1 - 1 ? "\n" : "");
+      }
+      return h("div", { class: "cmp-ref-side" }, h("div", { class: "cmp-ref-title", text: title }), pre);
+    };
+    const area = h("textarea", { class: "field mono cmp-edit-area short", spellcheck: "false", autofocus: true,
+      "aria-label": "Passage fusionné" });
+    area.value = current;
+    openModal({
+      title: `Différence ${k + 1} : passage fusionné`,
+      subtitle: "Ce texte remplace le passage marqué à gauche (pas la ligne entière) dans le résultat.",
+      width: 860,
+      body: h("div", { class: "cmp-edit" }, h("div", { class: "cmp-refs" }, ref("Gauche", "left"), ref("Droite", "right")), area),
       actions: [
         { label: "Annuler", kind: "ghost" },
         { label: "Valider", icon: "check", kind: "primary", onClick: () => { choose(k, "text", area.value); } },

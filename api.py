@@ -858,6 +858,9 @@ class Api:
     def compare_choose(self, index, choice, text=""):
         return self._compare(lambda c: c.choose(int(index), str(choice) if choice else None, str(text or "")))
 
+    def compare_choose_same(self, index, choice, text=""):
+        return self._compare(lambda c: c.choose_same(int(index), str(choice) if choice else None, str(text or "")))
+
     def compare_choose_all(self, choice, only_open=False):
         return self._compare(lambda c: c.choose_all(str(choice) if choice else None, bool(only_open)))
 

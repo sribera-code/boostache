@@ -314,5 +314,153 @@ class ServiceTest(unittest.TestCase):
         self.assertIn("deux textes", svc.explain()["error"])
 
 
+CODE_L = """int Cart::total(const std::vector<Item>& items, int qty) {
+    int total = 0;
+    for (int i = 0; i <= items.size(); ++i) {
+        total += items[i].price * qty;
+    }
+    if (!open(host, 3000)) { log("x"); return 0; }
+    return total;
+}
+"""
+CODE_R = """int Cart::total(const std::vector<Item>& items, int quantity) {
+    int total = 0;
+    for (size_t i = 0; i < items.size(); ++i) {
+        total += items[i].price * quantity;
+    }
+    if (!open(host, 5000)) {
+        log("x");
+        return 0;
+    }
+    return total;
+}
+"""
+
+
+class SymbolServiceTest(unittest.TestCase):
+    """Comparer par symbole : choisi d'office pour du code, différences dans une ligne, fusion."""
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp(dir=_env.DATA))
+        patcher = mock.patch.object(compare, "STATE_FILE", self.dir / "compare.json")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.left, self.right = self.dir / "cart v1.cpp", self.dir / "cart v2.cpp"
+        self.left.write_text(CODE_L, encoding="utf-8")
+        self.right.write_text(CODE_R, encoding="utf-8")
+        self.calls = []
+
+    def service(self):
+        chat = SimpleNamespace(available=True, models=["gemma4:e4b"], models_error="", failure=str, check=lambda: None)
+        self.bridge = Bridge()
+        svc = compare.CompareService(self.bridge, chat)
+        self.addCleanup(svc.shutdown)
+        return svc
+
+    def loaded(self):
+        svc = self.service()
+        svc.load("left", str(self.left))
+        return svc, svc.load("right", str(self.right))
+
+    def passages(self, state):
+        return [(b["left"], b["right"]) for b in state["blocks"]]
+
+    def test_code_files_compared_by_symbol(self):
+        svc, state = self.loaded()
+        self.assertEqual((state["unit"], state["language"]), ("symbol", "C++"))
+        self.assertEqual(self.passages(state), [("qty", "quantity"), ("int", "size_t"), ("<=", "<"), ("qty", "quantity"),
+                                                ("3000", "5000")])
+        # « int » et « <= » partagent une ligne : un seul segment, deux différences ; le reformatage
+        # du « if » n'en est pas une (lignes de mise en page)
+        diffs = [seg for seg in state["view"] if seg["t"] == "diff"]
+        self.assertIn([1, 2], [seg["blocks"] for seg in diffs])
+        self.assertTrue(any(seg["t"] == "layout" for seg in state["view"]))
+        self.assertEqual(state["stats"]["unit"], "symbol")
+        self.assertNotIn("m0", state["blocks"][0])           # (détails de la fusion gardés côté Python)
+        self.assertEqual(state["blocks"][0]["same"], 2)       # qty → quantity, deux fois
+
+    def test_unit_option(self):
+        svc, _ = self.loaded()
+        state = svc.set_options({"unit": "line"})
+        self.assertEqual((state["unit"], len(state["blocks"])), ("line", 3))
+        state = svc.set_options({"unit": "auto"})
+        self.assertEqual(state["unit"], "symbol")
+        # Texte collé : par symbole d'office s'il ressemble nettement à du code des deux côtés
+        svc.set_text("left", "Bonjour,\nà demain.\n")
+        self.assertEqual(svc.set_text("right", "Bonjour,\nà lundi.\n")["unit"], "line")
+        svc.set_text("left", CODE_L)
+        self.assertEqual(svc.set_text("right", CODE_R)["unit"], "symbol")
+
+    def test_choices_inside_a_line_and_result(self):
+        svc, _ = self.loaded()
+        svc.choose(1, "right")          # int → size_t
+        svc.choose(2, "left")           # <= gardé
+        svc.choose_same(0, "right")     # qty → quantity, les deux
+        result = svc.result()
+        self.assertEqual(result["unresolved"], 1)
+        self.assertIn("for (size_t i = 0; i <= items.size(); ++i) {", result["text"])
+        self.assertIn("int quantity) {", result["text"])
+        self.assertIn("* quantity;", result["text"])
+        self.assertIn('if (!open(host, 3000)) { log("x"); return 0; }', result["text"])   # mise en page de gauche
+        self.assertIn("5000", svc.result("right")["text"])
+
+    def test_both_refused_when_line_is_shared(self):
+        svc, _ = self.loaded()
+        with self.assertRaises(compare.UserError):
+            svc.choose(1, "left_right")
+        self.assertEqual(svc.choose(3, "left_right")["choice"], "left_right")
+        self.assertIn("total += items[i].price * qty;\n        total += items[i].price * quantity;", svc.result()["text"])
+
+    def test_swap_mirrors_choices(self):
+        svc, _ = self.loaded()
+        svc.choose(1, "right")
+        svc.choose(4, "left")
+        state = svc.swap()
+        self.assertEqual([b["choice"] for b in state["blocks"]], [None, "left", None, None, "right"])
+
+    def test_comments_ignored(self):
+        self.left.write_text("// total (TODO)\nint t = 1;\n", encoding="utf-8")
+        self.right.write_text("// total\nint t = 2;\n", encoding="utf-8")
+        svc, state = self.loaded()
+        self.assertEqual(len(state["blocks"]), 2)
+        state = svc.set_options({"unit": "auto", "comments": True})
+        self.assertEqual(self.passages(state), [("1", "2")])
+        svc.shutdown()
+        self.assertEqual(self.service().state()["options"]["comments"], True)    # gardé d'une session à l'autre
+
+    def test_ai_resolve_passage(self):
+        svc, _ = self.loaded()
+
+        def fake_chat(label, priority=0, **kw):
+            self.calls.append(kw)
+            return reply(json.dumps({"raison": "Type non signé.", "choix": "fusion", "texte": "std::size_t"}))
+
+        with mock.patch.object(compare.llm, "chat", side_effect=fake_chat):
+            self.assertTrue(svc.resolve([1])["ok"])
+            self.assertTrue(self.bridge.done.wait(5))
+        block = svc.state()["blocks"][1]
+        self.assertEqual((block["choice"], block["text"], block["by"]), ("text", "std::size_t", "ia"))
+        self.assertIn("for (std::size_t i = 0;", svc.result()["text"])
+        prompt = self.calls[0]["messages"][-1]["content"]
+        self.assertIn("Gauche : `int`", prompt)
+        self.assertIn("Droite : `size_t`", prompt)
+        self.assertNotIn("les_deux", self.calls[0]["format"]["properties"]["choix"]["enum"])   # ligne partagée
+
+    def test_explain_lists_passages(self):
+        svc, _ = self.loaded()
+
+        def fake_chat(label, priority=0, **kw):
+            self.calls.append(kw)
+            return iter([chunk("- Délai : différence 5.")])
+
+        with mock.patch.object(compare.llm, "chat", side_effect=fake_chat):
+            self.assertTrue(svc.explain()["ok"])
+            self.assertTrue(self.bridge.done.wait(5))
+        content = self.calls[0]["messages"][-1]["content"]
+        self.assertIn("Comparaison symbole à symbole (C++)", content)
+        self.assertIn("## Différence 5 — ligne 6 à gauche, ligne 6 à droite (nombre)", content)
+        self.assertIn("Gauche : `3000`", content)
+
+
 if __name__ == "__main__":
     unittest.main()
