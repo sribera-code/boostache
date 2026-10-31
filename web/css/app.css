@@ -3348,11 +3348,12 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
   cursor: pointer;
   transition: background .12s, border-color .12s;
 }
-/* Lus / non lus : non lus sur fond plus clair, filet vert, texte en gras ; lus en gris */
-.ml-row.unread { background: rgba(255, 255, 255, .045); }
+/* Lus / non lus : non lus sur fond plus clair, texte blanc en gras ; lus en gris, sans graisse */
+.ml-row.unread { border-color: var(--line-3); background: rgba(255, 255, 255, .065); }
 .ml-row:not(.unread) .ml-subject > span:first-child { color: var(--fg-2); }
-.ml-row.unread .ml-subject > span:first-child { font-weight: 600; }
-.ml-row.unread .ml-when { color: var(--fg); font-weight: 600; }
+.ml-row.unread .ml-subject > span:first-child { color: #fff; font-weight: 650; }
+.ml-row.unread .ml-snippet { color: var(--fg-2); }
+.ml-row.unread .ml-when { color: #fff; font-weight: 650; }
 .ml-row:hover { border-color: var(--line-3); background: var(--bg-3); }
 .ml-row.open { border-color: var(--line-3); background: var(--bg-4); }
 .ml-row.selected { background: rgba(158, 193, 255, .08); }
@@ -3360,7 +3361,8 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .ml-meta { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 22px; }
 /* Expéditeur en tête de ligne, un peu plus grand que l'objet qui le suit */
 .ml-from { flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; color: var(--fg); font-size: 12.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
-.ml-row.unread .ml-from { font-weight: 700; }
+.ml-row.unread .ml-from { color: #fff; font-weight: 700; }
+.ml-row:not(.unread) .ml-from { color: var(--fg-2); font-weight: 400; }
 .ml-when { flex-shrink: 0; color: var(--fg-3); font-size: 11px; }
 .ml-sum.icon-btn { flex-shrink: 0; width: 22px; height: 22px; margin: -2px -2px -2px 0; opacity: 0; }
 .ml-row:hover .ml-sum, .ml-row:focus-within .ml-sum, .ml-sum.busy { opacity: 1; }
@@ -3374,7 +3376,6 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .ml-row.acting { opacity: .55; pointer-events: none; transition: opacity .15s; }
 .ml-row.removing { opacity: .3; }
 .ml-subject { flex: 1; min-width: 0; overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
-.ml-row.unread .ml-subject > span:first-child { color: var(--fg); }
 .ml-snippet { color: var(--fg-3); }
 /* Résumé : bloc teinté (bleu) avec l'icône de l'assistant, distinct du sujet et de
    l'extrait quel que soit le fond de la ligne (survol, ouverte, sélectionnée) ;
