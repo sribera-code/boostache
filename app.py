@@ -376,12 +376,6 @@ class BoostacheApp:
     def _on_before_show(self, window):
         # Thread de l'interface : on peut lire le handle natif sans risque
         try:
-            # ✕ range déjà dans le tray : Réduire, qui ferait pareil, est grisé
-            # (Windows affiche Réduire et Agrandir ensemble)
-            window.native.MinimizeBox = False
-        except Exception:
-            pass
-        try:
             self._hwnd = int(window.native.Handle.ToInt64())
         except Exception:
             self._hwnd = 0
@@ -437,7 +431,8 @@ class BoostacheApp:
         return False
 
     def _on_minimized(self):
-        # Réduite malgré tout (Win+↓…) = rangée dans le tray (restauration native au prochain affichage)
+        # Réduite (bouton Réduire, Win+↓…) = rangée dans le tray, comme avec ✕ (restauration native
+        # au prochain affichage)
         self._was_minimized = True
         self.hide()
 
