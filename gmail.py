@@ -437,7 +437,9 @@ OVERVIEW_SYSTEM = (
 )
 OVERVIEW_SCHEMA = {"type": "object", "properties": {"overview": {"type": "string"}}, "required": ["overview"]}
 DIGEST_MAX = 50            # fils résumés au plus : une page de Gmail
-DIGEST_SCOPES = ("current", "selection", "unread", "all")    # current : l'e-mail ouvert
+DIGEST_SCOPES = ("current", "selection", "unread", "today", "all")    # current : l'e-mail ouvert
+# Date d'un e-mail de la liste : Gmail n'affiche que l'heure pour ceux du jour (« 14:32 », « 2:32 PM »)
+TODAY_RE = re.compile(r"\d{1,2}(?::| ?h ?)\d{2}(?:\s?[AaPp]\.?[Mm]\.?)?")
 CURRENT_VIEW = "E-mail ouvert"
 LIST_WAIT = 8              # attente de la liste à l'ouverture de la boîte (secondes)
 LIST_HASH_RE = re.compile(r"#[^\"'\\<>\s]{1,200}")
@@ -485,6 +487,11 @@ def _transcript(subject: str, messages: list[dict], me: str = "Moi") -> str:
         blocks.append(block)
     head = f"Fil d'e-mails « {subject} »" if subject else "Fil d'e-mails"
     return f"{head} (du plus ancien au plus récent) :\n\n" + "\n\n".join(reversed(blocks))
+
+
+def _today(row: dict) -> bool:
+    """E-mail de la liste reçu aujourd'hui (sa date affichée n'est qu'une heure)."""
+    return bool(TODAY_RE.fullmatch((row.get("when") or "").strip()))
 
 
 def _fold(text: str) -> str:
@@ -550,11 +557,12 @@ class GmailPane(WebPane):
 
     def unread_from_title(self, title: str) -> int:
         # « Boîte de réception (3) - moi@gmail.com - Gmail » ; en lecture d'un
-        # e-mail le titre est son objet : on garde le dernier compte connu
-        m = UNREAD_RE.search(title)
-        if m:
-            return int(re.sub(r"\D", "", m.group(1)) or 0)
-        return 0 if title.startswith(INBOX_TITLES) else self._unread
+        # e-mail le titre est son objet, dans un libellé son nom : on garde le dernier
+        # compte connu (« Information (2816212) concernant… » n'est pas un nombre de non-lus)
+        if not title.startswith(INBOX_TITLES):
+            return self._unread
+        m = UNREAD_RE.search(title.split(" - ")[0])
+        return int(re.sub(r"\D", "", m.group(1)) or 0) if m else 0
 
     def insert(self, text: str) -> dict:
         """Remplace le brouillon de la réponse (sans l'envoyer), en gardant signature
@@ -745,6 +753,14 @@ class GmailPane(WebPane):
     def digest_stop(self):
         self._digest_stop.set()
 
+    def digest_counts(self) -> dict:
+        """E-mails non lus et du jour dans la liste affichée dans Gmail (menu du tray) :
+        None tant qu'aucune liste n'a été relevée ; busy pendant un résumé."""
+        rows = self._mail["rows"] if self._mail["view"] else None
+        return {"unread": None if rows is None else sum(r["unread"] for r in rows),
+                "today": None if rows is None else sum(r["today"] for r in rows),
+                "busy": self._busy.locked()}
+
     # ─────────────────────────────────────────
     #  Questions sur les e-mails (événement gmail:qa)
     # ─────────────────────────────────────────
@@ -890,7 +906,8 @@ class GmailPane(WebPane):
                 d["state"], d["error"] = ("cancelled", "") if listing.get("cancelled") else ("error", listing.get("error", ""))
                 return
             rows = [r for r in listing["rows"] if scope in ("all", "current")
-                    or (scope == "unread" and r.get("unread")) or (scope == "selection" and r.get("selected"))]
+                    or (scope == "unread" and r.get("unread")) or (scope == "selection" and r.get("selected"))
+                    or (scope == "today" and _today(r))]
             m = PAGER_TOTAL_RE.search(listing.get("pager") or "")
             d["view"] = listing.get("view") or "Gmail"
             base = re.sub(r"/p\d+$", "", listing.get("base") or "")
@@ -968,6 +985,7 @@ class GmailPane(WebPane):
                     continue
                 row = {k: str(r.get(k) or "")[:500] for k in ROW_FIELDS}
                 row["unread"], row["selected"] = bool(r.get("unread")), bool(r.get("selected"))
+                row["today"] = _today(row)
                 rows.append(row)
             base = str(msg.get("base") or "")
             mail.update(rows=rows, view=str(msg.get("view") or "Gmail")[:200],
@@ -1129,7 +1147,8 @@ class GmailPane(WebPane):
             head = " — ".join(x for x in (item["from"], f"« {item['subject']} »" if item["subject"] else "", item["when"]) if x)
             lines.append(f"{n}. {'[non lu] ' if item['unread'] else ''}{head}\n   {item['summary']}"
                          + (f"\n   À faire : {item['action']}" if item.get("action") else ""))
-        which = {"unread": "Les e-mails non lus de", "selection": "Les e-mails choisis par l'utilisateur dans"}
+        which = {"unread": "Les e-mails non lus de", "today": "Les e-mails reçus aujourd'hui dans",
+                 "selection": "Les e-mails choisis par l'utilisateur dans"}
         more = f" (les {len(items)} plus récents sur {listed})" if listed > len(items) else ""
         return (f"{which.get(scope, 'Les e-mails de')} « {view} »{more}, du plus récent au plus ancien :\n\n"
                 + "\n".join(lines))

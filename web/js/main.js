@@ -345,6 +345,8 @@ function setupPalette() {
   ctx.reveal = reveal;
   // Rappel donné (reminders.py) : aussi dit à voix haute et en notification Windows
   on("reminders:fired", ({ reminder, title }) => toast(`${title} : ${reminder.text}`, "info", 12000));
+  // Menu du tray (résumer les e-mails de Gmail…) : la section, et ce qu'elle doit faire
+  on("reveal", ({ section, target }) => reveal(section, target));
 }
 
 function shortcut(key) {

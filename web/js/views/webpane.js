@@ -5,7 +5,7 @@ import { h, plural } from "../dom.js";
 import { renderMarkdown } from "../markdown.js";
 import { ico, iconButton, openMenu, openMenuBelow, toast } from "../ui.js";
 import { createComposer, conversationSpeech } from "../composer.js";
-import { createMailList, importanceIcon } from "./maillist.js";
+import { actionSentence, createMailList, importanceIcon } from "./maillist.js";
 
 const WHATSAPP = {
   id: "whatsapp", title: "WhatsApp", icon: "message-circle",
@@ -141,6 +141,8 @@ function createPaneView(ctx, state, cfg) {
     onShow() { active = true; sync(); },
     onHide() { active = false; sync(); },
     focus() { lastSent = ""; sync(true); },
+    // Menu du tray : résumer les e-mails non lus ou du jour
+    reveal(target) { if (target?.action === "digest") assist.requestDigest(target.scope); },
   };
 }
 
@@ -185,10 +187,10 @@ function createAssistBar(ctx, state, cfg) {
   const improveBtn = h("button", { class: "pane-chip pc-main", type: "button", onClick: () => improve() },
     ico("pencil-line", 14), "Améliorer le brouillon");
   // Résumer, sans menu : un e-mail ouvert, lui seul ; sinon un bouton par choix sur
-  // la liste affichée dans Gmail — les non-lus, tous, la sélection (s'il y en a une,
-  // en dernier : les autres ne bougent pas)
+  // la liste affichée dans Gmail — les non-lus, ceux du jour, tous, la sélection (s'il
+  // y en a une, en dernier : les autres ne bougent pas)
   const digestBtns = cfg.digest ? Object.fromEntries([["current", "scroll-text"], ["unread", "mail"],
-    ["all", "scroll-text"], ["selection", "text-select"]].map(([scope, icon]) => [scope, h("button",
+    ["today", "calendar-clock"], ["all", "scroll-text"], ["selection", "text-select"]].map(([scope, icon]) => [scope, h("button",
       { class: "pane-chip pc-main", type: "button", onClick: () => startDigest(scope, null, scopeCount(scope)) },
       ico(icon, 14), h("span"))])) : {};
   const modelName = h("span", { class: "name" });
@@ -277,6 +279,7 @@ function createAssistBar(ctx, state, cfg) {
     const rows = S.mail.rows || [];
     if (scope === "unread") return rows.filter((r) => r.unread).length;
     if (scope === "selection") return rows.filter((r) => r.selected).length;
+    if (scope === "today") return rows.filter((r) => r.today).length;
     return scope === "all" ? Math.min(rows.length, DIGEST_MAX) : 0;
   }
 
@@ -287,6 +290,7 @@ function createAssistBar(ctx, state, cfg) {
     const all = (S.mail.rows || []).length;
     const unread = scopeCount("unread");
     const selected = scopeCount("selection");
+    const today = scopeCount("today");
     const where = S.mail.view ? `de « ${S.mail.view} »` : "de la liste affichée dans Gmail";
     const set = (scope, shown, label, tip) => {
       const btn = digestBtns[scope];
@@ -301,6 +305,10 @@ function createAssistBar(ctx, state, cfg) {
     set("unread", !reply && (!known || unread > 0),
       unread > 1 ? `Résumer les ${unread} non lus` : unread ? "Résumer l'e-mail non lu" : "Résumer les non lus",
       `Lit les e-mails non lus ${where}, sans les marquer comme lus, et fait le point`);
+    set("today", !reply && (!known || today > 0),
+      today > 1 ? `Résumer les ${today} e-mails d'aujourd'hui` : today ? "Résumer l'e-mail d'aujourd'hui"
+        : "Résumer les e-mails d'aujourd'hui",
+      `Lit les e-mails reçus aujourd'hui ${where}, sans les marquer comme lus, et fait le point`);
     set("all", !reply && (!known || all > 0),
       all > DIGEST_MAX ? `Résumer les ${DIGEST_MAX} premiers` : "Résumer tous les e-mails",
       `Lit tous les e-mails ${where}${all > DIGEST_MAX ? ` (les ${DIGEST_MAX} premiers)` : ""}, `
@@ -633,7 +641,20 @@ function createAssistBar(ctx, state, cfg) {
     if (scope === "current") return "Résumer cet e-mail";
     if (scope === "selection") return n > 1 ? `Résumer les ${n} e-mails sélectionnés` : "Résumer l'e-mail sélectionné";
     if (scope === "unread") return n === 1 ? "Résumer l'e-mail non lu" : n ? `Résumer les ${n} e-mails non lus` : "Résumer les e-mails non lus";
+    if (scope === "today") return n === 1 ? "Résumer l'e-mail d'aujourd'hui" : n ? `Résumer les ${n} e-mails d'aujourd'hui` : "Résumer les e-mails d'aujourd'hui";
     return n === 1 ? "Résumer l'e-mail" : n ? `Résumer les ${n} e-mails` : "Résumer les e-mails";
+  }
+
+  /** Menu du tray (section affichée par main.js) : lancé tout de suite, ou dès que
+   *  Gmail est chargé ; un résumé en cours n'est pas interrompu. */
+  let pendingDigest = null;
+  function requestDigest(scope) {
+    pendingDigest = null;
+    if (!(scope in digestBtns) || scope === "current" || scope === "selection") return;
+    if (!S.ready) { pendingDigest = scope; return; }
+    if (!idle()) { toast("Un résumé ou une réponse est déjà en cours.", "error"); return; }
+    if (!model()) { toast("Aucun modèle Ollama installé.", "error"); return; }
+    startDigest(scope, null, scopeCount(scope));
   }
 
   async function startDigest(scope, ids = null, count = 0) {
@@ -662,6 +683,7 @@ function createAssistBar(ctx, state, cfg) {
     if (!d.total || d.scope === "current") return "";
     if (d.scope === "selection") return plural(d.total, "e-mail sélectionné", "e-mails sélectionnés");
     if (d.scope === "unread") return plural(d.total, "non lu", "non lus");
+    if (d.scope === "today") return plural(d.total, "e-mail aujourd'hui", "e-mails aujourd'hui");
     return d.listed > d.total ? `${d.total} plus récents sur ${d.listed.toLocaleString("fr-FR")}`
       : plural(d.total, "e-mail", "e-mails");
   }
@@ -669,6 +691,7 @@ function createAssistBar(ctx, state, cfg) {
   function digestEmpty(d) {
     const where = `dans « ${d.view || "Gmail"} »`;
     if (d.scope === "selection") return "Aucun e-mail sélectionné dans Gmail.";
+    if (d.scope === "today") return `Aucun e-mail reçu aujourd'hui ${where}.`;
     return d.scope === "unread" ? `Aucun e-mail non lu ${where}.` : `Aucun e-mail ${where}.`;
   }
 
@@ -809,7 +832,7 @@ function createAssistBar(ctx, state, cfg) {
   }
 
   /** Un fil, tel qu'il est lu : son résumé suffit, sans expéditeur ni objet. */
-  const itemSpeech = (i) => [i.summary, i.action ? `À faire : ${i.action}` : ""].filter(Boolean).join("\n");
+  const itemSpeech = (i) => [i.summary, actionSentence(i.action)].filter(Boolean).join("\n");
   /** Un fil, tel qu'il est copié : avec expéditeur et objet. */
   const itemCopy = (i) => `${i.from || "Expéditeur inconnu"}${i.subject ? ` : ${i.subject}` : ""}.\n${itemSpeech(i)}`;
 
@@ -863,7 +886,7 @@ function createAssistBar(ctx, state, cfg) {
     for (const i of d.items) {
       lines.push(`• ${i.unread ? "[non lu] " : ""}${i.from} — ${i.subject || "(sans objet)"}${i.when ? ` (${i.when})` : ""}`);
       if (i.summary) lines.push(`  ${i.summary}`);
-      if (i.action) lines.push(`  → À faire : ${i.action}`);
+      if (i.action) lines.push(`  → ${actionSentence(i.action)}`);
     }
     return lines.join("\n");
   }
@@ -895,7 +918,11 @@ function createAssistBar(ctx, state, cfg) {
 
   return {
     el,
-    setReady(ready) { S.ready = ready; refresh(); },
+    setReady(ready) {
+      S.ready = ready;
+      refresh();
+      if (ready && pendingDigest) requestDigest(pendingDigest);
+    },
     setContext(context) { S.context = { reply: !!context?.reply, improve: !!context?.improve }; refresh(); },
     // Pour la liste des e-mails (maillist.js)
     setListShown(fn) { listShown = fn; },
@@ -906,5 +933,6 @@ function createAssistBar(ctx, state, cfg) {
     blocked: () => !S.ready ? `${cfg.title} n'est pas chargé.` : !model() ? "Aucun modèle Ollama installé."
       : "Un résumé est déjà en cours.",
     runDigest: (scope, ids) => startDigest(scope, ids),
+    requestDigest,
   };
 }

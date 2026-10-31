@@ -33,7 +33,7 @@ from minutes import MinutesService
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from rag import RagService
-from recorder import FORMATS as AUDIO_FORMATS, SOURCES as AUDIO_SOURCES, RecorderService
+from recorder import WINDOW_MINUTES, FORMATS as AUDIO_FORMATS, SOURCES as AUDIO_SOURCES, RecorderService
 from reminders import ReminderService
 from search import SearchService
 import speech
@@ -341,17 +341,24 @@ class BoostacheApp:
         rec = self.recorder
         if rec.stop():
             return
-        live = rec.next_live()
+        live, window = rec.next_live(), rec.next_window()
         res = rec.start(rec.source(), settings.get("audio_device") or "",
-                        settings.get("audio_mic_device") or "", live)
+                        settings.get("audio_mic_device") or "", live, window)
         session = res.get("session")
         if not session:
             self._notify("Enregistreur", res.get("error") or "Enregistrement impossible.")
         elif not self._visible:
             # Fenêtre masquée : rien d'autre n'indique que l'enregistrement a démarré
             device = f"{session['device']} + {session['mic']}" if session["mic"] else session["device"]
-            what = "Transcription en direct" if live else "Enregistrement"
-            self._notify("Enregistreur", f"{what} de « {device} » en cours.")
+            what = "Transcription en direct" if live and not window else "Enregistrement"
+            kept = f" (seules les {session['window']} dernières minutes sont gardées)" if window else ""
+            self._notify("Enregistreur", f"{what} de « {device} » en cours{kept}.")
+
+    def gmail_digest(self, scope: str):
+        """Menu du tray : section Gmail affichée, résumé des e-mails non lus ou du
+        jour lancé par son assistant (dans la conversation, avec son modèle)."""
+        self.show()
+        self.bridge.emit("reveal", {"section": "gmail", "target": {"action": "digest", "scope": scope}})
 
     # ─────────────────────────────────────────
     #  Événements fenêtre
@@ -739,6 +746,13 @@ class BoostacheApp:
             settings.set(key, str(value or ""))
         elif key == "audio_live":
             settings.set(key, bool(value))
+        elif key == "audio_window":
+            settings.set(key, bool(value))
+        elif key == "audio_window_minutes":
+            if value not in WINDOW_MINUTES:
+                return settings.get(key)
+            settings.set(key, value)
+            self.recorder.window_resize(value)
         elif key in ("transcribe_model", "transcribe_language"):
             if value not in (MODELS if key == "transcribe_model" else LANGUAGES):
                 return settings.get(key)

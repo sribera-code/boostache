@@ -283,8 +283,9 @@ class Api:
     def rec_devices(self):
         return self._app.recorder.devices()
 
-    def rec_start(self, source="output", device_id="", mic_id="", live=False):
-        return self._app.recorder.start(str(source or ""), str(device_id or ""), str(mic_id or ""), bool(live))
+    def rec_start(self, source="output", device_id="", mic_id="", live=False, window=False):
+        return self._app.recorder.start(str(source or ""), str(device_id or ""), str(mic_id or ""), bool(live),
+                                        bool(window))
 
     def rec_live_close(self):
         self._app.recorder.close_live()

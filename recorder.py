@@ -13,6 +13,11 @@ Texte en direct : aucun fichier audio, le son est transcrit pendant
 l'enregistrement (transcriber.Live) et le texte écrit au fur et à mesure dans
 « Transcription <date>.txt » ; ces textes seuls apparaissent dans la liste.
 
+Dernières minutes : seules les N dernières minutes (30 par défaut) sont gardées,
+en mémoire vive (son mono 24 kHz, texte transcrit en direct) — ce qui est plus
+ancien disparaît, la mémoire ne grandit pas si l'enregistrement dure. À l'arrêt,
+elles sont enregistrées : le fichier audio (converti) et son texte à côté.
+
 Les fichiers sont rangés dans un dossier choisi par l'utilisateur (par défaut
 Musique\\Boostache) : la liste affichée est celle des fichiers audio de ce
 dossier, renommés ou ajoutés depuis l'explorateur compris.
@@ -30,7 +35,7 @@ import subprocess
 import threading
 import time
 import wave
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import quote
 
@@ -60,6 +65,10 @@ RETRY_EVERY = 1.0               # sortie audio perdue : nouvel essai
 MIC_PRIME = 0.05                # micro : avance gardée (s) pour absorber les à-coups
 MIC_MAX = 0.3                   # au-delà, l'excédent est jeté (horloges différentes)
 TRANSCODE_TIMEOUT = 1800
+# Dernières minutes : son en mémoire en mono 24 kHz 16 bits (48 Ko/s, 86 Mo pour 30 minutes)
+WINDOW_RATE = 24000
+WINDOW_MINUTES = (5, 10, 15, 30, 60, 120)
+WINDOW_DEFAULT = 30
 LINK = DATA_DIR / "recordings"  # jonction vers le dossier des enregistrements
 INVALID_NAME = re.compile(r'[\\/:*?"<>|\x00-\x1f]')
 
@@ -124,14 +133,15 @@ def transcode(src: Path, dst: Path) -> str:
 class WavWriter:
     """WAV PCM 16 bits écrit au fil de l'eau."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, rate: int = 0, channels: int = 0):
         self.path = path
+        self._rate, self._channels = rate or wasapi.RATE, channels or wasapi.CHANNELS
         self._file = open(path, "xb")
         self._bytes = 0
         self._file.write(self._header())
 
     def _header(self) -> bytes:
-        rate, channels, width = wasapi.RATE, wasapi.CHANNELS, 2
+        rate, channels, width = self._rate, self._channels, 2
         le = lambda n, size: int(n).to_bytes(size, "little")
         return (b"RIFF" + le(36 + self._bytes, 4) + b"WAVEfmt " + le(16, 4) + le(1, 2) + le(channels, 2)
                 + le(rate, 4) + le(rate * channels * width, 4) + le(channels * width, 2) + le(width * 8, 2)
@@ -154,11 +164,70 @@ class WavWriter:
         self._file.close()
 
 
+class RingBuffer:
+    """Les dernières minutes du son, en mémoire vive (mono WINDOW_RATE, 16 bits) :
+    une fois pleine, chaque nouvel échantillon écrase le plus ancien."""
+
+    def __init__(self, minutes: int):
+        self.size = int(minutes * 60 * WINDOW_RATE)
+        self._data = np.zeros(self.size, np.int16)     # pages réservées au fur et à mesure du remplissage
+        self._pos = 0              # prochain échantillon écrit
+        self.filled = 0
+        self._rest = np.zeros(0, np.float32)            # 48 → 24 kHz : échantillon pas encore regroupé
+        self._lock = threading.Lock()
+
+    @property
+    def seconds(self) -> float:
+        return self.filled / WINDOW_RATE
+
+    def write(self, samples):
+        """Stéréo 48 kHz (float) → mono 24 kHz (moyennes), ajouté à la suite."""
+        step = wasapi.RATE // WINDOW_RATE
+        mono = np.concatenate((self._rest, samples.reshape(-1, wasapi.CHANNELS).mean(axis=1)))
+        n = len(mono) // step * step
+        self._rest = mono[n:]
+        pcm = (np.clip(mono[:n].reshape(-1, step).mean(axis=1), -1.0, 1.0) * 32767).astype(np.int16)
+        with self._lock:
+            self._put(pcm)
+
+    def _put(self, pcm):
+        if len(pcm) >= self.size:
+            pcm = pcm[-self.size:]
+        first = min(len(pcm), self.size - self._pos)
+        self._data[self._pos:self._pos + first] = pcm[:first]
+        self._data[:len(pcm) - first] = pcm[first:]
+        self._pos = (self._pos + len(pcm)) % self.size
+        self.filled = min(self.size, self.filled + len(pcm))
+
+    def last(self, seconds: float = 0):
+        """Copie des `seconds` dernières secondes (0 : tout), du plus ancien au plus récent."""
+        with self._lock:
+            n = self.filled if not seconds else min(self.filled, int(seconds * WINDOW_RATE))
+            start = (self._pos - n) % self.size
+            if start + n <= self.size:
+                return self._data[start:start + n].copy()
+            return np.concatenate((self._data[start:], self._data[:self._pos]))
+
+    def resize(self, minutes: int):
+        """Autre durée : le plus récent est gardé (ce qui dépasse la nouvelle durée disparaît)."""
+        with self._lock:
+            n = self.filled
+            start = (self._pos - n) % self.size
+            keep = (self._data[start:start + n].copy() if start + n <= self.size
+                    else np.concatenate((self._data[start:], self._data[:self._pos])))
+            self.size = int(minutes * 60 * WINDOW_RATE)
+            self._data = np.zeros(self.size, np.int16)
+            self._pos = self.filled = 0
+            self._put(keep)
+
+
 class Session(threading.Thread):
     """Un enregistrement : lit la sortie (et le micro), ou le micro seul, mixe,
-    écrit le WAV — ou (live) donne le son à la transcription en direct."""
+    écrit le WAV — ou (live) donne le son à la transcription en direct ; (ring)
+    seulement les dernières minutes, en mémoire (avec le texte en direct)."""
 
-    def __init__(self, service, path: Path, source: str, device_id: str, mic_id: str, live=None):
+    def __init__(self, service, path: Path | None, source: str, device_id: str, mic_id: str, live=None,
+                 ring: RingBuffer | None = None):
         super().__init__(daemon=True, name="recorder")
         self._service = service
         self.path = path                  # WAV, ou texte de la transcription en direct
@@ -169,6 +238,9 @@ class Session(threading.Thread):
         self.mic_id = mic_id
         self.mic_name = ""
         self.live = live                  # transcriber.Live : pas de fichier audio
+        self.ring = ring                  # dernières minutes en mémoire : fichier écrit à l'arrêt
+        self.window = round(ring.size / WINDOW_RATE / 60) if ring else 0     # leur durée (minutes)
+        self.saved: Path | None = None    # fichier des dernières minutes, une fois écrit
         self.frames = 0
         self.paused = False
         self.error = ""
@@ -227,7 +299,7 @@ class Session(threading.Thread):
     def run(self):
         with wasapi.com_thread():
             try:
-                if not self.live:
+                if not self.live and not self.ring:
                     self._writer = WavWriter(self.path)
                 self._open_output()
                 if self.mic:
@@ -301,6 +373,8 @@ class Session(threading.Thread):
                         self._writer.write(pcm.tobytes())
                     if self.live:
                         self.live.feed(self._speech(mixed))
+                    if self.ring:
+                        self.ring.write(mixed)
                     self.frames += len(out) // wasapi.CHANNELS
             if self._writer and now - last_header >= HEADER_EVERY:
                 self._writer.update_header()
@@ -407,6 +481,9 @@ class RecorderService:
             "live":      bool(settings.get("audio_live")),
             "live_view": self._live_view,
             "session":   self._session_state(),
+            "window":    bool(settings.get("audio_window")),
+            "window_minutes": self.window_minutes(),
+            "window_choices": WINDOW_MINUTES,
             "files":     self.files(),
             "transcribe": {
                 "available": self.transcriber.available,
@@ -430,7 +507,8 @@ class RecorderService:
         if not s or not s.ready.is_set() or s.error:
             return None
         return {"name": s.path.name, "seconds": s.seconds, "paused": s.paused, "source": s.source,
-                "device": s.device_name, "mic": s.mic_name if s.mic else "", "live": bool(s.live)}
+                "device": s.device_name, "mic": s.mic_name if s.mic else "", "live": bool(s.live),
+                "window": s.window}
 
     def emit_state(self):
         self._bridge.emit("rec:state", {"session": self._session_state()})
@@ -473,26 +551,33 @@ class RecorderService:
         return SOURCE_LABELS[s.source if s else self.source()]
 
     # ── Enregistrement ─────────────────────────
-    def start(self, source: str = "output", device_id: str = "", mic_id: str = "", live: bool = False) -> dict:
+    def start(self, source: str = "output", device_id: str = "", mic_id: str = "", live: bool = False,
+              window: bool = False) -> dict:
         """source : output (son du PC), both (+ micro), mic (micro seul) ; live : texte
-        en direct au lieu d'un fichier audio."""
+        en direct au lieu d'un fichier audio ; window : seulement les dernières minutes
+        (son en mémoire, texte en direct si la transcription est installée)."""
         if MISSING:
             return {"error": MISSING}
-        if live and STT_MISSING:
+        if window:
+            live = not STT_MISSING
+        elif live and STT_MISSING:
             return {"error": STT_MISSING}
         source = source if source in SOURCES else "output"
         with self._lock:
             if self._session:
                 return {"error": "Un enregistrement est déjà en cours."}
             try:
-                path = self._new_path(live)
+                path = self._new_path(live and not window)
             except OSError as e:
                 return {"error": f"Dossier inaccessible ({e.strerror or e})"}
-            session = Session(self, path, source, device_id or "", mic_id or "")
+            minutes = self.window_minutes() if window else 0
+            session = Session(self, path, source, device_id or "", mic_id or "",
+                              ring=RingBuffer(minutes) if window else None)
             if live:
                 self._live_names.add(path.name)
                 session.live = self.transcriber.live(settings.get("transcribe_model"), settings.get("transcribe_language"),
-                                                     lambda transcript: self._on_live(session, transcript))
+                                                     lambda transcript: self._on_live(session, transcript),
+                                                     window=minutes * 60)
             self._session = session
         session.start()
         if not session.ready.wait(10) or session.error:
@@ -509,9 +594,11 @@ class RecorderService:
         settings.set("audio_source", source)
         settings.set("audio_device", device_id or "")
         settings.set("audio_mic_device", mic_id or "")
-        settings.set("audio_live", bool(live))
+        settings.set("audio_window", bool(window))
+        if not window:
+            settings.set("audio_live", bool(live))
         mic_info = f" + micro « {session.mic_name} »" if session.mic else ""
-        what = "texte en direct" if live else "audio"
+        what = (f"{session.window} dernières minutes" if window else "texte en direct" if live else "audio")
         logger.log(f"Enregistreur : début ({session.device_name}{mic_info}, {what}) → {path.name}")
         self.emit_state()
         return {"ok": True, "session": self._session_state()}
@@ -538,6 +625,17 @@ class RecorderService:
         self.emit_state()
         if session.error:
             self.toast(f"Enregistrement interrompu : {session.error}", "error")
+        if session.ring:
+            # Dernières minutes : le son gardé devient un fichier (mémoire libérée) ;
+            # le texte, une fois la transcription finie, est écrit à côté (_on_live)
+            ring, session.ring = session.ring, None
+            session.saved = self._save_ring(ring) if session.frames else None
+            if session.saved:
+                self._finish(session.saved, transcribe=not session.live)
+            else:
+                self.emit_files()
+            if not session.live:
+                return
         if session.live:
             # Le son déjà reçu est transcrit jusqu'au bout (à la fermeture de
             # l'application : le texte obtenu jusque-là est gardé)
@@ -545,7 +643,8 @@ class RecorderService:
                 session.live.cancel()
             else:
                 session.live.finish()
-            logger.log(f"Enregistreur : fin, {_duration(session.seconds)} de son transcrit → {session.path.name}")
+            target = (session.saved or session.path).name
+            logger.log(f"Enregistreur : fin, {_duration(session.seconds)} de son transcrit → {target}")
             self._on_live(session, session.live)
             return
         if not session.path.exists():
@@ -555,27 +654,77 @@ class RecorderService:
             session.path.unlink(missing_ok=True)
             self.emit_files()
             return
-        duration = _duration(session.seconds)
+        logger.log(f"Enregistreur : fin, {_duration(session.seconds)} → {session.path.name}")
+        self._finish(session.path)
+
+    def _finish(self, wav: Path, transcribe: bool = True):
+        """WAV terminé : converti au format choisi, puis transcrit si demandé
+        (transcribe : faux quand le texte vient de la transcription en direct)."""
         fmt = settings.get("audio_format")
-        logger.log(f"Enregistreur : fin, {duration} → {session.path.name}")
         if fmt in ("mp3", "m4a") and not self._shutting_down:
-            self._convert(session.path, fmt)
+            self._convert(wav, fmt, transcribe)
         else:
             self.emit_files()
-            self._auto_transcribe(session.path)
+            if transcribe:
+                self._auto_transcribe(wav)
 
     def shutdown(self):
-        """Fermeture de l'application : l'enregistrement en cours est gardé en WAV."""
+        """Fermeture de l'application : l'enregistrement en cours est gardé en WAV
+        (dernières minutes : ce qui est en mémoire)."""
         self._shutting_down = True
         self.stop()
+
+    # ── Dernières minutes ──────────────────────
+    @staticmethod
+    def window_minutes() -> int:
+        minutes = settings.get("audio_window_minutes")
+        return minutes if minutes in WINDOW_MINUTES else WINDOW_DEFAULT
+
+    def next_window(self) -> bool:
+        """Prochain enregistrement lancé hors de l'Enregistreur (tray) : seulement les dernières minutes ?"""
+        return bool(settings.get("audio_window"))
+
+    def window_resize(self, minutes: int):
+        """Nouvelle durée (réglage audio_window_minutes) appliquée à l'enregistrement
+        en cours : ce qui dépasse disparaît tout de suite."""
+        s = self._session
+        ring = s.ring if s else None
+        if ring:
+            ring.resize(minutes)
+            s.window = minutes
+            if s.live:
+                s.live.window = minutes * 60
+            self.emit_state()
+
+    def _save_ring(self, ring: RingBuffer) -> Path | None:
+        """Le son gardé en mémoire (les dernières minutes) écrit dans un WAV,
+        nommé d'après l'heure de son début."""
+        pcm = ring.last()
+        if len(pcm) < WINDOW_RATE // 2:
+            return None
+        seconds = len(pcm) / WINDOW_RATE
+        try:
+            path = self._new_path(when=datetime.now() - timedelta(seconds=seconds))
+            writer = WavWriter(path, WINDOW_RATE, 1)
+            writer.write(pcm.astype("<i2").tobytes())
+            writer.close()
+        except OSError as e:
+            logger.log(f"Enregistreur : dernières minutes non enregistrées ({e})")
+            self.toast(f"Dernières minutes non enregistrées : {e.strerror or e}", "error")
+            return None
+        logger.log(f"Enregistreur : {_duration(seconds)} gardées (dernières minutes) → {path.name}")
+        return path
 
     # ── Transcription en direct ────────────────
     def _on_live(self, session: Session, live):
         """Avancement de la transcription en direct : texte écrit au fur et à mesure
-        (rien n'est perdu si l'application s'arrête), affiché par la page."""
-        path = session.path
+        (rien n'est perdu si l'application s'arrête), affiché par la page.
+        Dernières minutes : écrit seulement à la fin, à côté du son gardé."""
+        key = session.path.name
+        path = session.saved.with_suffix(".txt") if session.window and session.saved else session.path
         with self._live_lock:
-            if live.text and live.text != getattr(session, "written", ""):
+            writable = not session.window or (live.done.is_set() and session.saved is not None)
+            if writable and live.text and live.text != getattr(session, "written", ""):
                 try:
                     path.write_text(live.text + "\n", encoding="utf-8")
                     session.written = live.text
@@ -586,25 +735,26 @@ class RecorderService:
                         self.toast(f"Texte non enregistré : {e.strerror or e}", "error")
             view = {"name": path.name, "title": path.stem, "state": live.state, "text": live.text,
                     "pending": round(live.pending, 1), "error": live.error,
-                    "recording": self._session is session, "saved": path.exists()}
-            finished = live.done.is_set() and path.name in self._live_names
+                    "recording": self._session is session, "saved": path.exists(),
+                    "window": session.window}
+            finished = live.done.is_set() and key in self._live_names
             if finished:
                 with self._lock:
-                    self._live_names.discard(path.name)
+                    self._live_names.discard(key)
             self._live_view = view
         self._bridge.emit("rec:live", view)
         if finished:
-            self._live_finished(session, live)
+            self._live_finished(session, live, path)
 
-    def _live_finished(self, session: Session, live):
+    def _live_finished(self, session: Session, live, path: Path):
         if self._shutting_down:
             return
         if live.state == "error":
             self.toast(f"Transcription en direct interrompue : {live.error}", "error")
         elif not live.text.strip() and live.state == "done":
             self.toast("Aucune parole reconnue : pas de texte enregistré.", "info")
-        elif session.path.exists():
-            self.toast(f"Texte enregistré : {session.path.name}", "success")
+        elif path.exists():
+            self.toast(f"Texte enregistré : {path.name}", "success")
         self.emit_files()
 
     def close_live(self):
@@ -612,7 +762,7 @@ class RecorderService:
         if self._live_view and not self._live_view.get("recording") and self._live_view.get("state") not in ("run", "load", "download"):
             self._live_view = None
 
-    def _convert(self, wav: Path, fmt: str):
+    def _convert(self, wav: Path, fmt: str, transcribe: bool = True):
         with self._lock:
             self._converting.add(wav.name)
         self.emit_files()
@@ -633,12 +783,13 @@ class RecorderService:
             with self._lock:
                 self._converting.discard(wav.name)
             self.emit_files()
-            self._auto_transcribe(wav if error else target)
+            if transcribe:
+                self._auto_transcribe(wav if error else target)
 
         threading.Thread(target=run, daemon=True, name="recorder-convert").start()
 
-    def _new_path(self, live: bool = False) -> Path:
-        stamp = datetime.now().strftime("%Y-%m-%d %Hh%M")
+    def _new_path(self, live: bool = False, when: datetime | None = None) -> Path:
+        stamp = (when or datetime.now()).strftime("%Y-%m-%d %Hh%M")
         folder = self.folder()
         # Ni un audio ni un texte au même nom : un texte seul passerait pour sa transcription
         if live:

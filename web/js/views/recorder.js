@@ -1,6 +1,7 @@
 // Vue Enregistreur : enregistre le son qui sort du PC (et le micro en option)
 // ou le micro seul, en fichier audio ou en texte transcrit en direct ; liste,
-// lecture et transcription en texte des enregistrements du dossier choisi.
+// lecture et transcription en texte des enregistrements du dossier choisi ;
+// ou seulement les dernières minutes (en mémoire, texte en direct), gardées à l'arrêt.
 import { h, plural, isTyping, formatShort, parseDate } from "../dom.js";
 import { ico, iconButton, openMenu, openMenuBelow, openModal, toast } from "../ui.js";
 import { markFound } from "../palette.js";
@@ -76,6 +77,9 @@ export function createRecorderView(ctx, state) {
     liveView: init.live_view || null,
     mics: [],
     session: init.session || null,
+    window: !!init.window,      // seulement les dernières minutes (en mémoire)
+    windowMinutes: init.window_minutes || 30,
+    windowChoices: init.window_choices || [5, 10, 15, 30, 60, 120],
     files: init.files || [],
     outputs: [],
     micName: "",
@@ -117,11 +121,13 @@ export function createRecorderView(ctx, state) {
   const sourceBtn = h("button", { class: "btn sm rec-source", type: "button", onClick: sourceMenu });
   const resultSeg = h("div", { class: "segmented rec-result" });
   const formatSeg = h("div", { class: "segmented rec-format" });
+  // Dernières minutes : leur durée (aussi pendant l'enregistrement : le surplus disparaît)
+  const windowBtn = h("button", { class: "btn ghost sm rec-window", type: "button", onClick: windowMenu });
   const modelHint = h("span", { class: "rec-model-hint" });
   const options = h("div", { class: "rec-options" },
     h("div", { class: "rec-opt-row" }, h("span", { class: "rec-opt-label", text: "Source" }), sourceSeg, sourceBtn),
     h("div", { class: "rec-opt-row" }, h("span", { class: "rec-opt-label", text: "Résultat" }), resultSeg,
-      formatSeg, modelHint));
+      windowBtn, formatSeg, modelHint));
 
   const deck = h("div", { class: "rec-deck" },
     h("div", { class: "rec-main" }, recBtn, h("div", { class: "rec-status" }, timeEl, stateEl), pauseBtn),
@@ -169,8 +175,8 @@ export function createRecorderView(ctx, state) {
     if (S.starting) return;
     S.starting = true;
     renderDeck();
-    const live = S.live && S.stt.available;
-    const res = await api.rec_start(S.source, S.device, S.micDevice, live);
+    const live = !S.window && S.live && S.stt.available;
+    const res = await api.rec_start(S.source, S.device, S.micDevice, live, S.window);
     S.starting = false;
     if (res?.error) toast(res.error, "error");
     else if (res?.session) setSession(res.session);
@@ -256,9 +262,13 @@ export function createRecorderView(ctx, state) {
     recBtn.replaceChildren(h("span", { class: rec ? "rec-glyph stop" : "rec-glyph" }));
     recBtn.disabled = S.starting;
     const source = rec ? S.session.source : S.source;
-    const live = rec ? !!S.session.live : S.live && !!S.stt.available;
-    recBtn.dataset.tip = rec ? (live ? "Arrêter (le texte est enregistré)" : "Arrêter et enregistrer le fichier")
-      : live ? "Transcrire en direct" : "Enregistrer";
+    // kept : minutes gardées (seulement les dernières) ; live : texte seul, sans fichier audio
+    const kept = rec ? S.session.window || 0 : S.window ? S.windowMinutes : 0;
+    const live = !kept && (rec ? !!S.session.live : S.live && !!S.stt.available);
+    const mode = kept ? "kept" : live ? "live" : "audio";
+    recBtn.dataset.tip = rec ? (kept ? `Arrêter et garder les ${kept} dernières minutes`
+      : live ? "Arrêter (le texte est enregistré)" : "Arrêter et enregistrer le fichier")
+      : kept ? `Enregistrer (seules les ${kept} dernières minutes sont gardées)` : live ? "Transcrire en direct" : "Enregistrer";
     recBtn.setAttribute("aria-label", recBtn.dataset.tip);
     pauseBtn.hidden = !rec;
     pauseBtn.replaceChildren(ico(paused ? "play" : "pause", 18));
@@ -268,9 +278,12 @@ export function createRecorderView(ctx, state) {
 
     if (S.starting) stateEl.textContent = "Démarrage…";
     else if (paused) stateEl.textContent = live ? "En pause — rien n'est transcrit" : "En pause — rien n'est enregistré";
-    else if (rec) stateEl.textContent = `${live ? "Transcription" : "Enregistrement"} de « ${deviceLabel()} »`;
+    else if (rec) stateEl.textContent = `${live ? "Transcription" : "Enregistrement"} de « ${deviceLabel()} »`
+      + (kept ? ` — seules les ${kept} dernières minutes sont gardées` : "");
     else stateEl.textContent = SOURCES.find(([id]) => id === source)?.[2]
-      + (live ? ". Le texte s'écrit pendant l'enregistrement, sans fichier audio." : ".");
+      + (kept ? `. Seules les ${kept} dernières minutes sont gardées, en mémoire${S.stt.available ? ", avec le texte en direct" : ""} ;`
+        + " à l'arrêt, elles sont enregistrées."
+        : live ? ". Le texte s'écrit pendant l'enregistrement, sans fichier audio." : ".");
 
     meters.hidden = !rec;
     outMeter.row.hidden = !rec || source === "mic";
@@ -286,26 +299,45 @@ export function createRecorderView(ctx, state) {
     sourceBtn.dataset.tip = rec ? "Source de l'enregistrement en cours"
       : source === "mic" ? "Micro à enregistrer" : source === "both" ? "Sortie et micro à enregistrer" : "Sortie audio à enregistrer";
 
-    resultSeg.hidden = !S.stt.available;
-    resultSeg.replaceChildren(...[[false, "Fichier audio", "Un fichier audio, à écouter ou transcrire ensuite"],
-      [true, "Texte en direct", "Pas de fichier audio : le son est transcrit pendant l'enregistrement, le texte est enregistré"]]
-      .map(([value, label, tip]) => h("button", {
-        type: "button", class: live === value ? "active" : "", text: label, disabled: locked && live !== value,
+    resultSeg.replaceChildren(...[
+      ["audio", "Fichier audio", "Un fichier audio, à écouter ou transcrire ensuite"],
+      S.stt.available ? ["live", "Texte en direct", "Pas de fichier audio : le son est transcrit pendant l'enregistrement, le texte est enregistré"] : null,
+      ["kept", "Dernières minutes", `Seules les ${S.windowMinutes} dernières minutes sont gardées, en mémoire`
+        + (S.stt.available ? " — le texte s'affiche en direct" : "") + " ; ce qui est plus ancien disparaît, "
+        + "la mémoire ne grandit pas même si l'enregistrement dure. À l'arrêt, elles sont enregistrées."],
+    ].filter(Boolean).map(([value, label, tip]) => h("button", {
+        type: "button", class: mode === value ? "active" : "", text: label, disabled: locked && mode !== value,
         dataset: { tip }, onClick: () => {
           if (locked) return;
-          S.live = value;
-          ctx.saveSetting("audio_live", value);
+          S.window = value === "kept";
+          if (!S.window) { S.live = value === "live"; ctx.saveSetting("audio_live", S.live); }
+          ctx.saveSetting("audio_window", S.window);
           renderDeck();
         } })));
+    windowBtn.hidden = !kept;
+    windowBtn.replaceChildren(`${kept || S.windowMinutes} min`, ico("chevron-down", 13));
+    windowBtn.dataset.tip = rec ? "Durée gardée : plus courte, ce qui dépasse disparaît tout de suite"
+      : "Durée gardée : ce qui est plus ancien disparaît";
     formatSeg.hidden = live;
     formatSeg.replaceChildren(...FORMATS.map(([id, label]) => h("button", {
       type: "button", class: S.format === id ? "active" : "", text: label, dataset: { tip: FORMAT_TIPS[id] },
       onClick: async () => { await ctx.saveSetting("audio_format", id); S.format = ctx.store.settings.audio_format || id; renderDeck(); },
     })));
-    modelHint.hidden = !live;
+    modelHint.hidden = !(live || (kept && S.stt.available));
     modelHint.textContent = sttLabel().replace("Texte : ", "Modèle ");
     modelHint.dataset.tip = "Modèle de transcription : bouton « Texte » au-dessus de la liste. "
       + "Un modèle plus précis est plus lent : le texte peut prendre du retard sur le son.";
+  }
+
+  function windowMenu(ev) {
+    const current = S.session?.window || S.windowMinutes;
+    openMenuBelow([{ section: "Garder seulement" }, ...S.windowChoices.map((m) => ({
+      label: `Les ${m} dernières minutes`, checked: m === current, onSelect: async () => {
+        const saved = await ctx.saveSetting("audio_window_minutes", m);
+        if (saved) S.windowMinutes = saved;
+        if (S.session?.window && saved) S.session.window = saved;
+        renderDeck();
+      } }))], ev.currentTarget);
   }
 
   // ── Texte en direct ─────────────────────────
@@ -322,6 +354,7 @@ export function createRecorderView(ctx, state) {
       `Fin de la transcription…${v.pending >= 1 ? ` (${Math.round(v.pending)} s de son)` : ""}`];
     else status = [working && v.state !== "run" ? h("span", { class: "pane-busy" }) : h("span", { class: "rec-live-dot" }),
       LIVE_STATES[v.state] || LIVE_STATES.run,
+      v.window ? h("span", { class: "rec-live-late", text: `· ${v.window} dernières minutes` }) : null,
       v.state === "run" && v.pending >= 3 ? h("span", { class: "rec-live-late", text: `· ${Math.round(v.pending)} s de retard` }) : null];
     livePanel.classList.toggle("error", v.state === "error");
     liveStatus.replaceChildren(...status.filter(Boolean));

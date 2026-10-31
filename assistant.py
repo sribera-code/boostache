@@ -11,7 +11,7 @@ Annonces : une fois activées, les nouveaux messages — e-mails arrivés dans l
 boîte de réception, messages WhatsApp (hors discussions en sourdine) — sont
 annoncés à voix haute. Avec Ollama (réglage assistant_summary), chacun est
 d'abord résumé pour l'oral, avec son importance et ce qu'il attend de
-l'utilisateur, et c'est ce résumé qui est lu (« E-mail urgent de… À faire : … ») ;
+l'utilisateur, et c'est ce résumé qui est lu (« E-mail urgent de… Il faudrait … ») ;
 sans Ollama, ou s'il échoue : l'expéditeur et, au choix, l'objet ou le texte.
 Ils s'ajoutent aux « Messages arrivés » (avec leur résumé), que l'assistant
 connaît aussi pour répondre. Une autre lecture en cours n'est pas coupée :
@@ -70,7 +70,7 @@ EXAMPLE = [{"source": "whatsapp", "title": "Marie", "text": "On se retrouve à 1
             "action": "", "importance": "normal"}]
 
 # Résumé d'un nouveau message, lu à voix haute à la place de l'objet ou du texte :
-# l'annonce commence par « E-mail urgent : », le résumé suit (expéditeur en tête), puis « À faire : … »
+# l'annonce commence par « E-mail urgent : », le résumé suit (expéditeur en tête), puis « Il faudrait … »
 ANNOUNCE_SYSTEM = (
     "Un message vient d'arriver pour l'utilisateur (e-mail ou WhatsApp) ; tu es son assistant et ton "
     "résumé lui sera lu à voix haute par une synthèse vocale. "
@@ -144,6 +144,15 @@ def _sentence(text: str) -> str:
     return text if not text or text.endswith((".", "!", "?", "…")) else text + "."
 
 
+def action_sentence(action: str) -> str:
+    """Ce qu'attend un message, dit naturellement : « Retirer le colis » → « Il
+    faudrait retirer le colis. » (un sigle en tête, EDF…, garde ses majuscules)."""
+    action = action.strip().rstrip(".!… ")
+    if action[:1].isupper() and action[1:2].islower():
+        action = action[:1].lower() + action[1:]
+    return f"Il faudrait {action}." if action else ""
+
+
 def _spoken_dates(text: str) -> str:
     """« le 25 octobre 2026 » → « le 25 octobre » (année en cours : inutile à l'oral)."""
     return re.sub(rf"\b(\d{{1,2}}(?:er)? (?:{'|'.join(MONTHS)})) {datetime.now().year}\b", r"\1", text)
@@ -161,7 +170,7 @@ def _header(it: dict) -> str:
 
 def _item_spoken(it: dict, content: bool = True) -> str:
     """Annonce d'un message : son résumé seul (il nomme l'expéditeur), avec ce qu'il
-    attend de l'utilisateur — « EDF vous informe… À faire : … » ; sans résumé,
+    attend de l'utilisateur — « EDF vous informe… Il faudrait … » ; sans résumé,
     l'expéditeur puis l'objet de l'e-mail ou le texte du message.
     content : faux → l'expéditeur seul, avec l'importance (et s'il attend une action)."""
     if it.get("summary"):
@@ -170,7 +179,7 @@ def _item_spoken(it: dict, content: bool = True) -> str:
             return (_sentence(f"{_header(it)} de {it['title']}")
                     + (" Une action est attendue de votre part." if action else ""))
         return " ".join(x for x in (_sentence(it["summary"]),
-                                    _sentence(f"À faire : {action[:1].lower() + action[1:]}") if action else "") if x)
+                                    action_sentence(action)) if x)
     text = _cut(it.get("text", ""), SPOKEN_TEXT) if content else ""
     if it["source"] == "gmail":
         return f"E-mail de {it['title']} : {text}" if text else f"Nouvel e-mail de {it['title']}"

@@ -124,6 +124,8 @@ _DEFAULTS = {
     "audio_mic_device":     "",            # micro enregistré ("" : micro par défaut)
     "audio_live":           False,         # texte en direct au lieu d'un fichier audio
     "audio_transcribe":     False,         # transcription automatique après chaque enregistrement
+    "audio_window":         False,         # seulement les dernières minutes (son en mémoire, texte en direct)
+    "audio_window_minutes": 30,            # leur durée (recorder.WINDOW_MINUTES)
     "transcribe_model":     "small",       # modèle Whisper : "base" | "small" | "large-v3-turbo"
     "transcribe_language":  "",            # "" : détection automatique
     "assistant_announce":   False,         # assistant : nouveaux messages annoncés à voix haute

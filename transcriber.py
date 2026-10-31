@@ -247,10 +247,11 @@ class Transcriber:
             self._model_name = name
             return self._model
 
-    def live(self, model: str, language: str, on_update) -> "Live":
-        """Transcription en direct (voir Live) ; on_update(live) à chaque changement."""
+    def live(self, model: str, language: str, on_update, window: float = 0) -> "Live":
+        """Transcription en direct (voir Live) ; on_update(live) à chaque changement ;
+        window : seulement le texte des `window` dernières secondes."""
         return Live(self, model if model in MODELS else "small",
-                    language if language in LANGUAGES else "", on_update)
+                    language if language in LANGUAGES else "", on_update, window)
 
     def _run(self, job: Job) -> str:
         model = self._load(job)
@@ -279,9 +280,11 @@ class Live:
     transcrit dans un thread. finish() : plus de son, le reste est transcrit
     puis state passe à « done ». Lus par l'appelant : state (download, load,
     run, done, error, cancelled), text, pending (secondes de son pas encore
-    transcrites), error ; done est levé à la toute fin."""
+    transcrites), error ; done est levé à la toute fin.
+    window (secondes, 0 : tout) : seul le texte de ce dernier moment est gardé, et
+    le son en attente plus ancien n'est pas transcrit — rien ne grandit sans fin."""
 
-    def __init__(self, owner: Transcriber, model: str, language: str, on_update):
+    def __init__(self, owner: Transcriber, model: str, language: str, on_update, window: float = 0):
         self._owner = owner
         self.model = model
         self.language = language
@@ -290,6 +293,7 @@ class Live:
         self.text = ""
         self.error = ""
         self.pending = 0.0
+        self.window = window
         self.done = threading.Event()
         self._parts: list[tuple[float, float, str]] = []
         self._queue: queue.Queue = queue.Queue()
@@ -353,6 +357,10 @@ class Live:
         self._queue.put(None)
 
     # ── Transcription ──────────────────────────
+    def _stale(self, end: float) -> bool:
+        """Fin (s) plus ancienne que les `window` dernières secondes du son reçu."""
+        return bool(self.window) and end < (self._offset + self._size) / RATE - self.window
+
     def _notify(self):
         try:
             self._on_update(self)
@@ -372,6 +380,9 @@ class Live:
                 if item is None or self._cancel.is_set():
                     break
                 start, audio = item
+                if self._stale(start + len(audio) / RATE):     # sorti des dernières minutes : oublié
+                    self.pending = max(0.0, self.pending - len(audio) / RATE)
+                    continue
                 segments, info = model.transcribe(
                     audio, language=self.language or None, vad_filter=True,
                     initial_prompt=self.text[-LIVE_CONTEXT:] or None, condition_on_previous_text=False)
@@ -383,6 +394,8 @@ class Live:
                 if not self.language and self._parts and info.language_probability >= 0.7:
                     self.language = info.language
                 self.pending = max(0.0, self.pending - len(audio) / RATE)
+                if self.window:
+                    self._parts = [p for p in self._parts if not self._stale(p[1])]
                 self.text = paragraphs(self._parts)
                 self._owner._last_used = time.monotonic()
                 self._notify()

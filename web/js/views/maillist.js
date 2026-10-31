@@ -20,6 +20,14 @@ export function importanceIcon(level, size = 13) {
     ico(name, size)) : null;
 }
 
+/** Ce qu'attend un e-mail, dit naturellement (lecture, copie) : « Retirer le colis » →
+ *  « Il faudrait retirer le colis. » (un sigle en tête, EDF…, garde ses majuscules). */
+export function actionSentence(action) {
+  const a = (action || "").trim().replace(/[.!…\s]+$/, "");
+  if (!a) return "";
+  return `Il faudrait ${/^\p{Lu}\p{Ll}/u.test(a) ? a[0].toLowerCase() + a.slice(1) : a}.`;
+}
+
 /** assist : barre de l'assistant (modèle, consigne, résumé de plusieurs e-mails). */
 export function createMailList(ctx, state, cfg, assist) {
   const { api, on, store } = ctx;
@@ -34,7 +42,7 @@ export function createMailList(ctx, state, cfg, assist) {
   const stopBtn = iconButton("square", "Arrêter les résumés en attente", () => api.pane_list_stop(cfg.id),
     { size: 12, cls: "sm" });
   const autoBtn = iconButton("zap", "", toggleAuto, { size: 15, cls: "sm" });
-  // Résumer, sans menu : un bouton par choix (non lus, tous, sélection dans Gmail),
+  // Résumer, sans menu : un bouton par choix (non lus, du jour, tous, sélection dans Gmail),
   // sur une rangée sous l'en-tête ; la sélection en dernier, les autres ne bougent pas
   const scopeBtn = (scope, label) => {
     const n = h("span", { class: "ml-scope-n" });
@@ -42,7 +50,7 @@ export function createMailList(ctx, state, cfg, assist) {
     btn.count = n;
     return btn;
   };
-  const sumBtns = { unread: scopeBtn("unread", "Non lus"), all: scopeBtn("all", "Tous"),
+  const sumBtns = { unread: scopeBtn("unread", "Non lus"), today: scopeBtn("today", "Aujourd'hui"), all: scopeBtn("all", "Tous"),
     selection: scopeBtn("selection", "Sélection") };
   const scopesRow = h("div", { class: "ml-scopes", role: "group", "aria-label": "Résumer les e-mails" },
     h("span", { class: "ml-scopes-label" }, ico("sparkles", 13), "Résumer"), ...Object.values(sumBtns));
@@ -92,7 +100,7 @@ export function createMailList(ctx, state, cfg, assist) {
     measureSoon();
   }
 
-  // ── Résumés réduits : deux lignes (et l'action sur une) ; le bouton n'apparaît
+  // ── Résumés réduits : deux lignes, l'action à côté sur une ; le bouton n'apparaît
   //    que si le texte est coupé — vérifié après chaque rendu ou changement de largeur ──
   let measuring = 0;
   function measureSoon() {
@@ -103,6 +111,14 @@ export function createMailList(ctx, state, cfg, assist) {
     for (const block of rowsEl.querySelectorAll(".ml-summary:not(.open)")) {
       const text = block.querySelector(".ml-summary-text");
       const action = block.querySelector(".ml-action > span");
+      block.classList.remove("truncated");
+      // Action en bas à droite : cale d'une ligne au-dessus d'elle, sauf si tout tient sur une
+      const sp = block.querySelector(".ml-sp");
+      if (sp) {
+        const line = parseFloat(getComputedStyle(text).lineHeight) || 17;
+        sp.style.height = "0";
+        sp.style.height = text.scrollHeight > line * 1.5 ? `${line}px` : "0";
+      }
       const cut = text.scrollHeight > text.clientHeight + 1 || (!!action && action.scrollWidth > action.clientWidth + 1);
       block.classList.toggle("truncated", cut);
       block.querySelector(".ml-more").hidden = !cut;
@@ -146,14 +162,14 @@ export function createMailList(ctx, state, cfg, assist) {
         r.unread ? h("span", { class: "digest-dot", "aria-label": "Non lu" }) : null,
         importanceIcon(sum?.summary ? sum.importance : ""),
         h("span", { class: "ml-from", text: r.from || "(expéditeur inconnu)" }),
+        h("span", { class: "ml-subject" }, h("span", { text: r.subject || "(sans objet)" }),
+          r.snippet ? h("span", { class: "ml-snippet", text: ` — ${r.snippet}` }) : null),
         h("span", { class: "ml-when", text: r.when, dataset: { tip: r.date || null } }),
         // Au survol, à la place de la date : lu / non lu, supprimer
         h("span", { class: "ml-acts" },
           r.unread ? act("read", "mail-open", "Marquer comme lu", "read") : act("unread", "mail", "Marquer comme non lu", "unread"),
           canDelete() ? act("delete", "trash-2", "Supprimer", "delete") : null),
         btn),
-      h("div", { class: "ml-subject" }, h("span", { text: r.subject || "(sans objet)" }),
-        r.snippet ? h("span", { class: "ml-snippet", text: ` — ${r.snippet}` }) : null),
       sum?.summary ? summaryEl(r, sum, stale || busy, stale)
         : busy ? h("div", { class: "ml-pending", text: st === "queued" ? "En attente du résumé…" : "Résumé en cours…" }) : null,
       st === "failed" ? h("div", { class: "ml-error", text: sum.error || "Résumé impossible." }) : null);
@@ -166,8 +182,11 @@ export function createMailList(ctx, state, cfg, assist) {
     const label = open ? "Réduire le résumé" : "Afficher tout le résumé";
     return h("div", { class: `ml-summary${dim ? " dim" : ""}${open ? " open" : ""}`,
       dataset: { tip: stale ? "Nouveau message depuis ce résumé" : null } },
-      h("span", { class: "ml-summary-text" }, ico("sparkles", 11), sum.summary),
-      sum.action ? h("span", { class: "ml-action" }, ico("chevron-right", 12), h("span", { text: sum.action })) : null,
+      // Action flottante en bas à droite : avant le texte, sous une cale d'une ligne (measure)
+      h("span", { class: "ml-summary-text" },
+        sum.action ? h("span", { class: "ml-sp" }) : null,
+        sum.action ? h("span", { class: "ml-action" }, ico("chevron-right", 12), h("span", { text: sum.action })) : null,
+        h("span", {}, ico("sparkles", 11), sum.summary)),
       h("button", { class: "ml-more", type: "button", hidden: !open, "aria-expanded": String(open), "aria-label": label,
         dataset: { tip: label }, onClick: (ev) => { ev.stopPropagation(); toggleSummary(r.id); } },
         ico("chevron-down", 14)));
@@ -206,7 +225,7 @@ export function createMailList(ctx, state, cfg, assist) {
   }
 
   // Lu : le résumé suffit ; copié : avec expéditeur et objet
-  const speech = (sum) => [sum.summary, sum.action ? `À faire : ${sum.action}` : ""].filter(Boolean).join("\n");
+  const speech = (sum) => [sum.summary, actionSentence(sum.action)].filter(Boolean).join("\n");
   const copyText = (r, sum) => `${r.from || "Expéditeur inconnu"}${r.subject ? ` : ${r.subject}` : ""}.\n${speech(sum)}`;
 
   function rowMenu(ev, r) {
@@ -230,11 +249,11 @@ export function createMailList(ctx, state, cfg, assist) {
   }
 
   /** Plusieurs e-mails : le résumé de l'assistant (chacun, puis la synthèse), sur
-   *  les e-mails sélectionnés dans Gmail, les non lus ou tous ceux de la liste. */
+   *  les e-mails sélectionnés dans Gmail, les non lus, ceux du jour ou tous ceux de la liste. */
   function scopeIds(scope) {
     const rows = S.mail.rows || [];
     if (scope === "all") return rows.slice(0, DIGEST_MAX).map((r) => r.id);
-    return rows.filter((r) => (scope === "unread" ? r.unread : r.selected)).map((r) => r.id);
+    return rows.filter((r) => (scope === "unread" ? r.unread : scope === "today" ? r.today : r.selected)).map((r) => r.id);
   }
 
   /** Un bouton par choix qui a des e-mails, avec leur nombre. */
@@ -242,6 +261,7 @@ export function createMailList(ctx, state, cfg, assist) {
     const tips = {
       selection: (k) => k > 1 ? `Résumer les ${k} e-mails sélectionnés dans Gmail` : "Résumer l'e-mail sélectionné dans Gmail",
       unread: (k) => k > 1 ? `Résumer les ${k} e-mails non lus` : "Résumer l'e-mail non lu",
+      today: (k) => k > 1 ? `Résumer les ${k} e-mails reçus aujourd'hui` : "Résumer l'e-mail reçu aujourd'hui",
       all: (k) => (S.mail.rows || []).length > k ? `Résumer les ${k} premiers e-mails de la liste`
         : k > 1 ? `Résumer les ${k} e-mails de la liste` : "Résumer l'e-mail de la liste",
     };

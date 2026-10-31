@@ -64,6 +64,7 @@ class TrayApp:
         self.app.notifier = self._notify
         self._tray = None  # type: ignore
         self._pin_target = None   # fenêtre visée par « Garder au premier plan », fixée à l'ouverture du menu
+        self._mail_counts = {}    # e-mails non lus / du jour dans Gmail, relevés à l'ouverture du menu
         self._recording = None    # "rec" | "paused" | None
         self._announcing = False  # annonce d'un nouveau message lue à voix haute
         self._badge = None        # pastille affichée (BADGE_TEXT)
@@ -81,6 +82,11 @@ class TrayApp:
             pystray.MenuItem("Capture d'écran", self._on_capture),
             pystray.MenuItem(self._recording_label, self._on_toggle_recording,
                              enabled=lambda item: recorder.available),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem(lambda item: self._digest_label("unread"), lambda: self._on_digest("unread"),
+                             enabled=lambda item: self._digest_enabled("unread")),
+            pystray.MenuItem(lambda item: self._digest_label("today"), lambda: self._on_digest("today"),
+                             enabled=lambda item: self._digest_enabled("today")),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Recharger", self._on_reload),
             pystray.Menu.SEPARATOR,
@@ -119,6 +125,7 @@ class TrayApp:
     def _before_menu(self):
         # Le clic a donné le focus à la barre des tâches : on vise la fenêtre d'avant
         self._pin_target = self.app.pin_target()
+        self._mail_counts = self.app.panes["gmail"].digest_counts()
 
     def _pin_label(self, item) -> str:
         target = self._pin_target
@@ -130,11 +137,26 @@ class TrayApp:
         recorder = self.app.recorder
         if recorder.recording:
             label = "Arrêter l'enregistrement"
+        elif recorder.next_window():
+            label = f"Démarrer l'enregistrement des {recorder.window_minutes()} dernières minutes"
         elif recorder.next_live():
             label = "Démarrer la transcription en direct"
         else:
             label = "Démarrer l'enregistrement"
         return f"{label} : {recorder.describe()}"
+
+    # Résumer les e-mails de Gmail (liste affichée dans Gmail) : nombre connu dès
+    # qu'une liste a été relevée ; grisé sans e-mail ou pendant un résumé
+    def _digest_label(self, scope: str) -> str:
+        n = self._mail_counts.get(scope)
+        if scope == "unread":
+            return ("Résumer les e-mails non lus" if n is None else "Aucun e-mail non lu" if n == 0
+                    else "Résumer l'e-mail non lu" if n == 1 else f"Résumer les {n} e-mails non lus")
+        return ("Résumer les e-mails d'aujourd'hui" if n is None else "Aucun e-mail aujourd'hui" if n == 0
+                else "Résumer l'e-mail d'aujourd'hui" if n == 1 else f"Résumer les {n} e-mails d'aujourd'hui")
+
+    def _digest_enabled(self, scope: str) -> bool:
+        return not self._mail_counts.get("busy") and self._mail_counts.get(scope) != 0
 
     def _run_tray(self):
         dark_menus()     # comme la fenêtre de Boostache, toujours sombre
@@ -160,6 +182,9 @@ class TrayApp:
 
     def _on_toggle_recording(self, icon=None, item=None):
         threading.Thread(target=self.app.toggle_recording, daemon=True).start()
+
+    def _on_digest(self, scope: str):
+        threading.Thread(target=self.app.gmail_digest, args=(scope,), daemon=True).start()
 
     def _on_reload(self, icon=None, item=None):
         logger.log("Redémarrage de Boostache…")

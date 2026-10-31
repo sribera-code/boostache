@@ -1810,6 +1810,7 @@ mark { border-radius: 3px; background: rgba(255, 214, 102, .28); color: inherit;
 .rec-model-hint { color: var(--fg-3); font-size: 12px; }
 
 /* Texte en direct */
+.rec-window { gap: 4px; }
 .rec-live { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; padding: 10px 12px; border: 1px solid var(--line-2); border-radius: var(--radius); background: var(--bg-2); }
 .rec-live.error { border-color: rgba(238, 125, 125, .35); }
 .rec-live-head { display: flex; align-items: center; gap: 8px; min-height: 26px; }
@@ -3331,18 +3332,19 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .ml-scopes-label .icon { color: var(--link); }
 .pane-chip.ml-scope { height: 24px; padding: 0 9px; color: var(--fg); font-size: 12px; }
 .ml-scope-n { color: var(--fg-3); font-variant-numeric: tabular-nums; }
-.ml-rows { display: flex; flex: 1; flex-direction: column; gap: 6px; min-height: 0; padding: 6px; overflow-y: auto; }
+.ml-rows { display: flex; flex: 1; flex-direction: column; gap: 4px; min-height: 0; padding: 5px; overflow-y: auto; }
 .ml-empty { margin: 16px 10px; color: var(--fg-3); font-size: 12.5px; line-height: 1.55; }
-/* Chaque e-mail dans son cadre, séparé des voisins */
+/* Chaque e-mail dans son cadre, séparé des voisins ; compact : expéditeur, objet et
+   date sur une ligne, puis le résumé */
 .ml-row {
   display: flex;
   flex-shrink: 0;
   flex-direction: column;
   gap: 2px;
-  padding: 7px 10px 9px;
+  padding: 4px 8px 5px;
   border: 1px solid var(--line-2);
-  border-radius: 9px;
-  font-size: 12.5px;
+  border-radius: 7px;
+  font-size: 12px;
   cursor: pointer;
   transition: background .12s, border-color .12s;
 }
@@ -3355,11 +3357,11 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .ml-row.open { border-color: var(--line-3); background: var(--bg-4); }
 .ml-row.selected { background: rgba(158, 193, 255, .08); }
 .ml-row:focus-visible { outline: 1px solid var(--line-3); }
-.ml-meta { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 24px; }
-/* Expéditeur en tête de ligne, plus grand que le reste */
-.ml-from { flex: 1; min-width: 0; overflow: hidden; color: var(--fg); font-size: 13.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
+.ml-meta { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: 22px; }
+/* Expéditeur en tête de ligne, un peu plus grand que l'objet qui le suit */
+.ml-from { flex: 0 1 auto; min-width: 0; max-width: 40%; overflow: hidden; color: var(--fg); font-size: 12.5px; font-weight: 550; text-overflow: ellipsis; white-space: nowrap; }
 .ml-row.unread .ml-from { font-weight: 700; }
-.ml-when { flex-shrink: 0; color: var(--fg-3); font-size: 11.5px; }
+.ml-when { flex-shrink: 0; color: var(--fg-3); font-size: 11px; }
 .ml-sum.icon-btn { flex-shrink: 0; width: 22px; height: 22px; margin: -2px -2px -2px 0; opacity: 0; }
 .ml-row:hover .ml-sum, .ml-row:focus-within .ml-sum, .ml-sum.busy { opacity: 1; }
 .ml-sum.busy .pane-busy { width: 6px; height: 6px; }
@@ -3371,7 +3373,7 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .ml-act.ml-delete:hover { color: var(--red); }
 .ml-row.acting { opacity: .55; pointer-events: none; transition: opacity .15s; }
 .ml-row.removing { opacity: .3; }
-.ml-subject { overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
+.ml-subject { flex: 1; min-width: 0; overflow: hidden; color: var(--fg-2); text-overflow: ellipsis; white-space: nowrap; }
 .ml-row.unread .ml-subject > span:first-child { color: var(--fg); }
 .ml-snippet { color: var(--fg-3); }
 /* Résumé : bloc teinté (bleu) avec l'icône de l'assistant, distinct du sujet et de
@@ -3379,35 +3381,39 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
    un clic ouvre l'e-mail comme le reste de la ligne */
 .ml-summary {
   position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  margin-top: 6px;
-  padding: 6px 9px;
+  display: block;
+  margin-top: 1px;
+  padding: 3px 8px;
   border-left: 2px solid rgba(158, 193, 255, .55);
-  border-radius: 0 6px 6px 0;
+  border-radius: 0 5px 5px 0;
   background: rgba(158, 193, 255, .075);
   color: var(--fg);
-  line-height: 1.5;
+  line-height: 1.4;
   user-select: text;
 }
 .ml-summary-text .icon { display: inline-block; margin-right: 5px; vertical-align: -1px; color: var(--link); }
 /* E-mail lu : résumé en retrait (texte gris, teinte plus légère) */
 .ml-row:not(.unread) .ml-summary { border-left-color: rgba(158, 193, 255, .3); background: rgba(158, 193, 255, .045); color: var(--fg-2); }
-.ml-row:not(.unread) .ml-action { color: var(--fg-2); }
+.ml-row:not(.unread) .ml-action { color: rgba(158, 193, 255, .62); }
 .ml-summary.dim { opacity: .55; }
-/* Réduit : deux lignes de résumé, l'action sur une ; en entier au clic */
+/* Réduit : deux lignes, l'action en bas à droite, sur une ligne — flottante, le texte
+   garde toute la largeur au-dessus (.ml-sp : cale haute d'une ligne posée par
+   maillist.js, 0 si résumé et action tiennent sur une) ; en entier au clic */
 .ml-summary-text { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
-.ml-summary.open .ml-summary-text { display: block; overflow: visible; }
+.ml-sp { float: right; width: 0; height: 0; }
+.ml-summary-text > .ml-action { float: right; clear: right; max-width: 70%; margin-left: 12px; }
 .ml-summary:not(.open) .ml-action > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ml-summary.truncated, .ml-summary.open { padding-right: 30px; }
+.ml-summary.open .ml-summary-text { display: flex; flex-direction: column; overflow: visible; }
+.ml-summary.open .ml-sp { display: none; }
+.ml-summary.open .ml-summary-text > .ml-action { order: 1; align-self: flex-end; float: none; max-width: 100%; margin: 1px 0 0; }
+.ml-summary.truncated, .ml-summary.open { padding-right: 28px; }
 .ml-more {
   position: absolute;
-  right: 4px; bottom: 4px;
+  right: 3px; bottom: 2px;
   display: grid;
   place-items: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
   border: 0;
   border-radius: 6px;
@@ -3425,8 +3431,9 @@ body.pane-resizing, body.pane-resizing * { cursor: row-resize !important; }
 .imp-urgent { color: var(--red); }
 .imp-important { color: var(--amber); }
 .digest-meta .imp { align-self: center; }
-.ml-action { display: flex; align-items: center; gap: 4px; color: var(--link); }
-.ml-action .icon { flex-shrink: 0; }
+/* À faire : bleu discret, comme la teinte du résumé */
+.ml-action { display: flex; align-items: center; gap: 3px; min-width: 0; color: rgba(158, 193, 255, .82); }
+.ml-action .icon { flex-shrink: 0; align-self: center; margin: 0; color: inherit; }
 .ml-pending { margin-top: 3px; color: var(--fg-3); font-style: italic; }
 .ml-error { margin-top: 3px; color: var(--red); font-size: 12px; }
 .ml-splitter { position: relative; flex-shrink: 0; width: 4px; touch-action: none; outline: 0; cursor: col-resize; }
