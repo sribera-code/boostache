@@ -764,7 +764,7 @@ class BoostacheApp:
                 return settings.get(key)
             settings.set(key, value)
         elif key == "assistant_duck_level":
-            if value not in ducking.LEVELS:
+            if value not in ducking.CHOICES:
                 return settings.get(key)
             settings.set(key, value)
         elif key == "ollama_keep_alive":

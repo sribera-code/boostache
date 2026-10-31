@@ -86,10 +86,9 @@ class Api:
 
     def speak(self, text, source=None, markdown=False, stream=False):
         """stream : texte encore en cours d'écriture, la suite arrive par tts_feed."""
-        # Message arrivé relu (une notification) : les autres applications baissent, comme à son annonce
-        duck = assistant.duck_level() if str(source or "").startswith(assistant.FEED_READ) else None
+        # Toute lecture : les autres applications baissent ou se mettent en pause, comme pour une annonce
         tts.speak(text or "", source=source, stream=bool(stream), prepare=strip_markdown if markdown else None,
-                  duck=duck)
+                  duck=assistant.duck_level())
 
     def tts_feed(self, source, text, final=False):
         return tts.feed(source, text or "", bool(final))
@@ -116,7 +115,7 @@ class Api:
             return
         label = speech.voice_label(engine, voice or tts.voice_for(engine))
         tts.speak(f"Bonjour, voici la voix {label}. Elle lit vos réponses, vos notes et vos textes à voix haute.",
-                  source="tts-preview", engine=engine, voice=voice or "")
+                  source="tts-preview", engine=engine, voice=voice or "", duck=assistant.duck_level())
 
     def dictate(self):
         """Dictée vocale Windows (Win+H) dans le champ qui a le focus."""

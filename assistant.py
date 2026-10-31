@@ -16,8 +16,9 @@ sans Ollama, ou s'il échoue : l'expéditeur et, au choix, l'objet ou le texte.
 Ils s'ajoutent aux « Messages arrivés » (avec leur résumé), que l'assistant
 connaît aussi pour répondre. Une autre lecture en cours n'est pas coupée :
 l'annonce attend sa fin (SPEAK_WAIT au plus) et regroupe les messages arrivés
-entre-temps. Pendant l'annonce, le son des autres applications baisse
-(réglages assistant_duck et assistant_duck_level, ducking.py).
+entre-temps. Pendant l'annonce, le son des autres applications baisse, ou les
+lecteurs se mettent en pause (réglages assistant_duck et assistant_duck_level,
+ducking.py).
 
 Ce que l'assistant voit : pour Gmail, les e-mails non lus de la boîte de
 réception, la liste affichée (ou l'e-mail ouvert) et, en entier, les fils dont
@@ -58,7 +59,6 @@ SPOKEN_ITEMS = 4           # messages annoncés un par un ; au-delà, « et N au
 DELTA_INTERVAL = 0.05      # regroupement des tokens envoyés à l'interface (s)
 SUMMARY_TIMEOUT = 90       # résumé d'un message pour l'annonce (s, chargement du modèle compris)
 ANNOUNCE = "assistant:announce"     # source des annonces (lecture à voix haute)
-FEED_READ = "assistant:feed:"       # … d'un message arrivé relu (bouton Lire, views/assistant.js)
 DAYS = ("lundi", "mardi", "mercredi", "jeudi", "vendredi", "samedi", "dimanche")
 MONTHS = ("janvier", "février", "mars", "avril", "mai", "juin", "juillet", "août", "septembre",
           "octobre", "novembre", "décembre")
@@ -190,12 +190,14 @@ def _item_spoken(it: dict, content: bool = True) -> str:
             else f"Nouveau message WhatsApp de {it['title']}")
 
 
-def duck_level() -> float | None:
-    """Volume des autres applications pendant la lecture d'une notification (annonce, message
-    arrivé relu) : part du leur ; None : pas de baisse."""
+def duck_level() -> float | str | None:
+    """Volume des autres applications pendant une lecture à voix haute (annonce, rappel, réponse,
+    note…) : part du leur, ducking.PAUSE (lecteurs en pause) ; None : pas de baisse."""
     if not settings.get("assistant_duck", True):
         return None
     level = settings.get("assistant_duck_level", ducking.DEFAULT_LEVEL)
+    if level == ducking.PAUSE:
+        return level
     return (level if level in ducking.LEVELS else ducking.DEFAULT_LEVEL) / 100
 
 

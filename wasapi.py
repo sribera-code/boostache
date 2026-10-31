@@ -312,6 +312,20 @@ def _co_string(raw) -> str:
         _ole32.CoTaskMemFree(raw)
 
 
+def _process_image(pid: int) -> str:
+    """Chemin de l'exécutable du processus pid ("" s'il est inaccessible)."""
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(1024)
+        size = DWORD(len(buf))
+        return buf.value if kernel32.QueryFullProcessImageNameW(handle, 0, buf, byref(size)) else ""
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def app_sessions(exclude_pid: int = 0) -> list[dict]:
     """Applications de la sortie par défaut dans le mélangeur de volume, hors sons
     système, hors applications fermées et hors le processus exclude_pid :
@@ -330,8 +344,10 @@ def app_sessions(exclude_pid: int = 0) -> list[dict]:
                     or control.GetState() == AUDIO_SESSION_EXPIRED):
                 continue
             key = _co_string(control.GetSessionIdentifier())
-            # « …|\Device\…\chrome.exe%b{…} » → chrome.exe
-            name = key.rsplit("|", 1)[-1].split("%b", 1)[0].replace("/", "\\").rsplit("\\", 1)[-1]
+            # « …|\Device\…\chrome.exe%b{…} » → chrome.exe ; « …|#%b{…} » (application du Store) :
+            # pas de chemin, celui du processus
+            path = key.rsplit("|", 1)[-1].split("%b", 1)[0].replace("/", "\\")
+            name = (path if "\\" in path else _process_image(pid)).rsplit("\\", 1)[-1]
             out.append({"key": key, "name": name or f"pid {pid}", "pid": pid,
                         "volume": control.QueryInterface(ISimpleAudioVolume)})
         except comtypes.COMError:

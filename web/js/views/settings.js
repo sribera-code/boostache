@@ -195,9 +195,10 @@ export function createSettingsView(ctx, state) {
         h("div", { class: "row", style: { marginTop: "12px" } },
           h("span", { class: "muted", text: "Volume" }), ctx.volumeControl()),
         h("div", { class: "row", style: { marginTop: "12px" } },
-          h("div", {}, h("div", { class: "muted", text: "Autres sons pendant une notification" }),
-            h("div", { class: "hint-text", text: "Pendant qu'un nouveau message est annoncé (Assistant), le son des autres "
-              + "applications (vidéo, musique, appel…) baisse à ce niveau, puis remonte." })),
+          h("div", {}, h("div", { class: "muted", text: "Autres sons pendant une lecture" }),
+            h("div", { class: "hint-text", text: "Pendant que Boostache lit à voix haute (annonce, rappel, réponse, note…), le son des autres "
+              + "applications (vidéo, musique, appel…) baisse à ce niveau, puis remonte. Pause : les vidéos "
+              + "et la musique s'arrêtent et reprennent à la fin ; le reste baisse à 10 %." })),
           duckSeg)),
       card("palette", "Captures", null,
         h("div", { class: "row" },

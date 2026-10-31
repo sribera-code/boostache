@@ -22,7 +22,8 @@ l'eau : speak(…, stream=True) lit les phrases déjà finies, feed() apporte le
 texte complet à chaque ajout, jusqu'au dernier appel (final=True).
 
 speak(…, duck=0.1) baisse le son des autres applications le temps de la
-lecture, à 10 % de leur volume (annonces des nouveaux messages, ducking.py).
+lecture, à 10 % de leur volume (toutes les lectures, réglage de l'Assistant, ducking.py) ;
+duck="pause" met aussi les lecteurs (vidéo, musique) en pause.
 
 Usage :
     tts.speak("Bonjour", on_done=ma_callback, source="notes:1")
@@ -83,6 +84,7 @@ EDGE_RETRY_AFTER = 60             # edge en panne : pas retenté avant (s)
 CACHE_BYTES = 48 << 20            # audio déjà synthétisé (relecture, retour en arrière)
 PIPER_IDLE = 600                  # voix Piper libérée après 10 min sans lecture
 STREAM_TIMEOUT = 180              # texte au fil de l'eau : plus rien reçu depuis (s), il est fini
+DUCK_WAIT = 1.0                   # attente au plus de la baisse des autres sons avant la première phrase (s)
 
 Audio = namedtuple("Audio", "pcm rate")
 
@@ -486,6 +488,7 @@ class _Session:
     def __init__(self, owner: "TTSEngine", chunks, source, on_done, engines, voice, feed=None, duck=None):
         self.owner = owner
         self.duck = duck                  # volume des autres applications pendant la lecture (ducking.py) ; None : inchangé
+        self.ducked = False               # … baissé (au moment de jouer la première phrase prête)
         self.chunks = chunks
         self.feed = feed                  # _Feed : texte au fil de l'eau, des phrases peuvent s'ajouter
         self.open = feed is not None      # … tant que le dernier morceau n'est pas arrivé
@@ -623,6 +626,11 @@ class _Session:
                                 stream = None
                             if stream is None:
                                 stream = wasapi.RenderStream(wasapi.get_device(wasapi.E_RENDER)[0], item[0].rate)
+                            if self.duck is not None and not self.ducked:
+                                # Autres sons baissés (ou en pause) seulement quand la voix est prête :
+                                # pas de blanc pendant la synthèse ; la voix attend la fin de la baisse
+                                self.ducked = True
+                                self.owner.ducker.hold(self.duck).wait(DUCK_WAIT)
                             outcome = self._play(stream, item[0].pcm, seek)
                         else:
                             outcome = "done"      # rien à dire (phrase sautée)
@@ -745,13 +753,15 @@ class TTSEngine:
     # ── Commandes ──────────────────────────
     def speak(self, text: str, on_done=None, source: str | None = None,
               engine: str | None = None, voice: str = "", stream: bool = False, prepare=None,
-              duck: float | None = None):
+              duck: float | str | None = None):
         """Lit text à haute voix. engine / voice : pour essayer une voix sans la
         choisir (sinon, réglages de configure()). stream : texte encore en cours
         d'écriture, la suite arrive par feed() ; prepare(texte) → texte à lire
         (appliqué à chaque morceau, sinon par l'appelant). duck : le son des
-        autres applications baisse jusqu'à la fin de la lecture, à cette part
-        de leur volume (0 : coupé) ; None : il n'est pas touché."""
+        autres applications baisse dès que la première phrase est prête (pas
+        pendant la synthèse) et jusqu'à la fin de la lecture, à cette part
+        de leur volume (0 : coupé), ou ducking.PAUSE : les lecteurs se mettent
+        en pause ; None : il n'est pas touché."""
         with self._lock:
             old, self._session = self._session, None
         if old:
@@ -773,8 +783,6 @@ class TTSEngine:
         session = _Session(self, chunks, source, on_done, self._engines(engine or self.engine), voice, feed, duck)
         with self._lock:
             self._session = session
-        if duck is not None:
-            self.ducker.hold(duck)             # relâché par _session_ended
         self._emit()
         session.start()
 
@@ -934,7 +942,7 @@ class TTSEngine:
                 self._session = None
         if current:
             self._emit()
-        if session.duck is not None:
+        if session.ducked:
             self.ducker.release()
         if _piper_loaded:
             _piper_release_later()
