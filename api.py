@@ -21,7 +21,7 @@ from compare import UserError as CompareError
 from notes import UserError as NoteError
 import speech
 from engine import LEVELS, logger, tts, strip_markdown
-from ollama_admin import DOWNLOAD_PAGE, INSTALLER, USES as MODEL_USES, models_dir
+from ollama_admin import USES as MODEL_USES, models_dir
 from storage import DATA_DIR, clipboard_history, settings
 from winutil import (exe_icon, list_windows, open_url, recycle, reveal_in_explorer, set_opacity,
                      set_topmost, window_thumbnail)
@@ -282,9 +282,11 @@ class Api:
     def rec_devices(self):
         return self._app.recorder.devices()
 
-    def rec_start(self, source="output", device_id="", mic_id="", live=False, window=False):
+    def rec_start(self, source="output", device_id="", mic_id="", live=False, last_minutes=False):
+        # Jamais « window » comme nom de paramètre : pywebview le reprend tel quel dans
+        # la fonction JS, où il masque l'objet global (window.pywebview → undefined).
         return self._app.recorder.start(str(source or ""), str(device_id or ""), str(mic_id or ""), bool(live),
-                                        bool(window))
+                                        bool(last_minutes))
 
     def rec_live_close(self):
         self._app.recorder.close_live()
@@ -438,15 +440,19 @@ class Api:
     def ollama_start(self):
         return self._app.ollama.start()
 
-    def ollama_install_page(self):
-        return open_url(DOWNLOAD_PAGE)
-
     def ollama_banner(self):
         return self._app.ollama.banner() if self._app.ollama else {"kind": ""}
 
-    def ollama_installer(self):
-        """Télécharge l'installateur d'Ollama (navigateur) : le relancer répare une installation incomplète."""
-        return open_url(INSTALLER)
+    def ollama_repair(self):
+        """Installe Ollama, ou le réinstalle par-dessus (installation incomplète) : téléchargement,
+        signature vérifiée, Ollama fermé, installation sans fenêtre, relance."""
+        if not self._app.ollama:
+            return {"ok": False}
+        return self._app.ollama.repair()
+
+    def ollama_repair_cancel(self):
+        if self._app.ollama:
+            self._app.ollama.cancel_repair()
 
     def ollama_open_models_dir(self):
         folder = models_dir()

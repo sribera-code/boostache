@@ -278,9 +278,12 @@ button { cursor: pointer; }
 .ollama-banner .ob-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
 .ollama-banner[data-kind="broken"] { border-bottom-color: rgba(238, 125, 125, .25); background: rgba(238, 125, 125, .08); }
 .ollama-banner[data-kind="broken"] .ob-icon { color: var(--red); }
-.ollama-banner[data-kind="starting"] { border-bottom-color: var(--line); background: var(--bg-1); }
-.ollama-banner[data-kind="starting"] .ob-icon { color: var(--fg-2); }
-.ollama-banner[data-kind="starting"] .ob-icon .icon { animation: spin 1s linear infinite; }
+.ollama-banner[data-kind="starting"],
+.ollama-banner[data-kind="repair"] { border-bottom-color: var(--line); background: var(--bg-1); }
+.ollama-banner[data-kind="starting"] .ob-icon,
+.ollama-banner[data-kind="repair"] .ob-icon { color: var(--fg-2); }
+.ollama-banner[data-kind="starting"] .ob-icon .icon,
+.ollama-banner[data-kind="repair"] .ob-icon .icon { animation: spin 1s linear infinite; }
 .view { position: relative; display: none; flex: 1; flex-direction: column; min-width: 0; min-height: 0; container: view / inline-size; }
 .view.active { display: flex; animation: fade .14s ease-out; }
 

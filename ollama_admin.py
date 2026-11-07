@@ -43,8 +43,13 @@ from engine import logger
 from storage import settings
 
 SITE          = "https://ollama.com"
-DOWNLOAD_PAGE = "https://ollama.com/download/windows"
 INSTALLER     = "https://ollama.com/download/OllamaSetup.exe"
+INSTALLER_SIGNER = "O=Ollama Inc."   # signature exigée avant de lancer l'installateur
+INSTALLER_REUSE  = 3 * 86400   # OllamaSetup.exe déjà dans Téléchargements : repris s'il a moins de… (s)
+INSTALL_TIMEOUT  = 20 * 60     # installation silencieuse (s)
+# Comme la mise à jour automatique d'Ollama, sans aucune fenêtre ni question
+INSTALLER_ARGS = ("/CLOSEAPPLICATIONS", "/FORCECLOSEAPPLICATIONS", "/SP-", "/NOCANCEL", "/VERYSILENT",
+                  "/SUPPRESSMSGBOXES", "/NORESTART")
 REGISTRY      = "registry.ollama.ai"
 CALL_TIMEOUT  = 20             # appels au serveur local : show, delete, ps… (s)
 WEB_TIMEOUT   = 15             # ollama.com et registre (s)
@@ -104,6 +109,70 @@ def _server_log() -> str:
             return f.read().decode("utf-8", "replace")
     except OSError:
         return ""
+
+
+def install_dir() -> Path:
+    """Dossier d'Ollama (installé ou non : là où son installateur le met)."""
+    exe = find_exe()
+    if exe is not None:
+        return exe.parent
+    return Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Ollama"
+
+
+def downloads_dir() -> Path:
+    """Dossier Téléchargements de Windows (même déplacé)."""
+    try:
+        import uuid
+        from ctypes import wintypes
+        guid = uuid.UUID("374DE290-123F-4565-9164-39C4925E467B").bytes_le
+        out = ctypes.c_wchar_p()
+        if ctypes.windll.shell32.SHGetKnownFolderPath(ctypes.c_char_p(guid), 0, None, ctypes.byref(out)) == 0:
+            try:
+                return Path(out.value)
+            finally:
+                ctypes.windll.ole32.CoTaskMemFree(out)
+    except Exception:
+        pass
+    return Path.home() / "Downloads"
+
+
+def signed_by_ollama(path: Path) -> bool:
+    """Signature Authenticode valide, au nom d'Ollama Inc."""
+    script = ("$s = Get-AuthenticodeSignature -LiteralPath $env:BOOSTACHE_FILE; "
+              "[string]$s.Status + '|' + [string]$s.SignerCertificate.Subject")
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                             env={**os.environ, "BOOSTACHE_FILE": str(path)}, capture_output=True,
+                             text=True, timeout=60, creationflags=_CREATE_NO_WINDOW).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    status, _, subject = out.partition("|")
+    return status == "Valid" and INSTALLER_SIGNER in subject
+
+
+def recent_installer(now: float | None = None) -> Path | None:
+    """OllamaSetup.exe (ou « OllamaSetup (1).exe »…) téléchargé depuis peu par le navigateur."""
+    now = time.time() if now is None else now
+    try:
+        found = [p for p in downloads_dir().glob("OllamaSetup*.exe") if p.is_file()]
+        found = [(p.stat().st_mtime, p) for p in found]
+    except OSError:
+        return None
+    found = [(t, p) for t, p in found if now - t < INSTALLER_REUSE]
+    return max(found)[1] if found else None
+
+
+def install_failure(log: str) -> str:
+    """Raison lisible d'un échec, lue dans le journal de l'installateur (Inno Setup)."""
+    lines = log.splitlines()
+    for i, line in enumerate(lines):
+        if "suppressed message box" in line:
+            detail = [s.strip() for s in lines[i + 1:i + 6] if s.startswith(" ") and s.strip()]
+            path = next((s for s in detail if ":\\" in s), "")
+            if "code 5" in " ".join(detail) or "in use" in log[:log.find(line)]:
+                return f"{Path(path).name or 'un fichier'} est utilisé par un autre programme"
+            return " ".join(detail)[:200]
+    return ""
 
 
 def runner_missing(seen: bool = False) -> bool:
@@ -338,6 +407,16 @@ def parse_tags(page: str, name: str) -> list[dict]:
     return variants
 
 
+def _downloaded_setup() -> Path:
+    """Installateur téléchargé par Boostache (effacé après la réparation)."""
+    from storage import CACHE_DIR
+    return CACHE_DIR / "OllamaSetup.exe"
+
+
+class _Cancelled(Exception):
+    """Téléchargement de l'installateur annulé."""
+
+
 def _short(e: Exception) -> str:
     text = str(e).strip().splitlines()[0] if str(e).strip() else type(e).__name__
     return text[:200]
@@ -399,6 +478,8 @@ class OllamaAdmin:
         self._pulls: dict[str, dict] = {}        # modèle → téléchargement
         self._starting = False
         self._waiting = False                    # lancement automatique : Ollama laissé démarrer seul
+        self._repair: dict | None = None         # réparation (ou installation) en cours : étape, progression
+        self._repair_cancel = threading.Event()
         self._web = None                         # httpx.Client vers ollama.com et le registre
         self._library = None                     # (time.monotonic(), modèles d'ollama.com)
         self._tags: dict[str, tuple] = {}        # modèle → (time.monotonic(), (variantes, en ligne seulement))
@@ -421,7 +502,11 @@ class OllamaAdmin:
     def banner(self) -> dict:
         """Bandeau en haut de l'interface : « stopped » (Ollama ne répond pas),
         « starting », « missing » (pas installé), « broken » (installation
-        incomplète), ou "" (rien à signaler, ou pas encore testé)."""
+        incomplète), « repair » (réparation en cours, repair : son étape) ou ""
+        (rien à signaler, ou pas encore testé)."""
+        repair = self._repair
+        if repair is not None:
+            return {"kind": "repair", "repair": dict(repair)}
         online = self._chat.online
         if self._starting or (self._waiting and not online):
             kind = "starting"
@@ -618,6 +703,155 @@ class OllamaAdmin:
     def _changed(self):
         """Quelque chose a changé hors d'un appel de l'interface : elle relit l'état."""
         self._bridge.emit("ollama:changed", {"starting": self._starting})
+
+    # ── Réparation / installation ─────────────
+    def repair(self) -> dict:
+        """Installe Ollama, ou le répare (installation incomplète) en le réinstallant
+        par-dessus : les modèles sont conservés. En arrière-plan, étapes envoyées à
+        l'interface (« ollama:repair ») : download, verify, stop, install, start."""
+        with self._lock:
+            if self._repair is not None:
+                return {"ok": True}
+            self._repair = {"phase": "prepare", "done": 0, "total": 0, "installed": find_exe() is not None}
+            self._repair_cancel.clear()
+        threading.Thread(target=self._run_repair, daemon=True, name="ollama-repair").start()
+        self._emit_repair()
+        return {"ok": True}
+
+    def cancel_repair(self):
+        """Annule le téléchargement de l'installateur (l'installation, elle, va jusqu'au bout)."""
+        self._repair_cancel.set()
+
+    def _emit_repair(self):
+        repair = self._repair
+        self._bridge.emit("ollama:repair", dict(repair) if repair is not None else None)
+
+    def _repair_step(self, phase: str, **extra):
+        if self._repair is not None:
+            self._repair.update(phase=phase, **extra)
+            self._emit_repair()
+
+    def _run_repair(self):
+        installed = self._repair["installed"]
+        word = "réparation" if installed else "installation"
+        try:
+            setup = recent_installer()
+            if setup is None:
+                setup = self._download_installer()
+            else:
+                logger.log(f"Ollama : {word} avec l'installateur déjà téléchargé ({setup.name}).")
+            self._repair_step("verify")
+            if not signed_by_ollama(setup):
+                raise RuntimeError(f"{setup.name} n'est pas signé par Ollama : il n'a pas été lancé.")
+            self._repair_step("stop")
+            self._stop_ollama()
+            self._repair_step("install")
+            self._install(setup)
+            self._chat.runner_missing = False
+            if runner_missing():
+                raise RuntimeError("l'installation s'est terminée, mais le moteur d'Ollama (llama-server.exe) "
+                                   "manque toujours (antivirus ?).")
+            self._repair_step("start")
+            if not self._chat.probe():
+                for _ in range(10):            # l'installateur relance peut-être Ollama lui-même
+                    time.sleep(1)
+                    if self._chat.probe():
+                        break
+                else:
+                    self.start()
+            logger.log(f"Ollama : {word} terminée.")
+            self._bridge.emit("toast", {"text": "Ollama est réparé." if installed else "Ollama est installé.",
+                                        "kind": "success"})
+        except _Cancelled:
+            logger.log(f"Ollama : {word} annulée.")
+        except Exception as e:
+            logger.log(f"Ollama : {word} impossible : {e}", level="error")
+            self._bridge.emit("toast", {"text": f"{word.capitalize()} d'Ollama impossible : {_short(e)}",
+                                        "kind": "error"})
+        finally:
+            for p in (_downloaded_setup(), _downloaded_setup().with_suffix(".part")):   # 1,7 Go
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            self._repair = None
+            self._emit_repair()
+            self._bridge.emit("ollama:banner", {})
+            self._changed()
+
+    def _download_installer(self) -> Path:
+        """Télécharge OllamaSetup.exe dans le cache de Boostache (progression envoyée)."""
+        import httpx
+        final = _downloaded_setup()
+        final.parent.mkdir(parents=True, exist_ok=True)
+        part = final.with_suffix(".part")
+        logger.log(f"Ollama : téléchargement de l'installateur ({INSTALLER}).")
+        self._repair_step("download")
+        last = 0.0
+        with self._http().stream("GET", INSTALLER, timeout=httpx.Timeout(WEB_TIMEOUT, read=120)) as r:
+            r.raise_for_status()
+            total = int(r.headers.get("content-length") or 0)
+            free = _disk_free(final.parent)
+            if total and free is not None and free < total + DISK_MARGIN:
+                raise RuntimeError(f"pas assez de place sur le disque ({_go(total)} nécessaires).")
+            done = 0
+            with open(part, "wb") as f:
+                for chunk in r.iter_bytes(1 << 20):
+                    if self._repair_cancel.is_set():
+                        raise _Cancelled()
+                    f.write(chunk)
+                    done += len(chunk)
+                    now = time.monotonic()
+                    if now - last >= EMIT_EVERY:
+                        last = now
+                        self._repair_step("download", done=done, total=total)
+        if total and done < total:
+            raise RuntimeError("téléchargement interrompu.")
+        os.replace(part, final)
+        return final
+
+    def _stop_ollama(self):
+        """Ferme tout ce qui utilise le dossier d'Ollama : son application, le serveur,
+        et les moteurs (llama-server.exe) restés seuls. Un fichier encore utilisé fait
+        échouer l'installateur, qui annule alors tout (installation incomplète)."""
+        import locks
+        folder = install_dir()
+        if not folder.is_dir():
+            return
+        for _ in range(3):
+            found = locks.scan_local([str(folder)])
+            targets = [p for p in found["processes"]
+                       if p["own"] != "self" and not p["critical"] and p["name"].lower() != locks.SHELL]
+            if not targets:
+                return
+            logger.log("Ollama : fermeture de " + ", ".join(f"{p['name']} ({p['pid']})" for p in targets) + ".")
+            locks.terminate_local(targets)
+            time.sleep(1)
+
+    def _install(self, setup: Path):
+        """Lance l'installateur sans fenêtre et attend sa fin ; échec → RuntimeError
+        avec la raison lue dans son journal."""
+        from storage import CACHE_DIR
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        log = CACHE_DIR / "ollama-install.log"
+        try:
+            log.unlink(missing_ok=True)
+        except OSError:
+            pass
+        logger.log(f"Ollama : installation ({setup.name}).")
+        try:
+            code = subprocess.run([str(setup), *INSTALLER_ARGS, f"/LOG={log}"], timeout=INSTALL_TIMEOUT,
+                                  creationflags=_CREATE_NO_WINDOW).returncode
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"l'installateur ne s'est pas terminé après {INSTALL_TIMEOUT // 60} minutes.")
+        if code != 0:
+            try:
+                text = log.read_text(encoding="utf-8-sig", errors="replace")
+            except OSError:
+                text = ""
+            reason = install_failure(text)
+            raise RuntimeError(f"l'installateur a échoué (code {code})" + (f" : {reason}." if reason else
+                               f". Journal : {log}"))
 
     # ── Modèles ───────────────────────────────
     def unload(self, name: str) -> dict:

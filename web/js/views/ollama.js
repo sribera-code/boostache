@@ -285,8 +285,9 @@ export function createOllamaView(ctx, state) {
       !i.online && !i.starting && i.installed !== false
         ? h("button", { class: "btn primary sm", type: "button", onClick: start }, ico("power", 14), "Lancer Ollama") : null,
       i.installed === false
-        ? h("button", { class: "btn primary sm", type: "button", onClick: () => api.ollama_install_page() },
-          ico("external-link", 14), "Installer Ollama") : null,
+        ? h("button", { class: "btn primary sm", type: "button", onClick: () => api.ollama_repair(),
+          dataset: { tip: "Boostache télécharge l'installateur d'Ollama et l'installe (étapes dans le bandeau)" } },
+          ico("download", 14), "Installer Ollama") : null,
     ].filter(Boolean));
 
     const gpus = (i.gpus || []).map((g) => `${g.name} (${memory(g.vram)})`);
