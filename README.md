@@ -174,6 +174,14 @@ Console Python pour les calculs, avec un assistant en conversation :
 - Saisie : **Maj+Entrée** nouvelle ligne, une ligne qui finit par « : » passe à la ligne suivante indentée (def, for, if…), Tab indente, **↑ ↓** rappellent les calculs précédents, Échap vide le champ ; erreurs en rouge (dernière ligne, **détails** pour la trace)
 - Les calculs tournent dans un **processus Python à part** : un calcul trop long s'interrompt (bouton carré, ou **Interrompre** après 2 s) sans bloquer Boostache — ses variables sont alors effacées, comme avec **Réinitialiser**. Historique des calculs gardé d'une session à l'autre ; ceux dont les variables ont été effacées sont suivis de **Rejouer** (les recalcule pour retrouver leurs variables)
 
+### Météo
+Prévision sur 14 jours en courbes défilantes (inspirée de weatherline) :
+- **Lieu** : la position de Windows (Paramètres > Confidentialité > Emplacement), ou une ville cherchée par son nom (celles du pays de Windows d'abord) ; le choix est gardé
+- **Quatre graphiques** qui défilent ensemble : température (ressenti en pointillés, fourchette des 51 scénarios ECMWF, minimum et maximum de chaque jour), luminosité (rayonnement en % du plein soleil par ciel dégagé, nuages), pluie et humidité (pluie de l'heure écoulée, risque), vent (rafales, flèches de direction). Fond plus clair de jour, passé assombri, repère « maintenant »
+- **Survoler** une courbe lit la même heure sur les quatre graphiques ; glisser à la souris, **Maj + molette** ou **← →** pour défiler, **Origine** (ou le bouton calendrier) pour revenir à maintenant ; zoom **24 h / 3 j / 7 j**
+- **Bandeau des jours** : maximum, minimum et pluie de chaque jour ; clic : aller à ce jour, le cadre montre la partie affichée
+- Données Open-Meteo (gratuites, sans clé), rechargées après 30 min ; la dernière prévision s'affiche aussitôt au démarrage et reste visible hors ligne
+
 ### Lecture à voix haute
 - Boutons **Lire** sous chaque réponse (conversations, assistant, documents, propositions et brouillon amélioré de WhatsApp et Gmail, réponses et résumés de Gmail), des consoles, notes, du presse-papiers, des transcriptions et des messages de l'assistant ; clic droit sur un e-mail résumé ou sur une proposition de réponse : **Lire**
 - **Zones de saisie** (Conversations, Assistant, Documents, WhatsApp, Gmail), à côté du bouton d'envoi :
@@ -325,6 +333,7 @@ boostache/
 ├── codediff.py           # Comparer, par symbole : le code découpé en symboles selon son langage, différences sans la mise en page, fusion d'un passage
 ├── calc.py               # Calculatrice : historique, sessions, calculs modifiés et recalculés, assistant (Ollama, outils)
 ├── calc_worker.py        # Calculatrice : interpréteur Python (fonctions prêtes à l'emploi, résultat de la dernière expression)
+├── weather.py            # Météo : prévision Open-Meteo (fourchette ECMWF, luminosité), position Windows, recherche de villes
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export

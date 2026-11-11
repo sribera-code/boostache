@@ -33,6 +33,7 @@ from minutes import MinutesService
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
 from rag import RagService
+from weather import WeatherService
 from recorder import WINDOW_MINUTES, FORMATS as AUDIO_FORMATS, SOURCES as AUDIO_SOURCES, RecorderService
 from reminders import ReminderService
 from search import SearchService
@@ -172,6 +173,8 @@ class BoostacheApp:
         self.calc = CalcService(self.bridge, self.chat)
         # Section Comparer : différences et fusion de deux textes, explication et choix par l'IA (Ollama)
         self.compare = CompareService(self.bridge, self.chat)
+        # Section Météo : prévision sur 14 jours (Open-Meteo), position Windows ou ville choisie
+        self.weather = WeatherService()
         # Recherche dans toutes les sections (Ctrl+K)
         self.search = SearchService(self)
         # Rappels (message arrivé, section Tâches) : voix et notification Windows
@@ -637,7 +640,8 @@ class BoostacheApp:
                 "last_model", "help_model", "assistant_model", "ollama_num_ctx", "ollama_keep_alive",
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
                 "mail_list", "mail_list_width", "gmail_auto_summary", "files_model", "files_auto_summary",
-                "calc_model", "recorder_model", "compare_model", "compare_auto_explain")},
+                "calc_model", "recorder_model", "compare_model", "compare_auto_explain",
+                "weather_span")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -650,6 +654,7 @@ class BoostacheApp:
             "files":     self.files.snapshot(),
             "calc":      self.calc.state(),
             "compare":   self.compare.snapshot(),
+            "weather":   self.weather.snapshot(),
             "ollama":    self.ollama.boot_state() if self.ollama else
                          {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
@@ -790,6 +795,11 @@ class BoostacheApp:
             self.rag.refresh()
         elif key in ("files_model", "calc_model", "recorder_model", "compare_model"):
             settings.set(key, str(value or ""))
+        elif key == "weather_span":
+            # Section Météo : jours visibles à l'écran (zoom)
+            if value not in (1, 3, 7):
+                return settings.get(key)
+            settings.set(key, value)
         elif key == "rag_tree_width":
             # Largeur de l'arborescence de la section Documents (px)
             try:

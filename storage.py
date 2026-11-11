@@ -163,6 +163,8 @@ _DEFAULTS = {
     "compare_model":        "",            # section Comparer : modèle de l'IA ("" : celui des fichiers…)
     "compare_auto_explain": True,          # section Comparer : différences expliquées dès que deux textes sont là
     "compare_speak":        False,         # Lecture auto des réponses de la section Comparer
+    "weather_place":        None,          # section Météo : lieu fixe {name, detail, lat, lon} ; None : position actuelle
+    "weather_span":         3,             # … jours visibles à l'écran : 1 | 3 | 7
 }
 
 

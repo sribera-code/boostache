@@ -17,6 +17,7 @@ import { createRagView } from "./views/rag.js";
 import { createFilesView } from "./views/files.js";
 import { createCompareView } from "./views/compare.js";
 import { createCalcView } from "./views/calc.js";
+import { createWeatherView } from "./views/weather.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
@@ -38,6 +39,7 @@ const NAV = [
   { id: "files",     label: "Fichiers",       icon: "folder-search",   create: createFilesView },
   { id: "compare",   label: "Comparer",       icon: "git-compare",     create: createCompareView },
   { id: "calc",      label: "Calculatrice",   icon: "calculator",      create: createCalcView },
+  { id: "weather",   label: "Météo",          icon: "cloud-sun",       create: createWeatherView },
   "-",
   { id: "logs",      label: "Journal",        icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },

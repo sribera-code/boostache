@@ -917,6 +917,21 @@ class Api:
         return self._app.compare.model()
 
     # ─────────────────────────────────────────
+    #  Météo (weather.py) : réseau et PowerShell, chaque appel dans son thread
+    # ─────────────────────────────────────────
+    def weather_locate(self):
+        return self._app.weather.locate()
+
+    def weather_search(self, query):
+        return self._app.weather.search(str(query or ""))
+
+    def weather_set_place(self, place=None):
+        return self._app.weather.set_place(place)
+
+    def weather_forecast(self, lat, lon, name="", here=False):
+        return self._app.weather.forecast(lat, lon, str(name or ""), bool(here))
+
+    # ─────────────────────────────────────────
     #  Recherche dans toutes les sections (Ctrl+K)
     # ─────────────────────────────────────────
     def search_all(self, query):
