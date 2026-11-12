@@ -187,7 +187,7 @@ class Capture:
         if self.label:
             return self.label
         try:
-            return "Capture " + datetime.fromisoformat(self.created).strftime("%H:%M:%S")
+            return "Capture " + datetime.fromisoformat(self.created).strftime("%d/%m/%Y %H:%M:%S")
         except ValueError:
             return "Capture"
 
