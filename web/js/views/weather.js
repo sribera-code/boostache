@@ -1,5 +1,5 @@
 // Vue Météo : prévision sur 14 jours en courbes défilantes (d'après weatherline ; données : weather.py).
-// Quatre graphiques (température, luminosité, pluie et humidité, vent) partagent la même échelle
+// Quatre graphiques (température, pluie et humidité, luminosité, vent) partagent la même échelle
 // horizontale : ils défilent ensemble, et survoler l'un lit la même heure sur tous.
 import { h, debounce, isTyping } from "../dom.js";
 import { ico, iconButton, toast, openPopover } from "../ui.js";
@@ -233,18 +233,6 @@ function buildCharts(f) {
       ],
     },
     {
-      key: "light", title: "Luminosité", icon: "sun", color: COLORS.sun, height: 150,
-      left: PERCENT, leftUnit: "%",
-      series: [
-        series(f.cloud_cover, COLORS.cloud, { kind: "area", width: 1.2, fill: 0.16 }),
-        series(f.brightness, COLORS.sun, { kind: "area" }),
-      ],
-      readouts: [
-        { kind: "area", color: () => COLORS.sun, text: (i) => `${fmt0(f.brightness[i])} % du plein soleil` },
-        { kind: "area", color: () => COLORS.cloud, text: (i) => `nuages ${fmt0(f.cloud_cover[i])} %` },
-      ],
-    },
-    {
       // Pluie et risque datés de l'heure écoulée : dessinés au milieu de cette heure
       key: "rain", title: "Pluie et humidité", icon: "umbrella", color: COLORS.rain, height: 160,
       left: niceRange(0, Math.max(1, (ok(rainMax) ? rainMax : 0) * 1.1), 4), leftUnit: "mm",
@@ -258,6 +246,18 @@ function buildCharts(f) {
         { kind: "area", color: () => COLORS.rain, text: (i) => `${fmt1(f.precipitation[i])} mm` },
         { kind: "line", color: () => COLORS.rainProb, text: (i) => `risque ${fmt0(f.precip_prob[i])} %` },
         { kind: "line", color: () => rgba(WHITE, 0.6), text: (i) => `humidité ${fmt0(f.humidity[i])} %` },
+      ],
+    },
+    {
+      key: "light", title: "Luminosité", icon: "sun", color: COLORS.sun, height: 150,
+      left: PERCENT, leftUnit: "%",
+      series: [
+        series(f.cloud_cover, COLORS.cloud, { kind: "area", width: 1.2, fill: 0.16 }),
+        series(f.brightness, COLORS.sun, { kind: "area" }),
+      ],
+      readouts: [
+        { kind: "area", color: () => COLORS.sun, text: (i) => `${fmt0(f.brightness[i])} % du plein soleil` },
+        { kind: "area", color: () => COLORS.cloud, text: (i) => `nuages ${fmt0(f.cloud_cover[i])} %` },
       ],
     },
     {
@@ -770,13 +770,33 @@ export function createWeatherView(ctx, state) {
       }
     }
 
-    // Heures
+    // Date au milieu de chaque journée, gardée dans la partie visible du jour ;
+    // elle glisse hors de l'écran avec le séparateur quand il ne reste plus la place
+    const dates = [];
+    c.font = `700 10.5px ${FONT}`;
+    for (let a = 0; a < n;) {
+      let b = a + 1;
+      while (b < n && f.hours[b] !== 0) b++;
+      const xa = X(a), xb = X(Math.min(b, n - 1));
+      if (xb > 0 && xa < vw) {
+        const label = dayLabel(f.stamps[a]);
+        const w = c.measureText(label).width;
+        const lo = Math.max(xa, 0) + w / 2 + 3, hi = Math.min(xb, vw) - w / 2 - 3;
+        const x = lo <= hi ? Math.min(Math.max((xa + xb) / 2, lo), hi) : xa < 0 ? hi : lo;
+        dates.push({ label, x, w });
+      }
+      a = b;
+    }
+    for (const d of dates) text(c, d.label, d.x, g.bottom + 5, { align: "center", weight: 700, color: "#fff" });
+
+    // Heures, sauf sous une date
     const step = niceStep(36 / hw);
+    c.font = `500 10.5px ${FONT}`;
     for (let i = i0; i <= i1; i++) {
       if (f.hours[i] % step !== 0) continue;
-      const midnight = f.hours[i] === 0;
-      text(c, midnight ? dayLabel(f.stamps[i]) : `${f.hours[i]}h`, X(i), g.bottom + 5,
-        { align: "center", weight: midnight ? 700 : 500, color: midnight ? "#fff" : rgba(WHITE, 0.5) });
+      const label = `${f.hours[i]}h`, x = X(i), half = c.measureText(label).width / 2;
+      if (dates.some((d) => Math.abs(x - d.x) < d.w / 2 + half + 6)) continue;
+      text(c, label, x, g.bottom + 5, { align: "center" });
     }
 
     // Heure lue : curseur et points de chaque courbe
