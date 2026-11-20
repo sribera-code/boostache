@@ -1,6 +1,6 @@
 # Boostache
 
-Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte et compte rendu, une fiche complète de n'importe quel fichier ou dossier (avec les applications qui empêchent de le supprimer, un résumé et des questions à Ollama), la comparaison et la fusion de deux textes aidées par l'IA, une calculatrice Python, WhatsApp Web et Gmail avec un assistant de réponse, un assistant qui répond aux questions sur vos e-mails et messages et annonce à voix haute les nouveaux, un planificateur de tâches, un gestionnaire de raccourcis clavier globaux et une section pour gérer Ollama (modèles, téléchargements, options), une recherche dans toutes les sections (Ctrl+K) et des rappels dits à voix haute — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
+Application de bureau Windows légère qui vit dans le **system tray**. Elle regroupe un chat LLM local (via Ollama), des terminaux intégrés, un éditeur de notes, un historique du presse-papiers, des captures d'écran annotables, un enregistreur du son du PC avec transcription en texte et compte rendu, une fiche complète de n'importe quel fichier ou dossier (avec les applications qui empêchent de le supprimer, un résumé et des questions à Ollama), la comparaison et la fusion de deux textes aidées par l'IA, une calculatrice Python, l'écran d'un smartphone Android branché (piloté à la souris et au clavier, copier-coller compris), WhatsApp Web et Gmail avec un assistant de réponse, un assistant qui répond aux questions sur vos e-mails et messages et annonce à voix haute les nouveaux, un planificateur de tâches, un gestionnaire de raccourcis clavier globaux et une section pour gérer Ollama (modèles, téléchargements, options), une recherche dans toutes les sections (Ctrl+K) et des rappels dits à voix haute — le tout dans une fenêtre sombre et moderne, toujours au premier plan.
 
 L'interface est une page web (HTML/CSS/JS) affichée par WebView2 via [pywebview] ; toute la logique reste en Python.
 
@@ -182,6 +182,24 @@ Prévision sur 14 jours en courbes défilantes (inspirée de weatherline) :
 - **Bandeau des jours** : maximum, minimum et pluie de chaque jour ; clic : aller à ce jour, le cadre montre la partie affichée
 - Données Open-Meteo (gratuites, sans clé), rechargées après 30 min ; la dernière prévision s'affiche aussitôt au démarrage et reste visible hors ligne
 
+### Smartphone
+L'écran d'un téléphone Android branché en USB, affiché et piloté depuis Boostache (serveur de [scrcpy], embarqué) :
+- **Section visible seulement quand un téléphone est branché** avec le débogage USB activé (Options pour les développeurs) ; elle disparaît quand on le débranche. Pas encore autorisé : la section demande d'accepter « Autoriser le débogage USB ? » sur le téléphone. Les émulateurs sont ignorés (ils ont leur fenêtre)
+- Écran en direct (vidéo H.264 décodée par la fenêtre), à la plus grande taille qui tient dans la section ; suit la rotation du téléphone
+- **Souris** : clic = toucher, glisser = balayer, molette = défiler, clic droit = retour (rallume l'écran s'il est éteint), clic du milieu = accueil ; écran tactile du PC : plusieurs doigts
+- **Clavier** (clic sur l'écran pour lui donner le clavier, cadre plus clair) : texte, accents et touches mortes, dictée Win+H, Entrée, Retour arrière, flèches, Tab, Échap, Ctrl+A, Ctrl+Z… Les caractères que le téléphone ne sait pas taper (majuscules accentuées, €, « », œ, ’…) passent par son presse-papiers, rétabli aussitôt après
+- **Copier-coller** dans les deux sens :
+  - ce qui est copié sur le téléphone (Copier de son menu, Ctrl+C ou Ctrl+X sur l'écran, bouton Copier) arrive dans le presse-papiers de Windows (et dans l'historique de la section Presse-papiers)
+  - **Ctrl+V** sur l'écran (ou bouton Coller) colle le presse-papiers de Windows dans le champ du téléphone ; ce qui est copié dans Windows pendant que l'écran est affiché part aussi dans le presse-papiers du téléphone (Coller de son menu)
+- Boutons : retour, accueil, applications récentes, notifications, pivoter, volume, marche/arrêt
+- **Capture d'écran** (bouton appareil photo) : l'écran du téléphone en pleine résolution, ouvert dans un nouvel onglet de **Captures** (annoter, copier, enregistrer) ; si le téléphone renvoie une image noire (écran éteint par l'option, application protégée), c'est l'image affichée dans Boostache qui est prise
+- Deux interrupteurs dans l'en-tête (choix gardés et appliqués à chaque connexion ; l'icône change avec l'état) :
+  - **Écran du téléphone** (écran allumé / écran barré) : éteint, l'écran du téléphone reste noir, l'image et les commandes continuent dans Boostache
+  - **Mise en veille** (lune / tasse de café) : téléphone gardé éveillé tant que la section est affichée, le téléphone ne se met pas en veille et ne se verrouille donc pas — il suffit de le déverrouiller une fois (code tapé au clavier du PC sur l'écran affiché). Attention : pendant ce temps, appuyer sur son bouton marche donne accès au téléphone sans code
+- Téléphone verrouillé : l'écran de verrouillage s'affiche dans la section, le code se tape au clavier du PC (ou le schéma à la souris)
+- Plusieurs téléphones : choix dans l'en-tête. La connexion s'arrête 15 s après avoir quitté la section ou masqué la fenêtre (le téléphone revient à sa mise en veille et à son écran habituels)
+- Demande les outils Android (`adb`, dans le PATH ou le SDK Android) ; Boostache lance leur serveur s'il ne tourne pas
+
 ### Lecture à voix haute
 - Boutons **Lire** sous chaque réponse (conversations, assistant, documents, propositions et brouillon amélioré de WhatsApp et Gmail, réponses et résumés de Gmail), des consoles, notes, du presse-papiers, des transcriptions et des messages de l'assistant ; clic droit sur un e-mail résumé ou sur une proposition de réponse : **Lire**
 - **Zones de saisie** (Conversations, Assistant, Documents, WhatsApp, Gmail), à côté du bouton d'envoi :
@@ -238,6 +256,7 @@ Prévision sur 14 jours en courbes défilantes (inspirée de weatherline) :
 - Windows 10/11 avec le runtime [WebView2] (installé d'office avec Edge ; sinon, le télécharger)
 - [Ollama](https://ollama.com) installé et au moins un modèle téléchargé — depuis la section **Ollama** de Boostache, par exemple (les fonctions qui en ont besoin n'apparaissent que lorsque son serveur répond)
 - Lancer en **administrateur** pour activer les hotkeys globaux dans toutes les applications
+- Section **Smartphone** : [Android SDK Platform-Tools] (`adb`) dans le PATH (ou le SDK Android : `ANDROID_HOME`, `%LOCALAPPDATA%\Android\Sdk`) et un téléphone Android 5 ou plus en débogage USB
 
 ---
 
@@ -270,7 +289,7 @@ python -m tests           # tous les tests (une quinzaine de secondes)
 python -m tests -q        # sans le détail
 ```
 
-Ils tournent sans interface et sans Ollama (le modèle est remplacé par une doublure, la voix et les notifications aussi), avec des données dans un dossier temporaire : jamais celles de l'utilisateur. Couverts : file d'attente d'Ollama et nouvel essai, recherche, rappels (dates en français), compte rendu, calculatrice (interpréteur, recalcul), processus qui retiennent un dossier (seuls des processus lancés par le test sont terminés).
+Ils tournent sans interface et sans Ollama (le modèle est remplacé par une doublure, la voix et les notifications aussi), avec des données dans un dossier temporaire : jamais celles de l'utilisateur. Couverts : file d'attente d'Ollama et nouvel essai, recherche, rappels (dates en français), compte rendu, calculatrice (interpréteur, recalcul), processus qui retiennent un dossier (seuls des processus lancés par le test sont terminés), messages échangés avec le téléphone de la section Smartphone (serveur adb factice, sans téléphone).
 
 ---
 
@@ -334,6 +353,7 @@ boostache/
 ├── calc.py               # Calculatrice : historique, sessions, calculs modifiés et recalculés, assistant (Ollama, outils)
 ├── calc_worker.py        # Calculatrice : interpréteur Python (fonctions prêtes à l'emploi, résultat de la dernière expression)
 ├── weather.py            # Météo : prévision Open-Meteo (fourchette ECMWF, luminosité), position Windows, recherche de villes
+├── phone.py              # Smartphone : téléphones branchés (serveur adb), serveur scrcpy, vidéo vers la page, toucher, clavier, presse-papiers
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
@@ -358,6 +378,7 @@ boostache/
 │   ├── css/app.css       # Thème et mise en page
 │   ├── js/               # main.js (coquille), layout.js (écran partagé), banner.js (bandeau d'Ollama), palette.js (recherche Ctrl+K), reminders.js (menu et fenêtre des rappels), ui.js (composants), composer.js (zone de saisie des sections avec un modèle), pin.js (panneau premier plan), views/ (une vue par section)
 │   └── vendor/           # Bibliothèques embarquées (voir vendor/licenses)
+├── vendor/scrcpy/        # Serveur de scrcpy poussé sur le téléphone (section Smartphone, licence Apache 2.0)
 ├── tests/                # Tests sans interface ni Ollama (python -m tests)
 └── requirements.txt
 ```
@@ -389,7 +410,7 @@ Les données sont stockées dans `%LOCALAPPDATA%\Boostache\Boostache` (bouton **
 | `watchdog` | Surveillance des dossiers indexés (section Documents) ; sans lui, nouveau parcours toutes les 30 min |
 | `winrt-Windows.Media.Control` | Mise en pause des vidéos et de la musique pendant une annonce (réglage Pause) ; sans lui, leur son est seulement baissé |
 
-Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight.js], [xterm.js], icônes [Lucide], polices Inter et JetBrains Mono.
+Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight.js], [xterm.js], icônes [Lucide], polices Inter et JetBrains Mono. Dans `vendor/scrcpy/` : le serveur de [scrcpy] 5.0.1 (Genymobile), poussé sur le téléphone par la section Smartphone.
 
 [pywebview]: https://pywebview.flowrl.com
 [WebView2]: https://developer.microsoft.com/microsoft-edge/webview2/
@@ -397,5 +418,7 @@ Embarqués dans `web/vendor/` (aucun accès réseau) : [markdown-it], [highlight
 [highlight.js]: https://highlightjs.org
 [xterm.js]: https://xtermjs.org
 [Lucide]: https://lucide.dev
+[scrcpy]: https://github.com/Genymobile/scrcpy
+[Android SDK Platform-Tools]: https://developer.android.com/tools/releases/platform-tools
 [edge-tts]: https://github.com/rany2/edge-tts
 [Piper]: https://github.com/OHF-Voice/piper1-gpl

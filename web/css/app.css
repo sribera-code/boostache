@@ -3553,6 +3553,48 @@ body.ml-resizing, body.ml-resizing * { cursor: col-resize !important; }
 .wx-opt.on > .icon:last-child { color: var(--green); }
 .wx-opt-note { padding: 8px 9px 4px; color: var(--fg-3); font-size: 12px; }
 
+/* ── Smartphone (views/phone.js) : écran du téléphone, piloté à la souris ── */
+/* (pas de display ici : .view le gère, la section serait affichée sous les autres) */
+.ph { outline: 0; }
+.ph-device { max-width: 260px; }
+.ph-device > span { overflow: hidden; text-overflow: ellipsis; }
+.ph-device.static { pointer-events: none; color: var(--fg); }
+.ph-sub { overflow: hidden; text-overflow: ellipsis; }
+.ph-tools { display: flex; align-items: center; gap: 2px; }
+.ph-sep { width: 1px; height: 16px; margin: 0 5px; background: var(--line-2); }
+.ph-tools .icon-btn.busy { color: var(--fg); background: var(--bg-4); pointer-events: none; animation: ph-busy 1s ease-in-out infinite; }
+@keyframes ph-busy { 50% { opacity: .45; } }
+.ph-body { display: flex; flex: 1; flex-direction: column; min-height: 0; }
+.ph-stage { position: relative; display: grid; flex: 1; place-items: center; min-height: 0; overflow: hidden; }
+.ph-screen {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--line-2);
+  border-radius: 12px;
+  background: #000;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, .45);
+  cursor: default;
+  touch-action: none;
+  transition: border-color .12s, box-shadow .12s;
+}
+/* Le clavier va au téléphone */
+.ph-screen.focused { border-color: rgba(255, 255, 255, .32); box-shadow: 0 10px 32px rgba(0, 0, 0, .45), 0 0 0 3px rgba(255, 255, 255, .06); }
+.ph-canvas { display: block; width: 100%; height: 100%; }
+.ph-input {
+  position: absolute;
+  top: 0; left: 0;
+  width: 1px; height: 1px;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  resize: none;
+  pointer-events: none;
+}
+.ph-message { position: absolute; inset: 0; }
+.ph-message .glyph.spin .icon { animation: spin 1s linear infinite; }
+.ph-nav { display: flex; flex-shrink: 0; justify-content: center; gap: 28px; padding: 2px 0 10px; }
+.ph-nav .icon-btn { width: 44px; height: 30px; }
+
 /* ── Petites largeurs (de la section : un volet de l'écran partagé aussi) ─ */
 @container view (max-width: 860px) {
   .om-v-ctx { display: none; }
@@ -3563,8 +3605,11 @@ body.ml-resizing, body.ml-resizing * { cursor: col-resize !important; }
   .composer-wrap { padding: 4px 16px 14px; }
   .search input { width: 160px; }
   .wx-updated { display: none; }
+  .ph-sub { display: none; }
 }
 @container view (max-width: 560px) {
+  .ph-tools .ph-sep { margin: 0 2px; }
+  .ph-device { max-width: 140px; }
   .wx-place-btn { max-width: 150px; }
   .wx-inner { padding: 10px 8px 0; }
 }

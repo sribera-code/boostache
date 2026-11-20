@@ -18,6 +18,7 @@ import { createFilesView } from "./views/files.js";
 import { createCompareView } from "./views/compare.js";
 import { createCalcView } from "./views/calc.js";
 import { createWeatherView } from "./views/weather.js";
+import { createPhoneView } from "./views/phone.js";
 import { createWhatsAppView, createGmailView } from "./views/webpane.js";
 import { createLogsView } from "./views/logs.js";
 import { createTasksView } from "./views/tasks.js";
@@ -40,6 +41,8 @@ const NAV = [
   { id: "compare",   label: "Comparer",       icon: "git-compare",     create: createCompareView },
   { id: "calc",      label: "Calculatrice",   icon: "calculator",      create: createCalcView },
   { id: "weather",   label: "Météo",          icon: "cloud-sun",       create: createWeatherView },
+  // Seulement quand un téléphone est branché (débogage USB) : voir setPhones
+  { id: "phone",     label: "Smartphone",     icon: "smartphone",      create: createPhoneView },
   "-",
   { id: "logs",      label: "Journal",        icon: "scroll-text",     create: createLogsView },
   { id: "tasks",     label: "Tâches",         icon: "calendar-clock",  create: createTasksView },
@@ -53,8 +56,9 @@ const streamed = new Set();     // lectures au fil de l'eau en cours (sources), 
 const views = new Map();          // id → { view, nav, item }
 let layout = null;                // une section ou deux côte à côte (layout.js)
 let bootState = null;             // état initial (ui_ready), pour une section ajoutée ensuite
-let chatEntry = null;             // section Conversations, gardée quand Ollama ne répond plus
+const kept = new Map();           // sections retirées puis rendues (Conversations, Smartphone), créées une fois
 let lateChat = null;              // Ollama apparu ou disparu pendant le démarrage
+let phones = [];                  // téléphones branchés (phone.py) : la section Smartphone n'existe qu'avec eux
 let pendingDrop = null;
 let palette = null;                // recherche dans tout Boostache (Ctrl+K)
 
@@ -286,27 +290,58 @@ function setOllama(chat) {
   if (!layout) { lateChat = chat; return; }
   store.ollama = !!chat.available;
   $("#app").classList.toggle("ollama", store.ollama);
-  if (store.ollama === views.has("chat")) return;
-  if (store.ollama) {
-    // Créée une seule fois : masquée puis rendue, elle garde ses brouillons
-    if (!chatEntry) {
-      const item = NAV.find((x) => x.id === "chat");
-      chatEntry = createView(item, { ...bootState, chat });
-      chatEntry.nav = navItem(item);
+  setSection("chat", store.ollama, () => ({ ...bootState, chat }));
+}
+
+/** Téléphones branchés : la section Smartphone n'existe que tant qu'il y en a un. */
+function setPhones(devices) {
+  phones = devices || [];
+  if (!layout) return;
+  const added = setSection("phone", phones.length > 0, () => ({ ...bootState, phone: { devices: phones, session: null } }));
+  if (added && phones.length) toast(`${phones[0].name} branché : section Smartphone disponible.`, "info", 4000);
+}
+
+/** Ajoute une section à la barre latérale ou l'en retire (Ollama qui répond, téléphone
+ *  branché). Créée une seule fois (state() : son état initial) : retirée puis rendue,
+ *  elle garde ses brouillons. Vrai si elle vient d'être ajoutée. */
+function setSection(id, present, state) {
+  if (present === views.has(id)) return false;
+  if (present) {
+    let entry = kept.get(id);
+    if (!entry) {
+      const item = NAV.find((x) => x.id === id);
+      entry = createView(item, state());
+      entry.nav = navItem(item);
+      kept.set(id, entry);
     }
+    placeNav(id, entry.nav);
     const ids = [...NAV, SETTINGS].filter((x) => x !== "-").map((x) => x.id);
-    const next = ids.slice(ids.indexOf("chat") + 1).find((id) => views.has(id));
-    $("#sidebar").insertBefore(chatEntry.nav, views.get(next).nav);
-    const all = new Map([...views, ["chat", chatEntry]]);
+    const all = new Map([...views, [id, entry]]);
     views.clear();
-    for (const id of ids) if (all.has(id)) views.set(id, all.get(id));
+    for (const x of ids) if (all.has(x)) views.set(x, all.get(x));
   } else {
-    layout.evict("chat", { persist: false });   // la disposition enregistrée la garde
-    views.delete("chat");
-    chatEntry.nav.remove();
+    kept.set(id, views.get(id));
+    layout.evict(id, { persist: false });   // la disposition enregistrée la garde
+    views.delete(id);
+    kept.get(id).nav.remove();
   }
   numberShortcuts();
   navTips();
+  return present;
+}
+
+/** Entrée de la barre latérale à sa place : après la section présente qui la précède
+ *  dans son groupe, sinon avant celle qui la suit. */
+function placeNav(id, nav) {
+  const order = [...NAV, SETTINGS];
+  const at = order.findIndex((x) => x.id === id);
+  for (let i = at - 1; i >= 0 && order[i] !== "-"; i--) {
+    if (views.has(order[i].id)) { views.get(order[i].id).nav.after(nav); return; }
+  }
+  for (let i = at + 1; i < order.length && order[i] !== "-"; i++) {
+    if (views.has(order[i].id)) { views.get(order[i].id).nav.before(nav); return; }
+  }
+  $(".nav-search").after(nav);
 }
 
 /** Ctrl+1…9, Ctrl+, , Ctrl+Maj+S (« split ») et F6 (clavier de l'interface ou relayé
@@ -591,6 +626,7 @@ function setupGlobalHandlers() {
 async function boot() {
   setErrorHandler((msg) => toast(msg, "error"));
   on("chat:available", setOllama);
+  on("phone:devices", ({ devices }) => setPhones(devices));
   window.__bootStage = "attente de pywebview";
   await ready();
   window.__bootStage = "polices";
@@ -606,12 +642,14 @@ async function boot() {
   bootState = state;
   store.ollama = !!state.chat?.available;
   $("#app").classList.toggle("ollama", store.ollama);
+  phones = state.phone?.devices || [];
   for (const item of [...NAV, SETTINGS]) {
     if (item === "-") continue;
     if (item.id === "chat" && !store.ollama) continue;
+    if (item.id === "phone" && !phones.length) continue;
     views.set(item.id, createView(item, state));
   }
-  chatEntry = views.get("chat") || null;
+  for (const id of ["chat", "phone"]) if (views.has(id)) kept.set(id, views.get(id));
   layout = createLayout(ctx, views, $("#main"));
   buildSidebar();
   setupTts();

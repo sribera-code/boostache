@@ -932,6 +932,26 @@ class Api:
         return self._app.weather.forecast(lat, lon, str(name or ""), bool(here))
 
     # ─────────────────────────────────────────
+    #  Smartphone (téléphone branché en débogage USB)
+    # ─────────────────────────────────────────
+    def phone_start(self, serial):
+        return self._app.phone.mirror_start(str(serial or ""))
+
+    def phone_stop(self, sid=None):
+        self._app.phone.mirror_stop(sid)
+
+    def phone_screenshot(self, sid):
+        """Capture de l'écran du téléphone, ouverte dans Captures."""
+        return self._app.phone.screenshot(sid)
+
+    def phone_screenshot_frame(self, sid, data_url):
+        return self._app.phone.screenshot_frame(sid, data_url)
+
+    def phone_input(self, sid, events):
+        """Toucher, clavier et boutons, dans l'ordre (un seul appel à la fois côté page)."""
+        return self._app.phone.input(sid, events)
+
+    # ─────────────────────────────────────────
     #  Recherche dans toutes les sections (Ctrl+K)
     # ─────────────────────────────────────────
     def search_all(self, query):

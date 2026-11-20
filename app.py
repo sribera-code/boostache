@@ -24,7 +24,7 @@ from bridge import Bridge
 from calc import CalcService
 from captures import CapturesService, Snipper
 from chat import CTX_SIZES, KEEP_ALIVE, ChatService, OLLAMA_OK
-from clipboard_listener import ClipboardListener
+from clipboard_listener import ClipboardListener, get_clipboard_text, set_clipboard_text
 from compare import CompareService
 from engine import ICON_PATH, logger, tts, hotkey_manager
 from files import FilesService
@@ -32,6 +32,7 @@ from gmail import GmailPane
 from minutes import MinutesService
 from notes import NotesService
 from ollama_admin import OllamaAdmin, USES as MODEL_USES
+from phone import PhoneService
 from rag import RagService
 from weather import WeatherService
 from recorder import WINDOW_MINUTES, FORMATS as AUDIO_FORMATS, SOURCES as AUDIO_SOURCES, RecorderService
@@ -175,6 +176,10 @@ class BoostacheApp:
         self.compare = CompareService(self.bridge, self.chat)
         # Section Météo : prévision sur 14 jours (Open-Meteo), position Windows ou ville choisie
         self.weather = WeatherService()
+        # Section Smartphone : écran d'un téléphone branché (débogage USB), piloté depuis Boostache
+        self.phone = PhoneService(self.bridge, self.post_message,
+                                  set_clipboard=set_clipboard_text, get_clipboard=get_clipboard_text,
+                                  add_capture=lambda image, name: self.captures.add_image(image, label=name))
         # Recherche dans toutes les sections (Ctrl+K)
         self.search = SearchService(self)
         # Rappels (message arrivé, section Tâches) : voix et notification Windows
@@ -197,6 +202,7 @@ class BoostacheApp:
         custom_tasks.load_persisted()
         self._start_clipboard_listener()
         self.rag.start()
+        self.phone.start()
         self.foreground.start()
         if self.chat:
             self.chat.on_available = self._set_screen_keys   # Ctrl+Impr. écran suit Ollama
@@ -619,6 +625,7 @@ class BoostacheApp:
             self.rag.shutdown()
             self.calc.shutdown()
             self.compare.shutdown()
+            self.phone.shutdown()
             self.bridge.stop()
 
     # ─────────────────────────────────────────
@@ -629,6 +636,7 @@ class BoostacheApp:
         attendent ui_started : distribués avant que les vues existent, personne ne les
         recevrait (la liste de Gmail, par exemple, n'est renvoyée que si elle change)."""
         self.bridge.discard_pending()
+        self.phone.wait_listed(2.0)
         state = {
             "settings": {k: settings.get(k) for k in (
                 "system_prompt", "clipboard_max_items", "always_on_top", "window_opacity",
@@ -641,7 +649,7 @@ class BoostacheApp:
                 "ollama_autostart", "digest_height", "rag_model", "rag_tree_width",
                 "mail_list", "mail_list_width", "gmail_auto_summary", "files_model", "files_auto_summary",
                 "calc_model", "recorder_model", "compare_model", "compare_auto_explain",
-                "weather_span")},
+                "weather_span", "phone_screen_off", "phone_keep_awake")},
             "data_dir":  str(DATA_DIR),
             "chat":      self.chat.snapshot() if self.chat else
                          {"available": False, "reason": NO_OLLAMA_LIB},
@@ -655,6 +663,7 @@ class BoostacheApp:
             "calc":      self.calc.state(),
             "compare":   self.compare.snapshot(),
             "weather":   self.weather.snapshot(),
+            "phone":     self.phone.snapshot(),
             "ollama":    self.ollama.boot_state() if self.ollama else
                          {"available": False, "reason": NO_OLLAMA_LIB},
             "panes":     {key: p.snapshot() for key, p in self.panes.items()},
@@ -800,6 +809,10 @@ class BoostacheApp:
             if value not in (1, 3, 7):
                 return settings.get(key)
             settings.set(key, value)
+        elif key in ("phone_screen_off", "phone_keep_awake"):
+            # Section Smartphone : écran du téléphone éteint, téléphone gardé éveillé
+            settings.set(key, bool(value))
+            self.phone.option_changed(key)
         elif key == "rag_tree_width":
             # Largeur de l'arborescence de la section Documents (px)
             try:
@@ -861,6 +874,30 @@ class BoostacheApp:
         except Exception as e:
             logger.log(f"Interface : focus impossible ({e})")
 
+    def post_message(self, text: str, done=None) -> bool:
+        """Message JSON envoyé à la page sans passer par bridge.py (vidéo du téléphone :
+        des dizaines par seconde, window.addEventListener côté page). Non bloquant :
+        posté au thread de l'interface, done() appelé une fois remis à WebView2."""
+        form = getattr(self.window, "native", None)
+        if form is None or self._quitting:
+            return False
+        try:
+            from System import Action
+
+            def deliver():
+                try:
+                    form.browser.webview.CoreWebView2.PostWebMessageAsJson(text)
+                except Exception:
+                    pass
+                finally:
+                    if done:
+                        done()
+
+            form.BeginInvoke(Action(deliver))
+            return True
+        except Exception:
+            return False
+
     def clipboard_items(self) -> list[dict]:
         items = []
         for it in clipboard_history.all():
@@ -885,6 +922,7 @@ class BoostacheApp:
             max_items = 100
         if clipboard_history.add(text, max_items=max_items):
             self.emit_clipboard()
+        self.phone.pc_clipboard(text)       # téléphone affiché : même presse-papiers
 
     def _on_log(self, entry: dict):
         self.bridge.emit("log", entry)
