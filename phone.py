@@ -18,6 +18,10 @@ débogage USB, affiché dans Boostache et piloté à la souris et au clavier.
 - Capture d'écran : celle du téléphone en pleine résolution (adb screencap), ouverte
   dans Captures ; noire (écran éteint par l'option, application protégée) ou
   impossible : l'image affichée dans la page.
+- Capture défilante : la page est poussée vers le haut d'un glissement de doigt (arrêté
+  net avant d'être levé, sans élan), capturée de nouveau, et chaque capture est raccordée
+  à la précédente par les lignes qu'elles ont en commun, jusqu'en bas de la page (rien
+  n'a bougé), à l'arrêt demandé ou à la hauteur maximale de Captures.
 - Copier-coller : ce qui est copié sur le téléphone arrive dans le
   presse-papiers de Windows (clipboard_autosync du serveur) ; ce qui est
   copié dans Windows pendant que l'écran est affiché part dans celui du
@@ -59,6 +63,25 @@ PASTE_PAUSE = 0.4                # s laissées à l'application pour coller avan
 RESTORE_DELAY = 1.0              # s : presse-papiers du téléphone rétabli après des caractères collés
 CREATE_NO_WINDOW = 0x08000000
 SCREENCAP_TIMEOUT = 20           # s pour la capture d'écran du téléphone
+# Capture défilante
+SWIPE_FROM, SWIPE_TO = 0.70, 0.28    # glissement vers le haut (fractions de la hauteur de l'écran)
+SWIPE_STEPS = 30                     # déplacements du doigt, de plus en plus courts…
+SWIPE_STEP = 0.016                   # … toutes les 16 ms
+SWIPE_HOLD = 0.25                    # s doigt immobile avant d'être levé : pas d'élan, la page s'arrête net
+SETTLE = 0.3                         # s laissées à la page après le glissement avant la capture
+RETRY_DELAY = 0.5                    # s avant une nouvelle capture quand le raccord échoue (rebond, chargement)
+LONG_MAX_SCREENS = 40
+FINGER = -2                          # POINTER_ID_GENERIC_FINGER de scrcpy : un doigt, pas la souris
+SIG_COLS = 96                        # colonnes de la signature d'une ligne (moyennes par bloc)
+SIG_RIGHT = 0.03                     # bord droit ignoré : barre de défilement affichée pendant le défilement
+ROW_TOL = 3.0                        # écart moyen (niveaux de gris) sous lequel deux lignes sont les mêmes
+ROW_INFO = 12.0                      # écart entre les blocs d'une ligne qui a du contenu (pas un fond uni)
+MATCH_GOOD = 0.15                    # lignes différentes tolérées au raccord (heure, animation…)
+MATCH_FAIR = 0.5                     # … quand aucun autre décalage n'en approche (image qui finit de se charger)
+OVERLAY_FROM = 0.65                  # ce qui est posé sur la page en bas est cherché sous cette hauteur
+                                     # (plus haut, la suite prise dans la capture suivante remonterait
+                                     # jusqu'à l'en-tête de l'application)…
+OVERLAY_ROWS = 3                     # … sur au moins ces lignes à la suite
 # Pour les essais : émulateurs affichés comme des téléphones
 INCLUDE_EMULATORS = os.environ.get("BOOSTACHE_PHONE_EMULATORS") == "1"
 
@@ -365,8 +388,9 @@ class Mirror:
                 "size": list(self.size) if self.size else None, "error": self.error}
 
     # ── Commandes ──
-    def send(self, data: bytes | float):
-        """Message de commande, ou pause (secondes) avant le suivant."""
+    def send(self, data: bytes | float | threading.Event):
+        """Message de commande, pause (secondes) avant le suivant, ou Event levé une fois
+        que tout ce qui le précède est parti."""
         if data and not self._stop.is_set():
             self._outq.put(data)
 
@@ -594,33 +618,34 @@ class Mirror:
 
     # ── Commandes et presse-papiers ──
     def _send_loop(self):
+        nothing = object()
+        pending = nothing                 # élément lu après un lot de messages, traité ensuite
         while True:
-            data = self._outq.get()
+            data = self._outq.get() if pending is nothing else pending
+            pending = nothing
             if data is None:
                 return
             if isinstance(data, float):
                 time.sleep(data)
                 continue
+            if isinstance(data, threading.Event):
+                data.set()
+                continue
+            # Messages à la suite : envoyés ensemble
             chunks = [data]
-            pause = 0.0
             while True:
                 try:
                     more = self._outq.get_nowait()
                 except queue.Empty:
                     break
-                if more is None:
-                    self._outq.put(None)
-                    break
-                if isinstance(more, float):
-                    pause = more
+                if not isinstance(more, bytes):
+                    pending = more
                     break
                 chunks.append(more)
             try:
                 self._control.sendall(b"".join(chunks))
             except OSError:
                 return
-            if pause:
-                time.sleep(pause)
 
     def _device_messages(self):
         sock = self._control
@@ -669,6 +694,164 @@ class Mirror:
 
 
 # ─────────────────────────────────────────────
+#  Capture défilante : raccord des captures
+# ─────────────────────────────────────────────
+def row_signature(image):
+    """Lignes de l'image en niveaux de gris, moyennées par blocs de colonnes
+    (tableau hauteur × SIG_COLS), bord droit exclu."""
+    import numpy as np
+    gray = np.asarray(image.convert("L"), dtype=np.float32)
+    height, width = gray.shape
+    usable = max(1, int(width * (1 - SIG_RIGHT)))
+    cols = min(SIG_COLS, usable)
+    block = usable // cols
+    return gray[:, :block * cols].reshape(height, cols, block).mean(axis=2)
+
+
+def _footer_start(prev, cur, d: int, default: int) -> int:
+    """Début de ce qui ne défile pas en bas de l'écran pour un défilement de d : default
+    (début des lignes inchangées : barre de navigation opaque), ou plus haut, ce sous quoi
+    la page défile (trait des gestes, bouton flottant, barre translucide) : dans le bas de
+    l'écran, des lignes de prev qui ne se retrouvent pas d plus haut dans cur (au moins
+    OVERLAY_ROWS à la suite, pas une ligne isolée)."""
+    import numpy as np
+    height = len(prev)
+    ys = np.arange(max(d, int(height * OVERLAY_FROM)), default)
+    if ys.size < OVERLAY_ROWS:
+        return default
+    over = np.abs(prev[ys] - cur[ys - d]).mean(axis=1) > ROW_TOL
+    runs = np.ones(ys.size - OVERLAY_ROWS + 1, bool)
+    for k in range(OVERLAY_ROWS):
+        runs &= over[k:ys.size - OVERLAY_ROWS + 1 + k]
+    idx = np.flatnonzero(runs)
+    return int(ys[idx[0]]) if idx.size else default
+
+
+def match_scroll(prev, cur, expected: int = 0) -> tuple[int | None, int]:
+    """Défilement entre deux captures (signatures de row_signature) : (d, bas), la ligne y
+    de cur montrant ce que montrait la ligne y + d de prev, pour tout ce qui est au-dessus
+    de bas (début de ce qui ne défile pas en bas de l'écran : barre de navigation, trait
+    des gestes, boutons). d = 0 : rien n'a bougé ; None : pas de raccord. expected :
+    décalage attendu, qui départage les raccords aussi bons (page presque vide, éléments
+    qui se répètent)."""
+    import numpy as np
+    height = len(cur)
+    same = np.abs(cur - prev).mean(axis=1) <= ROW_TOL
+    changed = np.flatnonzero(~same)
+    if changed.size == 0:
+        return 0, height
+    bottom = int(changed[-1]) + 1
+    # Lignes qui ont du contenu et ont changé : celles qui ont défilé (un fond uni se
+    # raccorde n'importe où, ce qui ne bouge pas en haut ne dit rien du défilement)
+    info = (cur.max(axis=1) - cur.min(axis=1)) > ROW_INFO
+    moving = np.flatnonzero(~same & info)
+    if moving.size < max(10, height * 0.03) or moving.size < 0.15 * np.count_nonzero(info):
+        return 0, bottom           # presque rien : heure de la barre d'état, animation
+    # Un raccord compare les lignes de cur qui avaient leur place dans prev (au-dessus de
+    # bas une fois décalées) : au moins un cinquième de celles qui ont défilé
+    need = max(10, moving.size // 5)
+    has_match = np.searchsorted(moving, bottom - np.arange(bottom), side="left")
+
+    def mismatch(d: int, rows) -> float:
+        ys = rows[rows + d < bottom]
+        if ys.size == 0:
+            return 1.0
+        diff = np.abs(cur[ys] - prev[ys + d]).mean(axis=1)
+        return float(np.count_nonzero(diff > ROW_TOL)) / max(1, ys.size)
+
+    # Tous les décalages sur un échantillon des lignes, puis les meilleurs sur toutes
+    sample = moving[::max(1, moving.size // 300)]
+    coarse = np.full(bottom, np.inf)
+    for d in range(1, bottom):
+        if has_match[d] < need:
+            break                  # de moins en moins de lignes à comparer
+        coarse[d] = mismatch(d, sample)
+    if not np.isfinite(coarse).any():
+        return None, bottom
+    best_coarse = float(coarse.min())
+    candidates = np.flatnonzero(coarse <= best_coarse + 0.1)
+    candidates = candidates[np.argsort(coarse[candidates])][:20]
+    fine = {int(d): mismatch(int(d), moving) for d in candidates}
+    best = min(fine.values())
+    near = [d for d, s in fine.items() if s <= best + 0.02]
+    d = min(near, key=lambda c: (abs(c - expected), c) if expected else (c, 0))
+    score = fine[d]
+    if score <= MATCH_GOOD:
+        return d, _footer_start(prev, cur, d, bottom)
+    if score <= MATCH_FAIR:
+        # Raccord moyen : retenu s'il se détache nettement de tous les autres décalages
+        others = coarse.copy()
+        others[max(0, d - 8):d + 9] = np.inf
+        if float(others.min()) >= score + 0.25:
+            return d, _footer_start(prev, cur, d, bottom)
+    return None, bottom
+
+
+class ScrollStitcher:
+    """Captures successives d'une page qu'on fait défiler vers le bas, assemblées : haut de
+    la première capture, ce qui apparaît en bas de l'écran à chaque défilement, puis le
+    bas fixe de la dernière (barre de navigation)."""
+
+    def __init__(self, first):
+        self.last = first.convert("RGB")
+        self._sig = row_signature(self.last)
+        self._bands: list = []           # morceaux de l'image, dans l'ordre
+        self._end: int | None = None     # ligne de la dernière capture où s'arrête l'assemblé
+        self.screens = 1
+
+    @property
+    def height(self) -> int:
+        """Hauteur de l'image assemblée jusqu'ici."""
+        return sum(b.height for b in self._bands) + self.last.height - (self._end or 0)
+
+    def add(self, frame, expected: int = 0) -> int | None:
+        """Capture prise après un défilement : décalage trouvé (0 : rien n'a bougé, la
+        capture n'est pas gardée ; None : pas de raccord)."""
+        frame = frame.convert("RGB")
+        sig = row_signature(frame)
+        d, bottom = match_scroll(self._sig, sig, expected)
+        if not d:
+            return d
+        width = frame.width
+        if self._end is None:
+            self._bands.append(self.last.crop((0, 0, width, bottom)))
+            self._end = bottom
+        if self._end < d:
+            # Bas de l'écran sans rien qui défile (page presque vide) : ce qui est sorti par
+            # le haut de la nouvelle capture n'est que dans l'ancienne
+            self._bands.append(self.last.crop((0, self._end, width, d)))
+            self._end = d
+        start = self._end - d                  # suite de l'assemblé, dans la nouvelle capture
+        if bottom > start:
+            self._bands.append(frame.crop((0, start, width, bottom)))
+            self._end = bottom
+        else:
+            self._end = start
+        self.last, self._sig = frame, sig
+        self.screens += 1
+        return d
+
+    def image(self, max_height: int = 0):
+        """Image assemblée, coupée à max_height (0 : entière)."""
+        from PIL import Image
+        if self._end is None:
+            bands = [self.last]
+        else:
+            bands = [*self._bands, self.last.crop((0, self._end, self.last.width, self.last.height))]
+        total = sum(b.height for b in bands)
+        if max_height:
+            total = min(total, max_height)
+        out = Image.new("RGB", (self.last.width, total))
+        y = 0
+        for band in bands:
+            if y >= total:
+                break
+            out.paste(band, (0, y))
+            y += band.height
+        return out
+
+
+# ─────────────────────────────────────────────
 #  Service de la section
 # ─────────────────────────────────────────────
 class PhoneService:
@@ -687,6 +870,8 @@ class PhoneService:
         self._lock = threading.Lock()
         self._mirror: Mirror | None = None
         self._sid = 0
+        self._long: threading.Thread | None = None       # capture défilante en cours
+        self._long_stop: threading.Event | None = None
         self._tracker = DeviceTracker(self.adb, self._on_devices) if self.adb else None
         self._listed = threading.Event()        # première liste reçue du serveur adb
         if not self._tracker:
@@ -704,6 +889,8 @@ class PhoneService:
             logger.info("Smartphone : adb introuvable (outils Android absents), section jamais affichée.")
 
     def shutdown(self):
+        if self._long_stop:
+            self._long_stop.set()
         if self._tracker:
             self._tracker.stop()
         mirror = self._mirror
@@ -796,18 +983,143 @@ class PhoneService:
         mirror = self._mirror
         if not mirror or mirror.sid != sid or mirror.state != "running":
             return {"error": "Le téléphone n'est plus affiché."}
+        image = self._screencap(mirror.serial)
+        if image is None:
+            return {"frame": True}
+        return self._capture(image, mirror)
+
+    def _screencap(self, serial: str):
+        """Écran du téléphone en pleine résolution (image PIL) ; None si la capture est
+        impossible ou toute noire (écran éteint, contenu protégé)."""
         try:
-            res = subprocess.run([self.adb, "-s", mirror.serial, "exec-out", "screencap", "-p"],
+            res = subprocess.run([self.adb, "-s", serial, "exec-out", "screencap", "-p"],
                                  capture_output=True, timeout=SCREENCAP_TIMEOUT, creationflags=CREATE_NO_WINDOW)
             from PIL import Image
             image = Image.open(io.BytesIO(res.stdout))
             image.load()
         except Exception as e:
-            logger.debug(f"Smartphone : capture par adb impossible ({e}), image affichée utilisée")
-            return {"frame": True}
+            logger.debug(f"Smartphone : capture par adb impossible ({e})")
+            return None
         if image.convert("L").getbbox() is None:
-            return {"frame": True}               # tout noir : écran éteint, contenu protégé
-        return self._capture(image, mirror)
+            return None
+        return image
+
+    # ── Capture défilante ──
+    def long_screenshot(self, sid) -> dict:
+        """Lance la capture défilante du téléphone affiché ; avancement et fin par
+        l'événement phone:long, image ouverte dans Captures."""
+        mirror = self._mirror
+        if not mirror or mirror.sid != sid or mirror.state != "running" or not mirror.size:
+            return {"error": "Le téléphone n'est plus affiché."}
+        if not self._add_capture:
+            return {"error": "Section Captures indisponible."}
+        with self._lock:
+            if self._long and self._long.is_alive():
+                return {"error": "Une capture défilante est déjà en cours."}
+            stop = threading.Event()
+            self._long_stop = stop
+            self._long = threading.Thread(target=self._long_run, args=(mirror, stop), daemon=True,
+                                          name="phone-long-capture")
+            self._long.start()
+        return {"ok": True}
+
+    def long_stop(self, sid=None):
+        """Arrête la capture défilante : ce qui est déjà assemblé est ouvert dans Captures."""
+        mirror, stop = self._mirror, self._long_stop
+        if stop and (sid is None or (mirror and mirror.sid == sid)):
+            stop.set()
+
+    def _long_run(self, mirror: Mirror, stop: threading.Event):
+        from captures import MAX_SIDE
+
+        def emit(state: str, **data):
+            self.bridge.emit("phone:long", {"sid": mirror.sid, "state": state, **data})
+
+        # Écran éteint par l'option : la capture serait noire, il est rallumé le temps de la capture
+        screen_off = settings.get("phone_screen_off", False)
+        try:
+            if screen_off:
+                mirror.send(msg_display_power(True))
+                time.sleep(0.6)
+            first = self._screencap(mirror.serial)
+            if first is None:
+                emit("error", error="Capture de l'écran du téléphone impossible "
+                                    "(l'application affichée interdit peut-être les captures).")
+                return
+            stitcher = ScrollStitcher(first)
+            emit("progress", screens=1, height=first.height)
+            reason = "screens"
+            while stitcher.screens < LONG_MAX_SCREENS:
+                if stop.is_set():
+                    reason = "stopped"
+                    break
+                expected = self._swipe(mirror, first.height)
+                if expected is None:
+                    reason = "lost"
+                    break
+                # Pas de raccord (rebond en bas de la page, image qui se charge) ou rien n'a
+                # bougé (téléphone lent à réagir, ou bas de la page) : nouvelles captures
+                d = frame = None
+                for attempt in range(3):
+                    time.sleep(SETTLE if attempt == 0 else RETRY_DELAY)
+                    frame = self._screencap(mirror.serial)
+                    if frame is None or frame.size != first.size:
+                        frame = None       # écran éteint, verrouillé ou tourné
+                        break
+                    d = stitcher.add(frame, expected)
+                    if d:
+                        break
+                if d is None:
+                    reason = ("lost" if mirror.state != "running" else
+                              "screen" if frame is None else "unmatched")
+                    break
+                if d == 0:
+                    reason = "end"
+                    break
+                emit("progress", screens=stitcher.screens, height=stitcher.height)
+                if stitcher.height >= MAX_SIDE:
+                    reason = "limit"
+                    break
+            image = stitcher.image(max_height=MAX_SIDE)
+            res = self._capture(image, mirror)
+            logger.info(f"Smartphone : capture défilante, {stitcher.screens} écran(s), "
+                        f"{image.width} × {image.height} px ({reason}).")
+            if res.get("ok"):
+                emit("done", reason=reason, screens=stitcher.screens, width=image.width, height=image.height)
+            else:
+                emit("error", error=res.get("error") or "Capture impossible.")
+        except Exception as e:
+            logger.log(f"Smartphone : capture défilante impossible ({e})")
+            emit("error", error=f"Capture défilante impossible : {e}")
+        finally:
+            if screen_off and settings.get("phone_screen_off", False) and mirror.state == "running":
+                mirror.send(msg_display_power(False))
+
+    def _swipe(self, mirror: Mirror, device_height: int) -> int | None:
+        """Glissement d'un doigt vers le haut au milieu de l'écran, immobile un instant avant
+        d'être levé (pas d'élan). Retourne le décalage attendu en pixels de la capture,
+        None si le téléphone n'est plus affiché."""
+        if mirror.state != "running" or not mirror.size:
+            return None
+        w, h = mirror.size
+        x, y0, y1 = w // 2, int(h * SWIPE_FROM), int(h * SWIPE_TO)
+        mirror.send(msg_touch(TOUCH_DOWN, FINGER, x, y0, w, h))
+        for i in range(1, SWIPE_STEPS + 1):
+            # De plus en plus lentement jusqu'à l'arrêt : pas de vitesse au moment de lever
+            y = y0 + round((y1 - y0) * (1 - (1 - i / SWIPE_STEPS) ** 2))
+            mirror.send(SWIPE_STEP)
+            mirror.send(msg_touch(TOUCH_MOVE, FINGER, x, y, w, h))
+        # Doigt immobile : les derniers points de la vitesse calculée par Android sont à l'arrêt
+        hold = max(1, round(SWIPE_HOLD / SWIPE_STEP))
+        for _ in range(hold):
+            mirror.send(SWIPE_STEP)
+            mirror.send(msg_touch(TOUCH_MOVE, FINGER, x, y1, w, h))
+        mirror.send(msg_touch(TOUCH_UP, FINGER, x, y1, w, h))
+        done = threading.Event()
+        mirror.send(done)
+        if not done.wait((SWIPE_STEPS + hold) * SWIPE_STEP * 2 + 5) or mirror.state != "running":
+            return None
+        return round((y0 - y1) * device_height / h)
 
     def screenshot_frame(self, sid, data_url: str) -> dict:
         """Image affichée dans la page (data URL PNG), à défaut de la capture du téléphone."""

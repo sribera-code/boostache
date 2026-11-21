@@ -345,5 +345,256 @@ class PageEvents(unittest.TestCase):
         self.assertTrue(self.service.wait_listed(0))
 
 
+# ─────────────────────────────────────────────
+#  Capture défilante
+# ─────────────────────────────────────────────
+WIDTH, SCREEN, STATUS, NAV = 216, 468, 24, 36
+VIEW = SCREEN - STATUS - NAV                 # hauteur de la zone qui défile
+
+
+def fake_page(height=3000, seed=1):
+    """Page factice en niveaux de gris : lignes de « mots », images, grands blancs."""
+    import numpy as np
+    rng = np.random.default_rng(seed)
+    page = np.full((height, WIDTH), 245, np.uint8)
+    y = 0
+    while y < height:
+        kind = rng.integers(0, 4)
+        if kind < 2:                                        # ligne de texte
+            h = int(rng.integers(10, 18))
+            x = 8
+            while x < WIDTH - 50:
+                w = int(rng.integers(12, 40))
+                page[y:y + h, x:x + w] = rng.integers(20, 140, (min(h, height - y), w))
+                x += w + int(rng.integers(5, 10))
+        elif kind == 2:                                     # image
+            h = int(rng.integers(60, 180))
+            page[y:y + h, 8:WIDTH - 8] = rng.integers(0, 255, (min(h, height - y), WIDTH - 16))
+        else:                                               # blanc
+            h = int(rng.integers(20, 70))
+        y += h + int(rng.integers(4, 14))
+    return page
+
+
+def fake_screen(page, offset, clock=0, scrollbar=False, edge=False):
+    """Écran : barre d'état (heure qui change), page vue depuis offset, barre de navigation ;
+    edge : la page va jusqu'en bas de l'écran et défile sous le trait des gestes et un
+    bouton flottant (Android 15 et suivants)."""
+    import numpy as np
+    from PIL import Image
+    status = np.full((STATUS, WIDTH), 30, np.uint8)
+    status[5:19, 10:40] = 200 if clock % 2 else 90           # chiffres de l'heure
+    status[5:19, 180:200] = 160                              # icônes
+    nav = np.full((NAV, WIDTH), 30, np.uint8)
+    nav[14:22, 60:156] = 180
+    view = page[offset:offset + view_height(edge)].copy()
+    if scrollbar:                                            # barre de défilement, bord droit
+        top = int(offset / len(page) * len(view))
+        view[top:top + 40, WIDTH - 5:WIDTH - 1] = 100
+    if edge:
+        view[-14:-8, 70:146] = 60                            # trait des gestes
+        view[-110:-60, 150:200] = 90                         # bouton flottant
+        return Image.fromarray(np.vstack([status, view]), "L").convert("RGB")
+    return Image.fromarray(np.vstack([status, view, nav]), "L").convert("RGB")
+
+
+def view_height(edge=False):
+    return SCREEN - STATUS if edge else VIEW
+
+
+class ScrollMatch(unittest.TestCase):
+    def setUp(self):
+        self.page = fake_page()
+
+    def match(self, a, b, expected=0):
+        return phone.match_scroll(phone.row_signature(a), phone.row_signature(b), expected)
+
+    def test_finds_offset_despite_clock_and_scrollbar(self):
+        a = fake_screen(self.page, 300, clock=0, scrollbar=True)
+        b = fake_screen(self.page, 437, clock=1, scrollbar=True)
+        d, bottom = self.match(a, b, expected=150)
+        self.assertEqual(d, 137)
+        self.assertLessEqual(bottom, SCREEN - NAV)          # barre de navigation : fixe
+
+    def test_nothing_moved(self):
+        a = fake_screen(self.page, 500)
+        self.assertEqual(self.match(a, fake_screen(self.page, 500))[0], 0)
+        # Seule l'heure a changé : bas de la page atteint
+        self.assertEqual(self.match(a, fake_screen(self.page, 500, clock=1))[0], 0)
+
+    def test_unrelated_screens(self):
+        other = fake_page(seed=7)
+        self.assertIsNone(self.match(fake_screen(self.page, 0), fake_screen(other, 0))[0])
+
+    def test_repeating_content_uses_expected_offset(self):
+        """Lignes identiques tous les 40 px : plusieurs raccords parfaits, le plus proche
+        du glissement fait est retenu."""
+        import numpy as np
+        motif = fake_page(height=40, seed=3)
+        page = np.vstack([motif] * 40)
+        a, b = fake_screen(page, 0), fake_screen(page, 130)
+        self.assertEqual(self.match(a, b, expected=125)[0], 130)
+        self.assertEqual(self.match(a, b, expected=165)[0], 170)
+
+
+class LongCapture(unittest.TestCase):
+    """Capture défilante de bout en bout, téléphone factice : chaque glissement fait défiler
+    la page de STEP pixels, jusqu'en bas."""
+    STEP = 150
+
+    def setUp(self):
+        self.bridge = mock.Mock()
+        with mock.patch.object(phone, "find_adb", return_value=None):
+            self.service = phone.PhoneService(self.bridge, lambda *a: True)
+        self.mirror = phone.Mirror("adb", "SERIAL", 5, None, self.service._on_mirror_event)
+        self.mirror.state = "running"
+        self.mirror.size = (WIDTH // 2, SCREEN // 2)
+        self.service._mirror = self.mirror
+        self.added = []
+        self.service._add_capture = lambda image, name: self.added.append(image)
+        self.page = fake_page()
+        self.offset = 0
+        self.swipes = 0
+        self.on_swipe = None
+        self.edge = False
+        self.service._screencap = lambda serial: fake_screen(self.page, self.offset, clock=self.swipes,
+                                                             scrollbar=True, edge=self.edge)
+        self.service._swipe = self.swipe
+        patcher = mock.patch.multiple(phone, SETTLE=0, RETRY_DELAY=0)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def swipe(self, mirror, device_height):
+        self.swipes += 1
+        if self.on_swipe:
+            self.on_swipe()
+        self.offset = min(self.offset + self.STEP, len(self.page) - view_height(self.edge))
+        return self.STEP + 12
+
+    def run_capture(self):
+        self.service._long_run(self.mirror, threading.Event() if not hasattr(self, "stop") else self.stop)
+        events = [c.args[1] for c in self.bridge.emit.call_args_list if c.args[0] == "phone:long"]
+        return events
+
+    def expected(self, rows):
+        """Haut de la première capture, rows lignes de la page, barre de navigation."""
+        import numpy as np
+        first = np.asarray(fake_screen(self.page, 0).convert("L"))
+        return np.vstack([first[:STATUS], self.page[:rows], first[SCREEN - NAV:]])
+
+    def assertImage(self, image, expected):
+        import numpy as np
+        got = np.asarray(image.convert("L"))
+        self.assertEqual(got.shape, expected.shape)
+        # Bord droit (barre de défilement de chaque capture) et heure mis à part
+        self.assertTrue(np.array_equal(got[:, :WIDTH - 6], expected[:, :WIDTH - 6]))
+
+    def test_whole_page(self):
+        events = self.run_capture()
+        self.assertEqual(len(self.added), 1)
+        self.assertImage(self.added[0], self.expected(len(self.page)))
+        done = events[-1]
+        self.assertEqual((done["state"], done["reason"], done["sid"]), ("done", "end", 5))
+        self.assertEqual((done["width"], done["height"]), (WIDTH, STATUS + len(self.page) + NAV))
+        # Avancement à chaque écran ; le dernier glissement ne fait plus rien défiler
+        progress = [e for e in events if e["state"] == "progress"]
+        self.assertEqual([e["screens"] for e in progress], list(range(1, len(progress) + 1)))
+        self.assertEqual(done["screens"], len(progress))
+        self.assertEqual(self.swipes, done["screens"])
+
+    def test_page_under_gesture_bar(self):
+        """Trait des gestes et bouton flottant au-dessus de la page : seulement en bas de
+        l'image (dernière capture), pas répétés à chaque écran."""
+        import numpy as np
+        self.edge = True
+        events = self.run_capture()
+        self.assertEqual(events[-1]["reason"], "end")
+        first = np.asarray(fake_screen(self.page, 0, edge=True).convert("L"))
+        last = np.asarray(fake_screen(self.page, self.offset, edge=True).convert("L"))
+        self.assertImage(self.added[0], np.vstack([first[:STATUS], self.page[:self.offset], last[STATUS:]]))
+
+    def test_slow_phone(self):
+        """La page ne bouge qu'après la première capture qui suit le glissement : ce n'est pas
+        le bas de la page."""
+        late = []
+
+        def screencap(serial):
+            image = fake_screen(self.page, late.pop() if late else self.offset, clock=self.swipes)
+            return image
+
+        def swipe(mirror, device_height):
+            late.append(self.offset)
+            return self.swipe(mirror, device_height)
+
+        self.service._screencap = screencap
+        self.service._swipe = swipe
+        events = self.run_capture()
+        self.assertEqual(events[-1]["reason"], "end")
+        self.assertImage(self.added[0], self.expected(len(self.page)))
+
+    def test_stop_keeps_what_was_assembled(self):
+        self.stop = threading.Event()
+        self.on_swipe = lambda: self.swipes == 3 and self.stop.set()
+        events = self.run_capture()
+        self.assertEqual((events[-1]["reason"], events[-1]["screens"]), ("stopped", 4))
+        self.assertImage(self.added[0], self.expected(3 * self.STEP + VIEW))
+
+    def test_height_limit(self):
+        with mock.patch("captures.MAX_SIDE", 1000):
+            events = self.run_capture()
+        self.assertEqual(events[-1]["reason"], "limit")
+        self.assertEqual(self.added[0].size, (WIDTH, 1000))
+        self.assertImage(self.added[0], self.expected(len(self.page))[:1000])
+
+    def test_not_scrollable(self):
+        self.STEP = 0
+        events = self.run_capture()
+        self.assertEqual((events[-1]["reason"], events[-1]["screens"]), ("end", 1))
+        self.assertEqual(self.added[0].size, (WIDTH, SCREEN))
+
+    def test_unmatched_and_black_screen(self):
+        other = fake_page(seed=9)
+        self.on_swipe = lambda: self.swipes == 3 and setattr(self, "page", other)
+        events = self.run_capture()
+        self.assertEqual((events[-1]["reason"], events[-1]["screens"]), ("unmatched", 3))
+        # Capture noire dès le début (application protégée) : erreur, rien d'ajouté
+        self.service._screencap = lambda serial: None
+        self.added.clear()
+        events = self.run_capture()
+        self.assertEqual(events[-1]["state"], "error")
+        self.assertEqual(self.added, [])
+
+    def test_swipe_messages(self):
+        """Doigt (pas la souris) posé en bas, glissé vers le haut, immobile, puis levé ;
+        l'attente se termine quand tout est parti."""
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        self.mirror._control = a
+        threading.Thread(target=self.mirror._send_loop, daemon=True).start()
+        service = phone.PhoneService.__new__(phone.PhoneService)
+        with mock.patch.multiple(phone, SWIPE_STEP=0.001, SWIPE_HOLD=0.01):
+            expected = phone.PhoneService._swipe(service, self.mirror, SCREEN)
+        w, h = self.mirror.size
+        self.assertEqual(expected, round((int(h * 0.70) - int(h * 0.28)) * SCREEN / h))
+        b.settimeout(2)
+        raw = b""
+        hold = round(0.01 / 0.001)
+        count = 1 + phone.SWIPE_STEPS + hold + 1
+        while len(raw) < 32 * count:
+            raw += b.recv(4096)
+        msgs = [struct.unpack(">BBqiiHHHii", raw[i:i + 32]) for i in range(0, len(raw), 32)]
+        self.assertEqual(len(msgs), count)
+        self.assertEqual([m[1] for m in msgs], [0] + [2] * (count - 2) + [1])
+        self.assertTrue(all(m[2] == phone.FINGER and m[3] == w // 2 and m[5:7] == (w, h) for m in msgs))
+        ys = [m[4] for m in msgs]
+        self.assertEqual((ys[0], ys[-1]), (int(h * 0.70), int(h * 0.28)))
+        # Pas de plus en plus courts, puis immobile
+        steps = [a - b for a, b in zip(ys, ys[1:])][:phone.SWIPE_STEPS]
+        self.assertTrue(all(s >= 0 for s in steps) and steps[0] > steps[-1])
+        self.assertEqual(set(ys[-hold - 1:]), {int(h * 0.28)})
+        self.mirror.stop()
+
+
 if __name__ == "__main__":
     unittest.main()

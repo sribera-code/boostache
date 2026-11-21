@@ -947,6 +947,13 @@ class Api:
     def phone_screenshot_frame(self, sid, data_url):
         return self._app.phone.screenshot_frame(sid, data_url)
 
+    def phone_long_screenshot(self, sid):
+        """Capture défilante : la page du téléphone défile jusqu'en bas, assemblée dans Captures."""
+        return self._app.phone.long_screenshot(sid)
+
+    def phone_long_stop(self, sid=None):
+        self._app.phone.long_stop(sid)
+
     def phone_input(self, sid, events):
         """Toucher, clavier et boutons, dans l'ordre (un seul appel à la fois côté page)."""
         return self._app.phone.input(sid, events)

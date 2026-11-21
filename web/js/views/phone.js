@@ -57,6 +57,7 @@ export function createPhoneView(ctx, state) {
   let stopTimer = 0;
   let starting = false;
   let failedSerial = null;                 // échec : pas de nouvel essai tout seul (bouton Réessayer)
+  let longCapture = null;                  // capture défilante en cours : { sid, screens, height }
 
   // Décodeur
   let decoder = null;
@@ -81,6 +82,9 @@ export function createPhoneView(ctx, state) {
       off: ["moon", "Le téléphone se met en veille et se verrouille normalement — cliquer pour le garder éveillé"],
     },
   };
+  const LONG_TIP = "Capture défilante : la page affichée défile jusqu'en bas, assemblée en une seule image "
+    + "(ouverte dans Captures) — ne touchez pas le téléphone pendant la capture";
+  const longBtn = iconButton("chevrons-down", LONG_TIP, () => toggleLong(), { size: 15, cls: "sm" });
   const optionButtons = Object.keys(OPTIONS).map((key) => {
     const btn = h("button", { class: "icon-btn sm", type: "button", onClick: () => setOption(key) });
     btn.dataset.option = key;
@@ -94,6 +98,7 @@ export function createPhoneView(ctx, state) {
     iconButton("rotate-ccw", "Pivoter l'écran", () => send(["o"]), { size: 15, cls: "sm" }),
     iconButton("camera", "Capture d'écran du téléphone (ouverte dans Captures)", (ev) => screenshot(ev.currentTarget),
       { size: 15, cls: "sm" }),
+    longBtn,
     h("span", { class: "ph-sep" }),
     iconButton("volume-1", "Baisser le volume", () => send(["key", "volume_down"]), { size: 15, cls: "sm" }),
     iconButton("volume-2", "Monter le volume", () => send(["key", "volume_up"]), { size: 15, cls: "sm" }),
@@ -112,7 +117,11 @@ export function createPhoneView(ctx, state) {
     autocapitalize: "off", spellcheck: "false", tabindex: "-1" });
   const screen = h("div", { class: "ph-screen", hidden: true }, canvas, input);
   const message = h("div", { class: "empty ph-message" });
-  const stage = h("div", { class: "ph-stage" }, screen, message);
+  // Capture défilante en cours : avancement, arrêt
+  const longText = h("span");
+  const longBar = h("div", { class: "ph-long", hidden: true }, ico("loader-circle", 14), longText,
+    h("button", { class: "btn sm", type: "button", onClick: () => toggleLong() }, "Arrêter"));
+  const stage = h("div", { class: "ph-stage" }, screen, message, longBar);
   const nav = h("div", { class: "ph-nav", hidden: true },
     iconButton("arrow-left", "Retour — clic droit sur l'écran", () => send(["key", "back"]), { size: 16 }),
     iconButton("circle", "Accueil — clic du milieu sur l'écran", () => send(["key", "home"]), { size: 15 }),
@@ -165,6 +174,7 @@ export function createPhoneView(ctx, state) {
       decodeFailed = "";
       decodeErrors = [];
       queue.length = 0;
+      longCapture = null;                  // celle de l'ancienne session finit sans elle
     }
     session = info;
     if (info.size) size = info.size;
@@ -301,6 +311,8 @@ export function createPhoneView(ctx, state) {
 
   function send(ev) {
     if (!running()) return;
+    // Capture défilante : Python fait glisser la page, la souris et le clavier ne la dérangent pas
+    if (longCapture && ev[0] !== "r") return;
     // Déplacements du même doigt : seul le dernier compte s'il n'est pas encore parti
     const last = queue[queue.length - 1];
     if (ev[0] === "t" && ev[1] === 2 && last && last[0] === "t" && last[1] === 2 && last[6] === ev[6]) {
@@ -337,6 +349,48 @@ export function createPhoneView(ctx, state) {
     } finally {
       btn.classList.remove("busy");
     }
+  }
+
+  /** Lance la capture défilante, ou l'arrête (ce qui est déjà assemblé part dans Captures). */
+  async function toggleLong() {
+    if (longCapture) {
+      api.phone_long_stop(longCapture.sid);
+      longText.textContent = "Arrêt de la capture défilante…";
+      return;
+    }
+    if (!running()) return;
+    const sid = session.sid;
+    longCapture = { sid, screens: 0, height: 0 };        // avant l'appel : plus rien n'est envoyé au téléphone
+    render();
+    const res = await api.phone_long_screenshot(sid);
+    if (!res || res.error) {
+      if (longCapture?.sid === sid) longCapture = null;
+      render();
+      toast(res?.error || "Capture défilante impossible.", "error");
+    }
+  }
+
+  const plural = (n, word) => `${n} ${word}${n > 1 ? "s" : ""}`;
+  const px = (n) => Number(n).toLocaleString("fr-FR");
+
+  function longDone(m) {
+    if (m.state === "error") {
+      toast(m.error || "Capture défilante impossible.", "error", 6000);
+      return;
+    }
+    const size = `${px(m.width)} × ${px(m.height)} px`;
+    const capture = `capture de ${plural(m.screens, "écran")} (${size}) ouverte dans Captures`;
+    const [kind, text] = {
+      end: m.screens > 1 ? ["success", `Bas de la page atteint : ${capture}.`]
+        : ["info", "Rien n'a défilé : capture d'un seul écran ouverte dans Captures."],
+      stopped: ["success", `Capture défilante arrêtée : ${capture}.`],
+      limit: ["success", `Hauteur maximale atteinte : ${capture}.`],
+      screens: ["success", `${m.screens} écrans au plus : ${capture}.`],
+      unmatched: ["info", `La suite de la page n'a pas pu être raccordée (contenu qui bouge ?) : ${capture}.`],
+      screen: ["info", `L'écran du téléphone s'est éteint ou a tourné : ${capture}.`],
+      lost: ["info", `Connexion au téléphone perdue : ${capture}.`],
+    }[m.reason] || ["success", `Capture défilante : ${capture}.`];
+    toast(text, kind, 6000);
   }
 
   function copyFromPhone(cut) {
@@ -472,6 +526,14 @@ export function createPhoneView(ctx, state) {
   }
   new ResizeObserver(() => { if (ctx.isActive("phone")) fit(); }).observe(stage);
 
+  function renderLong() {
+    longBar.hidden = !longCapture || !running();
+    if (!longCapture || longText.textContent.startsWith("Arrêt")) return;
+    const { screens, height } = longCapture;
+    longText.textContent = screens ? `Capture défilante… ${plural(screens, "écran")} · ${px(height)} px`
+      : "Capture défilante…";
+  }
+
   function showMessage(icon, title, text, actions = [], spin = false) {
     message.hidden = false;
     message.replaceChildren(...[
@@ -493,7 +555,12 @@ export function createPhoneView(ctx, state) {
     if (d?.android) parts.push(`Android ${d.android}`);
     if (live && size) parts.push(`${size[0]} × ${size[1]}`);
     sub.textContent = parts.join(" · ");
-    for (const btn of controls) if (btn.tagName === "BUTTON") btn.disabled = !live;
+    // Capture défilante en cours : seul son bouton reste actif (pour l'arrêter)
+    for (const btn of controls) if (btn.tagName === "BUTTON") btn.disabled = !live || (!!longCapture && btn !== longBtn);
+    longBtn.classList.toggle("on", !!longCapture);
+    longBtn.dataset.tip = longCapture ? "Arrêter la capture défilante (ce qui est déjà assemblé est gardé)" : LONG_TIP;
+    longBtn.setAttribute("aria-label", longBtn.dataset.tip);
+    renderLong();
     for (const btn of optionButtons) {
       const active = !!store.settings[btn.dataset.option];
       const [icon, tip] = OPTIONS[btn.dataset.option][active ? "on" : "off"];
@@ -561,6 +628,19 @@ export function createPhoneView(ctx, state) {
       resetDecoder();
     }
     sync();
+  });
+  on("phone:long", (m) => {
+    if (!longCapture || m.sid !== longCapture.sid) return;
+    if (m.state === "progress") {
+      longCapture.screens = m.screens;
+      longCapture.height = m.height;
+      renderLong();
+      return;
+    }
+    longCapture = null;
+    longText.textContent = "";
+    render();
+    longDone(m);
   });
   on("phone:clipboard", ({ ok }) => {
     if (!ctx.isActive("phone")) return;

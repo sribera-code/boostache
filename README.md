@@ -193,6 +193,7 @@ L'écran d'un téléphone Android branché en USB, affiché et piloté depuis Bo
   - **Ctrl+V** sur l'écran (ou bouton Coller) colle le presse-papiers de Windows dans le champ du téléphone ; ce qui est copié dans Windows pendant que l'écran est affiché part aussi dans le presse-papiers du téléphone (Coller de son menu)
 - Boutons : retour, accueil, applications récentes, notifications, pivoter, volume, marche/arrêt
 - **Capture d'écran** (bouton appareil photo) : l'écran du téléphone en pleine résolution, ouvert dans un nouvel onglet de **Captures** (annoter, copier, enregistrer) ; si le téléphone renvoie une image noire (écran éteint par l'option, application protégée), c'est l'image affichée dans Boostache qui est prise
+- **Capture défilante** (bouton double chevron) : la page affichée défile toute seule vers le bas, écran par écran, et les captures sont raccordées en une seule longue image, ouverte dans **Captures** — jusqu'en bas de la page, ou jusqu'à **Arrêter** (bandeau sur l'écran, ou de nouveau le bouton : ce qui est déjà assemblé est gardé), au plus 16 384 px de haut. La page part de là où elle est affichée ; la souris et le clavier sont ignorés pendant la capture et il vaut mieux ne pas toucher le téléphone. L'en-tête de l'application vient de la première capture ; la barre de navigation, le trait des gestes et les boutons flottants du bas, de la dernière seulement. Écran éteint par l'option : rallumé le temps de la capture
 - Deux interrupteurs dans l'en-tête (choix gardés et appliqués à chaque connexion ; l'icône change avec l'état) :
   - **Écran du téléphone** (écran allumé / écran barré) : éteint, l'écran du téléphone reste noir, l'image et les commandes continuent dans Boostache
   - **Mise en veille** (lune / tasse de café) : téléphone gardé éveillé tant que la section est affichée, le téléphone ne se met pas en veille et ne se verrouille donc pas — il suffit de le déverrouiller une fois (code tapé au clavier du PC sur l'écran affiché). Attention : pendant ce temps, appuyer sur son bouton marche donne accès au téléphone sans code
@@ -353,7 +354,7 @@ boostache/
 ├── calc.py               # Calculatrice : historique, sessions, calculs modifiés et recalculés, assistant (Ollama, outils)
 ├── calc_worker.py        # Calculatrice : interpréteur Python (fonctions prêtes à l'emploi, résultat de la dernière expression)
 ├── weather.py            # Météo : prévision Open-Meteo (fourchette ECMWF, luminosité), position Windows, recherche de villes
-├── phone.py              # Smartphone : téléphones branchés (serveur adb), serveur scrcpy, vidéo vers la page, toucher, clavier, presse-papiers
+├── phone.py              # Smartphone : téléphones branchés (serveur adb), serveur scrcpy, vidéo vers la page, toucher, clavier, presse-papiers, capture défilante
 ├── terminals.py          # Consoles : shells ConPTY (pywinpty)
 ├── notes.py              # Notes
 ├── captures.py           # Captures : zone de l'écran (Win+Maj+S), onglets, export
